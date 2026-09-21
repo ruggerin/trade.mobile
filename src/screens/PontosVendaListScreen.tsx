@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
@@ -11,13 +12,14 @@ import {
   View,
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
-import { listarOrdensServicoPendentes } from '../lib/api/ordensServico';
+import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
 import { listarPontosVenda } from '../lib/api/pontosVenda';
 import { useAuth } from '../lib/auth/AuthContext';
 import { listarVisitasLocaisAbertas } from '../lib/visitaLocal';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import type { OrdemServico, PontoVenda } from '../types/api';
+import { cores, espaco, neutro, raio, sombraCard, tipografia } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontosVendaLista'>;
 type ModoExibicao = 'lista' | 'mapa';
@@ -59,9 +61,14 @@ export function PontosVendaListScreen({ navigation }: Props) {
     queryFn: listarOrdensServicoPendentes,
   });
   const pendenciaPorPdv = useMemo(() => {
-    const mapa = new Map<string, OrdemServico>();
+    const porLoja = new Map<string, OrdemServico[]>();
     for (const os of pendenciasQuery.data ?? []) {
-      if (!mapa.has(os.ponto_venda.id)) mapa.set(os.ponto_venda.id, os);
+      porLoja.set(os.ponto_venda.id, [...(porLoja.get(os.ponto_venda.id) ?? []), os]);
+    }
+    const mapa = new Map<string, OrdemServico>();
+    for (const [pdv, ordens] of porLoja) {
+      const escolhida = escolherOrdemDaLoja(ordens);
+      if (escolhida) mapa.set(pdv, escolhida);
     }
     return mapa;
   }, [pendenciasQuery.data]);
@@ -78,38 +85,53 @@ export function PontosVendaListScreen({ navigation }: Props) {
           onPress={() => navigation.navigate('VisitaAndamento', { visitaLocalId: visitaAberta.id })}
         >
           <Text style={styles.bannerTexto}>
-            Visita em andamento em {visitaAberta.pontoVenda.fantasia} — toque para continuar
+            {visitaAberta.status === 'FINALIZADA_LOCAL'
+              ? `Visita em ${visitaAberta.pontoVenda.fantasia} finalizada, aguardando envio — toque para ver`
+              : `Visita em andamento em ${visitaAberta.pontoVenda.fantasia} — toque para continuar`}
           </Text>
         </Pressable>
       )}
 
-      <TextInput
-        style={styles.busca}
-        value={busca}
-        onChangeText={setBusca}
-        placeholder="Buscar por nome, fantasia ou bairro"
-        placeholderTextColor="#9ca3af"
-        autoCapitalize="none"
-      />
+      <View style={styles.buscaContainer}>
+        <MaterialCommunityIcons name="magnify" size={20} color={cores.textoTerciario} />
+        <TextInput
+          style={styles.busca}
+          value={busca}
+          onChangeText={setBusca}
+          placeholder="Buscar por nome, fantasia ou bairro"
+          placeholderTextColor={cores.textoTerciario}
+          autoCapitalize="none"
+        />
+      </View>
 
       <View style={styles.toggleRow}>
         <Pressable
           style={[styles.toggleBotao, modo === 'lista' && styles.toggleBotaoAtivo]}
           onPress={() => setModo('lista')}
         >
+          <MaterialCommunityIcons
+            name="format-list-bulleted"
+            size={16}
+            color={modo === 'lista' ? cores.primaria : cores.textoSecundario}
+          />
           <Text style={[styles.toggleTexto, modo === 'lista' && styles.toggleTextoAtivo]}>Lista</Text>
         </Pressable>
         <Pressable
           style={[styles.toggleBotao, modo === 'mapa' && styles.toggleBotaoAtivo]}
           onPress={() => setModo('mapa')}
         >
+          <MaterialCommunityIcons
+            name="map-marker-radius-outline"
+            size={16}
+            color={modo === 'mapa' ? cores.primaria : cores.textoSecundario}
+          />
           <Text style={[styles.toggleTexto, modo === 'mapa' && styles.toggleTextoAtivo]}>Mapa</Text>
         </Pressable>
       </View>
 
       {query.isLoading && (
         <View style={styles.centro}>
-          <ActivityIndicator size="large" color="#2563eb" />
+          <ActivityIndicator size="large" color={cores.primaria} />
         </View>
       )}
 
@@ -204,24 +226,47 @@ function PontoVendaCard({
   onPress: () => void;
 }) {
   const endereco = [pontoVenda.bairro, pontoVenda.cidade].filter(Boolean).join(' · ');
+  // Contexto de negócio rápido, sem precisar abrir o PDV — docs/26-MELHORIAS-PRODUTIVIDADE-PROMOTOR.md
+  // §2 itens 2/3: rede/ramo já vinham no endpoint, só não apareciam na lista; checkouts é sinal
+  // indireto de porte da loja (quanto tempo a visita deve levar).
+  const contexto = [
+    pontoVenda.rede_loja?.descricao,
+    pontoVenda.ramo_atividade?.descricao,
+    pontoVenda.numero_checkouts ? `${pontoVenda.numero_checkouts} checkouts` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   // Usa a cor do tipo de visita quando definida — mesma tag colorida do admin web, ver
   // docs/10-AGENDA-VISITA.md. Sem tipo, cai no amarelo padrão de "Pendência".
   const corBadge = pendencia?.tipo_visita?.cor;
 
   return (
     <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressionado]} onPress={onPress}>
-      <View style={styles.cardTopo}>
-        <Text style={styles.cardFantasia}>{pontoVenda.fantasia}</Text>
-        {pendencia && (
-          <View style={[styles.badgePendencia, corBadge ? { backgroundColor: corBadge } : null]}>
-            <Text style={[styles.badgePendenciaTexto, corBadge ? { color: '#ffffff' } : null]}>
-              {pendencia.tipo_visita?.descricao ?? 'Pendência'}
-            </Text>
+      <View style={styles.cardIcone}>
+        <MaterialCommunityIcons name="storefront-outline" size={22} color={cores.primaria} />
+      </View>
+      <View style={styles.cardConteudo}>
+        <View style={styles.cardTopo}>
+          <Text style={styles.cardFantasia}>{pontoVenda.fantasia}</Text>
+          {pendencia && (
+            <View style={[styles.badgePendencia, corBadge ? { backgroundColor: corBadge } : null]}>
+              <Text style={[styles.badgePendenciaTexto, corBadge ? { color: cores.branco } : null]}>
+                {pendencia.tipo_visita?.descricao ?? 'Pendência'}
+              </Text>
+            </View>
+          )}
+        </View>
+        <Text style={styles.cardRazaoSocial}>{pontoVenda.razao_social}</Text>
+        {!!endereco && <Text style={styles.cardEndereco}>{endereco}</Text>}
+        {!!contexto && <Text style={styles.cardContexto}>{contexto}</Text>}
+        {pontoVenda.tem_contrato_ativo && (
+          <View style={styles.badgeContrato}>
+            <MaterialCommunityIcons name="handshake-outline" size={12} color={cores.primaria} />
+            <Text style={styles.badgeContratoTexto}>Comodato ativo</Text>
           </View>
         )}
       </View>
-      <Text style={styles.cardRazaoSocial}>{pontoVenda.razao_social}</Text>
-      {!!endereco && <Text style={styles.cardEndereco}>{endereco}</Text>}
+      <MaterialCommunityIcons name="chevron-right" size={22} color={cores.textoTerciario} />
     </Pressable>
   );
 }
@@ -229,56 +274,64 @@ function PontoVendaCard({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: cores.fundo,
   },
   banner: {
-    backgroundColor: '#eff6ff',
+    backgroundColor: cores.primariaClara,
     borderBottomWidth: 1,
-    borderBottomColor: '#bfdbfe',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    borderBottomColor: cores.primariaBorda,
+    paddingHorizontal: espaco.lg,
+    paddingVertical: espaco.md,
     minHeight: 48,
     justifyContent: 'center',
   },
   bannerPressionado: {
-    backgroundColor: '#dbeafe',
+    backgroundColor: cores.primariaMedia,
   },
   bannerTexto: {
-    color: '#1d4ed8',
+    color: cores.primariaEscura,
     fontSize: 14,
     fontWeight: '600',
   },
-  busca: {
-    marginHorizontal: 16,
-    marginTop: 16,
+  buscaContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.sm,
+    marginHorizontal: espaco.lg,
+    marginTop: espaco.lg,
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    paddingHorizontal: 16,
+    borderColor: cores.borda,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.md,
     minHeight: 48,
+    backgroundColor: cores.fundoCard,
+  },
+  busca: {
+    flex: 1,
     fontSize: 16,
-    backgroundColor: '#ffffff',
-    color: '#111827',
+    color: cores.texto,
   },
   toggleRow: {
     flexDirection: 'row',
-    marginHorizontal: 16,
-    marginTop: 12,
-    backgroundColor: '#f3f4f6',
-    borderRadius: 10,
+    marginHorizontal: espaco.lg,
+    marginTop: espaco.md,
+    backgroundColor: neutro[100],
+    borderRadius: raio.md,
     padding: 4,
     gap: 4,
   },
   toggleBotao: {
     flex: 1,
+    flexDirection: 'row',
+    gap: 6,
     minHeight: 40,
-    borderRadius: 8,
+    borderRadius: raio.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },
   toggleBotaoAtivo: {
-    backgroundColor: '#ffffff',
-    shadowColor: '#000000',
+    backgroundColor: cores.fundoCard,
+    shadowColor: neutro[900],
     shadowOpacity: 0.08,
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 1 },
@@ -287,93 +340,129 @@ const styles = StyleSheet.create({
   toggleTexto: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#6b7280',
+    color: cores.textoSecundario,
   },
   toggleTextoAtivo: {
-    color: '#111827',
+    color: cores.texto,
   },
   mapa: {
     flex: 1,
-    marginTop: 12,
+    marginTop: espaco.md,
   },
   lista: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 24,
-    gap: 12,
+    paddingHorizontal: espaco.lg,
+    paddingTop: espaco.lg,
+    paddingBottom: espaco.xl,
+    gap: espaco.md,
   },
   card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
+    padding: espaco.md,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: cores.borda,
     minHeight: 48,
+    ...sombraCard,
   },
   cardPressionado: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: neutro[100],
+  },
+  cardIcone: {
+    width: 44,
+    height: 44,
+    borderRadius: raio.md,
+    backgroundColor: cores.primariaClara,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardConteudo: {
+    flex: 1,
   },
   cardTopo: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: espaco.sm,
   },
   cardFantasia: {
+    ...tipografia.destaque,
     flex: 1,
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#111827',
+    fontSize: 16,
+    color: cores.texto,
   },
   badgePendencia: {
-    backgroundColor: '#fef3c7',
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    backgroundColor: cores.acentoMedio,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 3,
   },
   badgePendenciaTexto: {
-    color: '#92400e',
+    color: cores.acentoTexto,
     fontSize: 11,
     fontWeight: '700',
   },
   cardRazaoSocial: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 2,
   },
   cardEndereco: {
     fontSize: 13,
-    color: '#9ca3af',
-    marginTop: 6,
+    color: cores.textoTerciario,
+    marginTop: espaco.xs,
+  },
+  cardContexto: {
+    fontSize: 12,
+    color: cores.textoTerciario,
+    marginTop: espaco.xs,
+  },
+  badgeContrato: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    backgroundColor: cores.primariaClara,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
+    paddingVertical: 2,
+    marginTop: espaco.xs,
+  },
+  badgeContratoTexto: {
+    color: cores.primariaEscura,
+    fontSize: 11,
+    fontWeight: '700',
   },
   centro: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 32,
-    paddingTop: 48,
+    paddingHorizontal: espaco.xxl,
+    paddingTop: espaco.xxl * 1.5,
   },
   erroTexto: {
     fontSize: 15,
-    color: '#b91c1c',
+    color: cores.erro,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: espaco.lg,
   },
   vazioTexto: {
     fontSize: 15,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     textAlign: 'center',
   },
   botaoRetry: {
-    backgroundColor: '#2563eb',
-    borderRadius: 10,
-    paddingHorizontal: 20,
+    backgroundColor: cores.primaria,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.xl,
     minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
   botaoRetryTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontWeight: '700',
     fontSize: 15,
   },

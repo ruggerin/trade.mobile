@@ -69,6 +69,16 @@ export async function buscarCancelamentoRegistroPermitido(): Promise<boolean> {
   return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
 }
 
+// Se o promotor pode cancelar (anular) a própria visita em andamento — ver
+// App\Support\CancelamentoVisita. Ausente/inativo = false (default conservador, mesmo
+// raciocínio de buscarCancelamentoRegistroPermitido acima).
+export async function buscarCancelamentoVisitaPermitido(): Promise<boolean> {
+  const parametros = await buscarParametros();
+  const parametro = parametros.find((p) => p.chave === 'VISITA_CANCELAMENTO_PERMITIDO');
+  if (!parametro || !parametro.ativo) return false;
+  return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
+}
+
 async function lerAutonomia(chave: string, valorPadrao: AutonomiaPromotor): Promise<AutonomiaPromotor> {
   const parametros = await buscarParametros();
   const parametro = parametros.find((p) => p.chave === chave);
@@ -89,4 +99,16 @@ async function buscarParametros(): Promise<ParametroApi[]> {
     if (!ehErroDeRede(err)) throw err;
     return lerParametrosCache();
   }
+}
+
+// Rastreamento em tempo real (docs/11-RASTREAMENTO-TEMPO-REAL.md) — 0 (ausente/inativo/inválido)
+// = a empresa não habilitou; >0 = intervalo pedido pela empresa, em segundos. Só o app aplica um
+// piso próprio por cima (ver lib/rastreamento.ts), nunca deixa a empresa pedir algo agressivo
+// demais pra bateria.
+export async function buscarIntervaloRastreamentoSegundos(): Promise<number> {
+  const parametros = await buscarParametros();
+  const parametro = parametros.find((p) => p.chave === 'RASTREAMENTO_INTERVALO_SEGUNDOS');
+  if (!parametro || !parametro.ativo) return 0;
+  const valor = Number(parametro.valor);
+  return Number.isFinite(valor) && valor > 0 ? valor : 0;
 }

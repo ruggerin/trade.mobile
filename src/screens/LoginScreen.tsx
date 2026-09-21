@@ -1,7 +1,7 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -13,6 +13,7 @@ import {
 import axios from 'axios';
 import { useAuth } from '../lib/auth/AuthContext';
 import { credenciaisStorage } from '../lib/auth/credentialsStorage';
+import { cores, espaco, raio, sombraFlutuante, tipografia } from '../theme';
 
 // docs/05-APP-MOBILE-UX.md §3.2 — campo e-mail, campo senha (toggle mostrar/ocultar), botão
 // "Entrar", estados padrão/carregando/erro inline/sem conexão.
@@ -82,6 +83,9 @@ export function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.conteudo}>
+        <View style={styles.logoBadge}>
+          <MaterialCommunityIcons name="storefront" size={32} color={cores.primaria} />
+        </View>
         <Text style={styles.titulo}>PDV App</Text>
         <Text style={styles.subtitulo}>Entre com sua conta de promotor</Text>
 
@@ -101,7 +105,7 @@ export function LoginScreen() {
           keyboardType="email-address"
           editable={!carregando}
           placeholder="voce@empresa.com.br"
-          placeholderTextColor="#9ca3af"
+          placeholderTextColor={cores.textoTerciario}
         />
 
         <Text style={styles.label}>Senha</Text>
@@ -113,7 +117,7 @@ export function LoginScreen() {
             secureTextEntry={!mostrarSenha}
             editable={!carregando}
             placeholder="Sua senha"
-            placeholderTextColor="#9ca3af"
+            placeholderTextColor={cores.textoTerciario}
           />
           <Pressable
             onPress={() => setMostrarSenha((v) => !v)}
@@ -142,7 +146,7 @@ export function LoginScreen() {
           disabled={carregando}
         >
           {carregando ? (
-            <ActivityIndicator color="#ffffff" />
+            <ActivityIndicator color={cores.onPrimaria} />
           ) : (
             <Text style={styles.botaoTexto}>Entrar</Text>
           )}
@@ -155,122 +159,137 @@ export function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: cores.fundoCard,
   },
   conteudo: {
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: espaco.xl,
+  },
+  logoBadge: {
+    width: 64,
+    height: 64,
+    borderRadius: raio.lg,
+    backgroundColor: cores.primariaClara,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    marginBottom: espaco.lg,
   },
   titulo: {
-    fontSize: 32,
-    fontWeight: '700',
-    color: '#111827',
+    ...tipografia.tituloGrande,
+    fontSize: 30,
+    color: cores.texto,
     textAlign: 'center',
   },
   subtitulo: {
     fontSize: 16,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 32,
+    marginTop: espaco.xs,
+    marginBottom: espaco.xl,
   },
   label: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#374151',
+    color: cores.texto,
     marginBottom: 6,
-    marginTop: 16,
+    marginTop: espaco.lg,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    paddingHorizontal: 16,
+    borderColor: cores.borda,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.lg,
     paddingVertical: 14,
     fontSize: 16,
-    color: '#111827',
+    color: cores.texto,
     minHeight: 48,
+    backgroundColor: cores.fundoCard,
   },
   senhaContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
+    borderColor: cores.borda,
+    borderRadius: raio.md,
     minHeight: 48,
+    backgroundColor: cores.fundoCard,
   },
   senhaInput: {
     flex: 1,
-    paddingHorizontal: 16,
+    paddingHorizontal: espaco.lg,
     paddingVertical: 14,
     fontSize: 16,
-    color: '#111827',
+    color: cores.texto,
   },
   toggleSenha: {
-    paddingHorizontal: 16,
+    paddingHorizontal: espaco.lg,
     minHeight: 48,
     justifyContent: 'center',
   },
   toggleSenhaTexto: {
-    color: '#2563eb',
+    color: cores.primaria,
     fontWeight: '600',
     fontSize: 14,
   },
   lembrarLinha: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 20,
+    marginTop: espaco.lg,
   },
   checkbox: {
     width: 20,
     height: 20,
-    borderRadius: 5,
+    borderRadius: 6,
     borderWidth: 1.5,
-    borderColor: '#d1d5db',
+    borderColor: cores.borda,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 10,
   },
   checkboxMarcado: {
-    backgroundColor: '#2563eb',
-    borderColor: '#2563eb',
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
   },
   checkboxMarca: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontSize: 13,
     fontWeight: '700',
   },
   lembrarTexto: {
     fontSize: 14,
-    color: '#374151',
+    color: cores.texto,
   },
   botao: {
-    backgroundColor: '#2563eb',
-    borderRadius: 10,
+    backgroundColor: cores.primaria,
+    borderRadius: raio.md,
     minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 28,
+    marginTop: espaco.xl,
+    ...sombraFlutuante,
+    shadowColor: cores.primaria,
+    shadowOpacity: 0.3,
   },
   botaoPressionado: {
-    opacity: 0.8,
+    opacity: 0.85,
   },
   botaoTexto: {
-    color: '#ffffff',
+    ...tipografia.botao,
+    color: cores.onPrimaria,
     fontSize: 17,
-    fontWeight: '700',
   },
   erroBox: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: cores.erroFundo,
     borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
+    borderColor: cores.erroBorda,
+    borderRadius: raio.md,
+    padding: espaco.md,
+    marginBottom: espaco.sm,
   },
   erroTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 14,
   },
 });

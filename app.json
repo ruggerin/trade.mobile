@@ -10,7 +10,11 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Usamos sua localização pra confirmar que você está no ponto de venda na hora do check-in.",
-        "NSCameraUsageDescription": "Usamos a câmera pra registrar fotos dos produtos durante a visita."
+        "NSCameraUsageDescription": "Usamos a câmera pra registrar fotos dos produtos durante a visita.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Usamos sua localização, mesmo com o app fechado, pra que seu gestor acompanhe sua rota durante o expediente.",
+        "UIBackgroundModes": [
+          "location"
+        ]
       }
     },
     "android": {
@@ -26,8 +30,16 @@
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.RECORD_AUDIO"
-      ]
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCAGRBHV_NZtYwx852vM7zgQHjIEBwYEm0"
+        }
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -37,7 +49,10 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Usamos sua localização pra confirmar que você está no ponto de venda na hora do check-in."
+          "locationWhenInUsePermission": "Usamos sua localização pra confirmar que você está no ponto de venda na hora do check-in.",
+          "locationAlwaysAndWhenInUsePermission": "Usamos sua localização, mesmo com o app fechado, pra que seu gestor acompanhe sua rota durante o expediente.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
       [

@@ -1,11 +1,11 @@
 import type { PontoVenda } from '../../types/api';
-import { getDatabase } from './database';
+import { getDatabase, comTransacao } from './database';
 
 export async function salvarPontosVendaCache(pontosVenda: PontoVenda[]): Promise<void> {
   const db = await getDatabase();
   const agora = new Date().toISOString();
 
-  await db.withTransactionAsync(async () => {
+  await comTransacao(db, async () => {
     // Substitui o cache inteiro (não faz merge incremental) — o app só busca a lista completa
     // do promotor de uma vez (sem paginação hoje), então "o que veio agora" já é a verdade
     // inteira; manter uma loja antiga que saiu da resposta seria mostrar algo desatualizado.

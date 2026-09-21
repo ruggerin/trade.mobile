@@ -27,6 +27,33 @@ import * as SQLite from 'expo-sqlite';
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
+/**
+ * Fila única de ESCRITAS no SQLite. O expo-sqlite tem UMA conexão e `withTransactionAsync` não
+ * isola nada: qualquer instrução que outra parte do app dispare enquanto uma transação está aberta
+ * entra NA MESMA transação — e some se ela der ROLLBACK. Era isso que fazia a visita recém-criada
+ * (INSERT na fila) desaparecer sem ninguém apagar: o cache de leitura (pontos de venda, ordens de
+ * serviço, parâmetros…) gravava em transação ao mesmo tempo, falhava e o rollback levava junto o
+ * INSERT da visita. Agora toda transação de cache e toda escrita da fila passam por aqui, uma de
+ * cada vez.
+ */
+let filaDeEscritas: Promise<unknown> = Promise.resolve();
+
+export function serializarDb<T>(fn: () => Promise<T>): Promise<T> {
+  const execucao = filaDeEscritas.then(fn);
+  filaDeEscritas = execucao.catch(() => undefined);
+  return execucao;
+}
+
+/** Transação de cache que nunca se mistura com outra escrita (ver serializarDb). */
+export function comTransacao(db: SQLite.SQLiteDatabase, fn: () => Promise<void>): Promise<void> {
+  return serializarDb(() => db.withTransactionAsync(fn));
+}
+
+/** Escrita avulsa (INSERT/UPDATE/DELETE) na mesma fila das transações — usada pela fila de envio. */
+export function escrever(sql: string, params: SQLite.SQLiteBindParams = []): Promise<SQLite.SQLiteRunResult> {
+  return serializarDb(async () => (await getDatabase()).runAsync(sql, params));
+}
+
 export function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
     dbPromise = abrirEMigrar();
@@ -76,6 +103,19 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       id TEXT PRIMARY KEY NOT NULL,
       dados TEXT NOT NULL,
       atualizado_em TEXT NOT NULL
+    );
+
+    -- Checklist já resolvido de um campo SORTIMENTO pra um PDV (ver lib/api/campoSortimento.ts)
+    -- — docs/26-MELHORIAS-PRODUTIVIDADE-PROMOTOR.md §6 item 12: antes esse campo dependia sempre
+    -- de rede ("sem cache local"), o que quebrava a promessa de offline-first bem no meio do
+    -- formulário se o promotor estivesse sem sinal dentro da loja. Chave composta (campo × PDV)
+    -- porque o mesmo campo resolve produtos diferentes conforme o PDV (sortimento real da loja).
+    CREATE TABLE IF NOT EXISTS sortimento_campo_cache (
+      campo_uuid TEXT NOT NULL,
+      ponto_venda_id TEXT NOT NULL,
+      dados TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL,
+      PRIMARY KEY (campo_uuid, ponto_venda_id)
     );
 
     CREATE TABLE IF NOT EXISTS ordens_servico (
@@ -141,10 +181,13 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     );
 
     -- Um registro (foto/ruptura/observação) criado durante uma visita que ainda está em
-    -- fila_visitas. 'imagem_local_path' é uma cópia persistente do arquivo (expo-file-system) —
-    -- nunca a uri transitória do image picker, que o SO pode limpar antes da fila conseguir
-    -- enviar num dia inteiro sem sinal. status: PENDENTE → ENVIADO | ERRO | DESCARTADO
-    -- (DESCARTADO só acontece quando a visita-mãe é REJEITADA, ver filaEnvio.ts).
+    -- fila_visitas. 'imagens_locais_json' é um array JSON de cópias persistentes dos arquivos
+    -- (expo-file-system) — nunca a uri transitória do image picker, que o SO pode limpar antes
+    -- da fila conseguir enviar num dia inteiro sem sinal. 'imagem_local_path' é a coluna antiga
+    -- (1 foto só), mantida sem uso em INSERTs novos — só como fallback de leitura pra uma linha
+    -- que já estava na fila (não sincronizada ainda) no momento em que o app atualizou pra N
+    -- fotos, ver paraRegistroLocal em filaRegistros.ts. status: PENDENTE → ENVIADO | ERRO |
+    -- DESCARTADO (DESCARTADO só acontece quando a visita-mãe é REJEITADA, ver filaEnvio.ts).
     CREATE TABLE IF NOT EXISTS fila_registros (
       id TEXT PRIMARY KEY NOT NULL,
       visita_local_id TEXT NOT NULL,
@@ -187,6 +230,12 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     // Coluna já existe — nada a fazer.
   }
 
+  try {
+    await db.execAsync('ALTER TABLE fila_registros ADD COLUMN imagens_locais_json TEXT');
+  } catch {
+    // Coluna já existe — nada a fazer.
+  }
+
   return db;
 }
 
@@ -209,6 +258,7 @@ export async function limparCacheLocal(): Promise<void> {
     DELETE FROM pontos_venda;
     DELETE FROM produtos_disponiveis;
     DELETE FROM sortimento_ponto_venda;
+    DELETE FROM sortimento_campo_cache;
     DELETE FROM tipos_registro;
     DELETE FROM ordens_servico;
     DELETE FROM visitas_historico;
@@ -257,6 +307,7 @@ export async function obterUltimaSincronizacao(): Promise<string | null> {
       UNION ALL SELECT atualizado_em FROM pontos_venda
       UNION ALL SELECT atualizado_em FROM produtos_disponiveis
       UNION ALL SELECT atualizado_em FROM sortimento_ponto_venda
+      UNION ALL SELECT atualizado_em FROM sortimento_campo_cache
       UNION ALL SELECT atualizado_em FROM tipos_registro
       UNION ALL SELECT atualizado_em FROM ordens_servico
       UNION ALL SELECT atualizado_em FROM catalogo_auditoria

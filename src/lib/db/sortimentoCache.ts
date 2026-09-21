@@ -1,11 +1,11 @@
 import type { SortimentoPontoVenda } from '../../types/api';
-import { getDatabase } from './database';
+import { getDatabase, comTransacao } from './database';
 
 export async function salvarSortimentoCache(pontoVendaUuid: string, itens: SortimentoPontoVenda[]): Promise<void> {
   const db = await getDatabase();
   const agora = new Date().toISOString();
 
-  await db.withTransactionAsync(async () => {
+  await comTransacao(db, async () => {
     await db.runAsync('DELETE FROM sortimento_ponto_venda WHERE ponto_venda_id = ?', [pontoVendaUuid]);
     for (const item of itens) {
       await db.runAsync(

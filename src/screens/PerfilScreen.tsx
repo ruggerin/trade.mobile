@@ -1,19 +1,101 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useIsFocused } from '@react-navigation/native';
+import { ActivityIndicator, Alert, Image, Linking, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
+import { useRastreamento } from '../lib/useRastreamento';
+import { atualizarFotoPerfil, removerFotoPerfil } from '../lib/api/perfil';
 import { useAuth } from '../lib/auth/AuthContext';
 import { obterUltimaSincronizacao } from '../lib/db/database';
 import { processarFilaEnvio } from '../lib/filaEnvio';
 import { sincronizarAgora } from '../lib/sync';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import { listarVisitasLocaisPendentesOuRejeitadas } from '../lib/visitaLocal';
+import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
 
 // docs/05-APP-MOBILE-UX.md §3.8 — nome/e-mail do usuário, empresa (tenant), botão Sair com
 // confirmação, espaço pra versão do app.
 export function PerfilScreen() {
-  const { usuario, logout } = useAuth();
+  const { usuario, token, logout, atualizarUsuario } = useAuth();
   const queryClient = useQueryClient();
   const [ultimaSincronizacao, setUltimaSincronizacao] = useState<string | null>(null);
+
+  // Switch de compartilhar localização (docs/11-RASTREAMENTO-TEMPO-REAL.md) — só PROMOTOR, e só
+  // aparece quando a empresa habilitou o rastreamento (situacao !== INDISPONIVEL).
+  const rastreamento = useRastreamento(usuario?.user_type === 'PROMOTOR', false);
+  const perfilEmFoco = useIsFocused();
+  const { reavaliar: reavaliarRastreamento } = rastreamento;
+  useEffect(() => {
+    // A situação pode ter mudado enquanto outra aba estava em foco (ex.: permissão concedida na
+    // explicação aberta pelo MainTabs) — relê ao voltar pra cá.
+    if (perfilEmFoco) void reavaliarRastreamento();
+  }, [perfilEmFoco, reavaliarRastreamento]);
+  const mostrarRastreamento = usuario?.user_type === 'PROMOTOR' && rastreamento.situacao !== null && rastreamento.situacao !== 'INDISPONIVEL';
+
+  const fotoMutation = useMutation({
+    mutationFn: atualizarFotoPerfil,
+    onSuccess: (usuarioAtualizado) => atualizarUsuario(usuarioAtualizado),
+    onError: () => Alert.alert('Erro', 'Não foi possível salvar a foto agora. Tente de novo.'),
+  });
+
+  const removerFotoMutation = useMutation({
+    mutationFn: removerFotoPerfil,
+    onSuccess: (usuarioAtualizado) => atualizarUsuario(usuarioAtualizado),
+    onError: () => Alert.alert('Erro', 'Não foi possível remover a foto agora. Tente de novo.'),
+  });
+
+  async function capturarFoto(origem: 'camera' | 'galeria') {
+    const permissao =
+      origem === 'camera'
+        ? await ImagePicker.requestCameraPermissionsAsync()
+        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+    if (permissao.status !== 'granted') {
+      Alert.alert(
+        'Permissão necessária',
+        origem === 'camera'
+          ? 'Ative a permissão de câmera nas configurações do sistema pra tirar uma foto.'
+          : 'Ative a permissão de fotos nas configurações do sistema pra escolher da galeria.',
+        [
+          { text: 'Agora não', style: 'cancel' },
+          { text: 'Abrir configurações', onPress: () => void Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+
+    const resultado =
+      origem === 'camera'
+        ? await ImagePicker.launchCameraAsync({ quality: 0.7, allowsEditing: true, aspect: [1, 1] })
+        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.7, allowsEditing: true, aspect: [1, 1] });
+
+    if (resultado.canceled) return;
+    const asset = resultado.assets[0];
+    if (!asset) return;
+
+    fotoMutation.mutate(asset.uri);
+  }
+
+  function escolherFoto() {
+    const opcoes: Parameters<typeof Alert.alert>[2] = [
+      { text: 'Tirar foto', onPress: () => void capturarFoto('camera') },
+      { text: 'Escolher da galeria', onPress: () => void capturarFoto('galeria') },
+    ];
+    if (usuario?.foto_url) {
+      opcoes.push({
+        text: 'Remover foto',
+        style: 'destructive',
+        onPress: () => Alert.alert('Remover foto', 'Tem certeza?', [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Remover', style: 'destructive', onPress: () => removerFotoMutation.mutate() },
+        ]),
+      });
+    }
+    opcoes.push({ text: 'Cancelar', style: 'cancel' });
+    Alert.alert('Foto de perfil', undefined, opcoes);
+  }
 
   // Lê a última sincronização já registrada no cache local assim que a tela abre — sem isso, o
   // promotor não tem como saber se já sincronizou hoje sem apertar o botão de novo.
@@ -92,19 +174,70 @@ export function PerfilScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.avatar}>
-        <Text style={styles.avatarTexto}>{usuario?.nome?.charAt(0).toUpperCase() ?? '?'}</Text>
-      </View>
+      <Pressable
+        onPress={escolherFoto}
+        disabled={fotoMutation.isPending || removerFotoMutation.isPending}
+        style={({ pressed }) => [styles.avatarToque, pressed && { opacity: 0.7 }]}
+      >
+        {usuario?.foto_url ? (
+          // Sempre a nossa própria API (ver Usuario.foto_url) — o header de autenticação nunca
+          // vaza pra um host externo, diferente de avatar_url (que pode ser qualquer URL).
+          <Image source={{ uri: usuario.foto_url, headers: { Authorization: `Bearer ${token}` } }} style={styles.avatar} />
+        ) : (
+          <View style={[styles.avatar, styles.avatarSemFoto]}>
+            <Text style={styles.avatarTexto}>{usuario?.nome?.charAt(0).toUpperCase() ?? '?'}</Text>
+          </View>
+        )}
+        <View style={styles.avatarEditarBadge}>
+          {fotoMutation.isPending || removerFotoMutation.isPending ? (
+            <ActivityIndicator size="small" color={cores.onPrimaria} />
+          ) : (
+            <MaterialCommunityIcons name="pencil" size={13} color={cores.onPrimaria} />
+          )}
+        </View>
+      </Pressable>
 
       <Text style={styles.nome}>{usuario?.nome}</Text>
       <Text style={styles.email}>{usuario?.email}</Text>
 
       {usuario?.empresa && (
         <View style={styles.empresaBox}>
-          <Text style={styles.empresaLabel}>Empresa</Text>
-          <Text style={styles.empresaNome}>{usuario.empresa.nome_fantasia}</Text>
+          <MaterialCommunityIcons name="domain" size={20} color={cores.primaria} />
+          <View>
+            <Text style={styles.empresaLabel}>Empresa</Text>
+            <Text style={styles.empresaNome}>{usuario.empresa.nome_fantasia}</Text>
+          </View>
         </View>
       )}
+
+      {mostrarRastreamento && (
+        <View style={styles.rastreamentoBox}>
+          <View style={styles.rastreamentoTextos}>
+            <Text style={styles.rastreamentoTitulo}>Compartilhar minha localização</Text>
+            <Text style={styles.rastreamentoDescricao}>
+              {rastreamento.situacao === 'ATIVO'
+                ? 'Ativo — seu gestor vê sua posição durante o expediente.'
+                : rastreamento.situacao === 'DESLIGADO_PELO_PROMOTOR'
+                  ? 'Pausado por você.'
+                  : rastreamento.situacao === 'PERMISSAO_RECUSADA'
+                    ? 'Precisa da permissão de localização "o tempo todo".'
+                    : 'Aguardando permissão de localização.'}
+            </Text>
+          </View>
+          <Switch
+            value={rastreamento.situacao === 'ATIVO' || rastreamento.situacao === 'PRECISA_PERMISSAO'}
+            onValueChange={(ligado) => void rastreamento.alternar(ligado)}
+            trackColor={{ true: cores.primaria }}
+          />
+        </View>
+      )}
+
+      <PermissaoRastreamentoModal
+        visible={rastreamento.explicando}
+        enviando={rastreamento.pedindo}
+        onPermitir={() => void rastreamento.permitir()}
+        onAgoraNao={() => void rastreamento.agoraNao()}
+      />
 
       <View style={styles.syncBox}>
         <Pressable
@@ -113,9 +246,12 @@ export function PerfilScreen() {
           disabled={sincronizarMutation.isPending}
         >
           {sincronizarMutation.isPending ? (
-            <ActivityIndicator color="#2563eb" />
+            <ActivityIndicator color={cores.primaria} />
           ) : (
-            <Text style={styles.botaoSyncTexto}>Sincronizar agora</Text>
+            <>
+              <MaterialCommunityIcons name="sync" size={18} color={cores.primaria} />
+              <Text style={styles.botaoSyncTexto}>Sincronizar agora</Text>
+            </>
           )}
         </Pressable>
         <Text style={styles.syncTexto}>
@@ -127,7 +263,10 @@ export function PerfilScreen() {
 
       {(pendentes.length > 0 || rejeitadas.length > 0) && (
         <View style={styles.filaBox}>
-          <Text style={styles.filaTitulo}>Fila de envio</Text>
+          <View style={styles.filaTituloLinha}>
+            <MaterialCommunityIcons name="tray-full" size={16} color={cores.acentoTexto} />
+            <Text style={styles.filaTitulo}>Fila de envio</Text>
+          </View>
           {pendentes.length > 0 && (
             <Text style={styles.filaTexto}>
               {pendentes.length} visita(s) aguardando envio pro servidor.
@@ -144,7 +283,7 @@ export function PerfilScreen() {
             disabled={enviarFilaMutation.isPending}
           >
             {enviarFilaMutation.isPending ? (
-              <ActivityIndicator color="#2563eb" />
+              <ActivityIndicator color={cores.primaria} />
             ) : (
               <Text style={styles.botaoFilaTexto}>Tentar enviar agora</Text>
             )}
@@ -156,6 +295,7 @@ export function PerfilScreen() {
         style={({ pressed }) => [styles.botaoSair, pressed && styles.botaoSairPressionado]}
         onPress={confirmarSaida}
       >
+        <MaterialCommunityIcons name="logout" size={18} color={cores.erro} />
         <Text style={styles.botaoSairTexto}>Sair</Text>
       </Pressable>
 
@@ -168,146 +308,187 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     alignItems: 'center',
-    paddingTop: 48,
-    paddingHorizontal: 24,
-    backgroundColor: '#ffffff',
+    paddingTop: espaco.xxl * 1.5,
+    paddingHorizontal: espaco.xl,
+    backgroundColor: cores.fundoCard,
+  },
+  avatarToque: {
+    marginBottom: espaco.lg,
   },
   avatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#2563eb',
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+  },
+  avatarSemFoto: {
+    backgroundColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
   },
   avatarTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontSize: 28,
     fontWeight: '700',
   },
+  avatarEditarBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 28,
+    height: 28,
+    borderRadius: raio.pill,
+    backgroundColor: cores.primaria,
+    borderWidth: 2,
+    borderColor: cores.fundoCard,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   nome: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#111827',
+    ...tipografia.titulo,
+    color: cores.texto,
   },
   email: {
     fontSize: 15,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 4,
   },
   empresaBox: {
-    marginTop: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    marginTop: espaco.xl,
     width: '100%',
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: cores.fundo,
+    borderRadius: raio.lg,
+    padding: espaco.lg,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: cores.borda,
   },
   empresaLabel: {
     fontSize: 12,
-    color: '#9ca3af',
+    color: cores.textoTerciario,
     textTransform: 'uppercase',
     fontWeight: '600',
   },
   empresaNome: {
     fontSize: 16,
-    color: '#111827',
+    color: cores.texto,
     fontWeight: '600',
-    marginTop: 4,
+    marginTop: 2,
   },
+  rastreamentoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    marginTop: espaco.lg,
+    width: '100%',
+    backgroundColor: cores.fundo,
+    borderRadius: raio.lg,
+    padding: espaco.lg,
+    borderWidth: 1,
+    borderColor: cores.borda,
+  },
+  rastreamentoTextos: { flex: 1 },
+  rastreamentoTitulo: { fontSize: 15, fontWeight: '700', color: cores.texto },
+  rastreamentoDescricao: { fontSize: 12, color: cores.textoSecundario, marginTop: 2 },
   syncBox: {
-    marginTop: 24,
+    marginTop: espaco.xl,
     width: '100%',
     alignItems: 'center',
   },
   botaoSync: {
+    flexDirection: 'row',
+    gap: espaco.sm,
     width: '100%',
     minHeight: 52,
-    borderRadius: 10,
+    borderRadius: raio.md,
     borderWidth: 1,
-    borderColor: '#2563eb',
+    borderColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
   },
   botaoPressionado: {
-    backgroundColor: '#eff6ff',
+    backgroundColor: cores.primariaClara,
   },
   botaoSyncTexto: {
-    color: '#2563eb',
+    color: cores.primaria,
     fontSize: 16,
     fontWeight: '700',
   },
   syncTexto: {
-    marginTop: 8,
+    marginTop: espaco.sm,
     fontSize: 12,
-    color: '#9ca3af',
+    color: cores.textoTerciario,
     textAlign: 'center',
   },
   filaBox: {
-    marginTop: 16,
+    marginTop: espaco.lg,
     width: '100%',
-    backgroundColor: '#fffbeb',
+    backgroundColor: cores.acentoClaro,
     borderWidth: 1,
-    borderColor: '#fde68a',
-    borderRadius: 12,
-    padding: 16,
+    borderColor: cores.acentoBorda,
+    borderRadius: raio.lg,
+    padding: espaco.lg,
+  },
+  filaTituloLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.xs,
   },
   filaTitulo: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#92400e',
-    textTransform: 'uppercase',
+    ...tipografia.rotulo,
+    color: cores.acentoTexto,
   },
   filaTexto: {
     fontSize: 13,
-    color: '#92400e',
-    marginTop: 6,
+    color: cores.acentoTexto,
+    marginTop: espaco.xs,
   },
   filaTextoErro: {
     fontSize: 13,
-    color: '#b91c1c',
-    marginTop: 6,
+    color: cores.erro,
+    marginTop: espaco.xs,
     fontWeight: '600',
   },
   botaoFila: {
-    marginTop: 12,
+    marginTop: espaco.md,
     minHeight: 44,
-    borderRadius: 10,
+    borderRadius: raio.md,
     borderWidth: 1,
-    borderColor: '#2563eb',
+    borderColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#ffffff',
+    backgroundColor: cores.fundoCard,
   },
   botaoFilaTexto: {
-    color: '#2563eb',
+    color: cores.primaria,
     fontSize: 14,
     fontWeight: '700',
   },
   botaoSair: {
-    marginTop: 40,
+    flexDirection: 'row',
+    gap: espaco.sm,
+    marginTop: espaco.xxl,
     width: '100%',
     minHeight: 52,
-    borderRadius: 10,
+    borderRadius: raio.md,
     borderWidth: 1,
-    borderColor: '#fecaca',
+    borderColor: cores.erroBorda,
     alignItems: 'center',
     justifyContent: 'center',
   },
   botaoSairPressionado: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: cores.erroFundo,
   },
   botaoSairTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 16,
     fontWeight: '700',
   },
   versao: {
     marginTop: 'auto',
-    marginBottom: 24,
+    marginBottom: espaco.xl,
     fontSize: 12,
-    color: '#d1d5db',
+    color: cores.bordaForte,
   },
 });

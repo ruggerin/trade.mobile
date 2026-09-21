@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import type { PontoVenda } from '../../types/api';
 import { gerarUuidLocal } from '../uuid';
-import { getDatabase } from './database';
+import { getDatabase, escrever } from './database';
 import { excluirRegistrosDaVisita, listarRegistrosLocais } from './filaRegistros';
 
 /**
@@ -90,7 +90,7 @@ export async function criarVisitaLocal(dados: NovaVisitaLocal): Promise<VisitaLo
   const agora = new Date().toISOString();
   const id = gerarUuidLocal();
 
-  await db.runAsync(
+  await escrever(
     `INSERT INTO fila_visitas (
       id, usuario_id, servidor_id, status, ponto_venda_id, ponto_venda_json, ordem_servico_id,
       latitude_inicio, longitude_inicio, inicio_em, latitude_fim, longitude_fim, fim_em, erro,
@@ -170,7 +170,7 @@ export async function listarVisitasLocaisPendentesOuRejeitadas(usuarioId: string
  */
 export async function marcarCheckinEnviado(id: string, servidorId: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync(
+  await escrever(
     `UPDATE fila_visitas
      SET status = CASE WHEN status = 'RASCUNHO' THEN 'CHECKIN_ENVIADO' ELSE status END,
          servidor_id = ?, erro = NULL, atualizado_em = ?
@@ -181,7 +181,7 @@ export async function marcarCheckinEnviado(id: string, servidorId: string): Prom
 
 export async function marcarVisitaRejeitada(id: string, erro: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync(`UPDATE fila_visitas SET status = 'REJEITADA', erro = ?, atualizado_em = ? WHERE id = ?`, [
+  await escrever(`UPDATE fila_visitas SET status = 'REJEITADA', erro = ?, atualizado_em = ? WHERE id = ?`, [
     erro,
     new Date().toISOString(),
     id,
@@ -196,17 +196,34 @@ export async function marcarVisitaRejeitada(id: string, erro: string): Promise<v
  */
 export async function atualizarErroVisita(id: string, erro: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync(`UPDATE fila_visitas SET erro = ?, atualizado_em = ? WHERE id = ?`, [
+  await escrever(`UPDATE fila_visitas SET erro = ?, atualizado_em = ? WHERE id = ?`, [
     erro,
     new Date().toISOString(),
     id,
   ]);
 }
 
+/**
+ * Desfaz o "finalizar" local: FINALIZADA_LOCAL volta a CHECKIN_ENVIADO (ou RASCUNHO, se o check-in
+ * nunca chegou no servidor) e limpa o checkout gravado. É a saída quando o servidor recusa o
+ * checkout de forma permanente (ex.: formulário obrigatório de Direcionamento pendente) — sem
+ * isso a visita ficava presa em FINALIZADA_LOCAL reenviando o mesmo checkout recusado pra sempre.
+ */
+export async function reabrirVisitaLocal(id: string): Promise<void> {
+  const db = await getDatabase();
+  await escrever(
+    `UPDATE fila_visitas
+     SET status = CASE WHEN servidor_id IS NULL THEN 'RASCUNHO' ELSE 'CHECKIN_ENVIADO' END,
+         latitude_fim = NULL, longitude_fim = NULL, fim_em = NULL, erro = NULL, atualizado_em = ?
+     WHERE id = ? AND status = 'FINALIZADA_LOCAL'`,
+    [new Date().toISOString(), id],
+  );
+}
+
 export async function finalizarVisitaLocal(id: string, latitude: number, longitude: number): Promise<void> {
   const db = await getDatabase();
   const agora = new Date().toISOString();
-  await db.runAsync(
+  await escrever(
     `UPDATE fila_visitas SET status = 'FINALIZADA_LOCAL', latitude_fim = ?, longitude_fim = ?, fim_em = ?, atualizado_em = ? WHERE id = ?`,
     [latitude, longitude, agora, agora, id],
   );
@@ -218,15 +235,23 @@ export async function finalizarVisitaLocal(id: string, latitude: number, longitu
  * Remove a linha, os registros filhos e qualquer imagem copiada pro disco (ver
  * `lib/db/filaRegistros.ts`) — nunca deixa arquivo órfão ocupando espaço no aparelho.
  */
-export async function excluirVisitaLocalCompleta(id: string): Promise<void> {
+export type MotivoExclusaoVisita =
+  | 'checkout-confirmado'
+  | 'descarte-rejeitada'
+  | 'descarte-forcado'
+  | 'cancelamento-pelo-promotor';
+
+export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclusaoVisita): Promise<void> {
+  // Log pra rastrear "a visita sumiu": sempre diz QUEM apagou a visita do aparelho.
+  console.log(`[fila] visita ${id} removida do aparelho — motivo: ${motivo}`);
   const registros = await listarRegistrosLocais(id);
   for (const registro of registros) {
-    if (registro.imagemLocalPath) {
-      await FileSystem.deleteAsync(registro.imagemLocalPath, { idempotent: true }).catch(() => {});
+    for (const uri of registro.imagensLocais) {
+      await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
     }
   }
   await excluirRegistrosDaVisita(id);
 
   const db = await getDatabase();
-  await db.runAsync('DELETE FROM fila_visitas WHERE id = ?', [id]);
+  await escrever('DELETE FROM fila_visitas WHERE id = ?', [id]);
 }

@@ -1,4 +1,4 @@
-import { getDatabase } from './database';
+import { getDatabase, comTransacao } from './database';
 
 interface ParametroCache {
   chave: string;
@@ -10,7 +10,7 @@ export async function salvarParametrosCache(parametros: ParametroCache[]): Promi
   const db = await getDatabase();
   const agora = new Date().toISOString();
 
-  await db.withTransactionAsync(async () => {
+  await comTransacao(db, async () => {
     // Substitui o cache inteiro (mesmo padrão de pontosVendaCache.ts) — sem isso, uma chave
     // removida da resposta da API ficava presa no cache do aparelho pra sempre, porque um
     // simples upsert nunca remove o que não veio na lista nova.

@@ -1,5 +1,5 @@
 import type { CatalogoItem } from '../../types/api';
-import { getDatabase } from './database';
+import { getDatabase, comTransacao } from './database';
 
 export type TipoCatalogo = 'SECAO' | 'DEPARTAMENTO' | 'MARCA';
 
@@ -7,7 +7,7 @@ export async function salvarCatalogoCache(tipo: TipoCatalogo, itens: CatalogoIte
   const db = await getDatabase();
   const agora = new Date().toISOString();
 
-  await db.withTransactionAsync(async () => {
+  await comTransacao(db, async () => {
     await db.runAsync('DELETE FROM catalogo_auditoria WHERE tipo = ?', [tipo]);
     for (const item of itens) {
       await db.runAsync('INSERT INTO catalogo_auditoria (tipo, id, dados, atualizado_em) VALUES (?, ?, ?, ?)', [

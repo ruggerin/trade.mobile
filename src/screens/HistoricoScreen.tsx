@@ -1,19 +1,27 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { listarMinhasVisitas } from '../lib/api/visitas';
 import { useAuth } from '../lib/auth/AuthContext';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
-import { descartarVisitaRejeitada, listarVisitasLocaisPendentesOuRejeitadas, type VisitaLocal } from '../lib/visitaLocal';
+import { useDescarteVisita } from '../lib/useDescarteVisita';
+import {
+  listarVisitasLocaisPendentesOuRejeitadas,
+  tentarEnviarAgora,
+  type VisitaLocal,
+} from '../lib/visitaLocal';
 import type { HistoricoStackParamList } from '../navigation/HistoricoStack';
 import type { StatusVisita, Visita } from '../types/api';
+import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
 
 type Props = NativeStackScreenProps<HistoricoStackParamList, 'HistoricoLista'>;
+type IconeMdi = keyof typeof MaterialCommunityIcons.glyphMap;
 
-const STATUS_INFO: Record<StatusVisita, { label: string; bg: string; texto: string }> = {
-  ABERTA: { label: 'Aberta', bg: '#eff6ff', texto: '#1d4ed8' },
-  FINALIZADA: { label: 'Finalizada', bg: '#f0fdf4', texto: '#15803d' },
-  CANCELADA: { label: 'Cancelada', bg: '#f3f4f6', texto: '#6b7280' },
+const STATUS_INFO: Record<StatusVisita, { label: string; bg: string; texto: string; icone: IconeMdi }> = {
+  ABERTA: { label: 'Aberta', bg: cores.primariaClara, texto: cores.primariaEscura, icone: 'progress-clock' },
+  FINALIZADA: { label: 'Finalizada', bg: cores.sucessoFundo, texto: cores.sucesso, icone: 'check-circle-outline' },
+  CANCELADA: { label: 'Cancelada', bg: cores.divisor, texto: cores.textoSecundario, icone: 'close-circle-outline' },
 };
 
 // docs/05-APP-MOBILE-UX.md §3.7 — visitas do próprio promotor, mais recentes primeiro. Além da
@@ -36,22 +44,13 @@ export function HistoricoScreen({ navigation }: Props) {
   });
   useAoAtualizarFilaEnvio(() => void queryClient.invalidateQueries({ queryKey: ['visitas-locais-pendentes'] }));
 
-  const descartarMutation = useMutation({
-    mutationFn: (id: string) => descartarVisitaRejeitada(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['visitas-locais-pendentes'] }),
-    onError: () => Alert.alert('Erro', 'Não foi possível descartar esta visita. Tente de novo.'),
-  });
+  // Descarte seguro (cancela no servidor / pede autorização do gestor) — ver lib/useDescarteVisita.tsx.
+  const descarteSeguro = useDescarteVisita();
 
-  function confirmarDescarte(visita: VisitaLocal) {
-    Alert.alert(
-      'Descartar visita',
-      `O check-in em ${visita.pontoVenda.fantasia} foi recusado${visita.erro ? `: ${visita.erro}` : ''}. Os registros feitos (inclusive fotos) serão perdidos. Descartar mesmo assim?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Descartar', style: 'destructive', onPress: () => descartarMutation.mutate(visita.id) },
-      ],
-    );
-  }
+  const tentarMutation = useMutation({
+    mutationFn: () => tentarEnviarAgora(usuario!.id),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['visitas-locais-pendentes'] }),
+  });
 
   const locais = locaisQuery.data ?? [];
   const semNadaAMostrar = locais.length === 0 && query.data?.visitas.length === 0;
@@ -60,7 +59,7 @@ export function HistoricoScreen({ navigation }: Props) {
     <View style={styles.container}>
       {query.isLoading && locais.length === 0 && (
         <View style={styles.centro}>
-          <ActivityIndicator size="large" color="#2563eb" />
+          <ActivityIndicator size="large" color={cores.primaria} />
         </View>
       )}
 
@@ -75,6 +74,7 @@ export function HistoricoScreen({ navigation }: Props) {
 
       {semNadaAMostrar && (
         <View style={styles.centro}>
+          <MaterialCommunityIcons name="clipboard-text-clock-outline" size={40} color={cores.textoTerciario} />
           <Text style={styles.vazioTexto}>Você ainda não fez nenhuma visita.</Text>
         </View>
       )}
@@ -91,8 +91,10 @@ export function HistoricoScreen({ navigation }: Props) {
                 <VisitaLocalCard
                   key={visita.id}
                   visita={visita}
-                  descartando={descartarMutation.isPending}
-                  onDescartar={() => confirmarDescarte(visita)}
+                  descartando={descarteSeguro.ocupado}
+                  tentando={tentarMutation.isPending}
+                  onDescartar={() => descarteSeguro.descartar(visita)}
+                  onTentar={() => tentarMutation.mutate()}
                 />
               ))}
             </View>
@@ -102,47 +104,80 @@ export function HistoricoScreen({ navigation }: Props) {
           <VisitaCard visita={item} onPress={() => navigation.navigate('VisitaDetalhe', { visita: item })} />
         )}
       />
+      {descarteSeguro.elemento}
     </View>
   );
+}
+
+// Em que passo a visita está parada — sem isso o card só dizia "Aguardando envio", sem pista do que
+// travou nem o que fazer.
+function etapaDaVisita(visita: VisitaLocal): string {
+  if (visita.status === 'REJEITADA') return 'Check-in recusado';
+  if (!visita.servidorId) return 'Enviando o check-in';
+  if (visita.status === 'FINALIZADA_LOCAL') return 'Enviando o checkout';
+  return 'Visita em andamento (ainda não finalizada)';
 }
 
 function VisitaLocalCard({
   visita,
   descartando,
+  tentando,
   onDescartar,
+  onTentar,
 }: {
   visita: VisitaLocal;
   descartando: boolean;
+  tentando: boolean;
   onDescartar: () => void;
+  onTentar: () => void;
 }) {
   const rejeitada = visita.status === 'REJEITADA';
 
   return (
     <View style={[styles.card, rejeitada && styles.cardRejeitada]}>
-      <View style={styles.cardTopo}>
-        <Text style={styles.cardPdv} numberOfLines={1}>
-          {visita.pontoVenda.fantasia}
-        </Text>
-        <View style={[styles.badge, { backgroundColor: rejeitada ? '#fef2f2' : '#eff6ff' }]}>
-          <Text style={[styles.badgeTexto, { color: rejeitada ? '#b91c1c' : '#1d4ed8' }]}>
-            {rejeitada ? 'Rejeitada' : 'Aguardando envio'}
+      <View style={styles.cardIcone}>
+        <MaterialCommunityIcons
+          name={rejeitada ? 'alert-circle-outline' : 'cloud-upload-outline'}
+          size={20}
+          color={rejeitada ? cores.erro : cores.primaria}
+        />
+      </View>
+      <View style={styles.cardConteudo}>
+        <View style={styles.cardTopo}>
+          <Text style={styles.cardPdv} numberOfLines={1}>
+            {visita.pontoVenda.fantasia}
           </Text>
+          <View style={[styles.badge, { backgroundColor: rejeitada ? cores.erroFundo : cores.primariaClara }]}>
+            <Text style={[styles.badgeTexto, { color: rejeitada ? cores.erro : cores.primariaEscura }]}>
+              {rejeitada ? 'Rejeitada' : 'Aguardando envio'}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.cardData}>
+          {new Date(visita.inicioEm).toLocaleDateString('pt-BR')} às{' '}
+          {new Date(visita.inicioEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+        </Text>
+        <Text style={styles.cardData}>{etapaDaVisita(visita)}</Text>
+        {!!visita.erro && <Text style={styles.cardErro}>{visita.erro}</Text>}
+        <View style={{ flexDirection: 'row', gap: espaco.sm, flexWrap: 'wrap' }}>
+          {!rejeitada && visita.status !== 'CHECKIN_ENVIADO' && (
+            <Pressable
+              style={[styles.botaoDescartar, (tentando || descartando) && styles.botaoDesabilitado]}
+              onPress={onTentar}
+              disabled={tentando || descartando}
+            >
+              <Text style={styles.botaoDescartarTexto}>{tentando ? 'Enviando...' : 'Tentar enviar agora'}</Text>
+            </Pressable>
+          )}
+          <Pressable
+            style={[styles.botaoDescartar, descartando && styles.botaoDesabilitado]}
+            onPress={onDescartar}
+            disabled={descartando}
+          >
+            <Text style={styles.botaoDescartarTexto}>{descartando ? 'Descartando...' : 'Descartar'}</Text>
+          </Pressable>
         </View>
       </View>
-      <Text style={styles.cardData}>
-        {new Date(visita.inicioEm).toLocaleDateString('pt-BR')} às{' '}
-        {new Date(visita.inicioEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-      </Text>
-      {rejeitada && visita.erro && <Text style={styles.cardErro}>{visita.erro}</Text>}
-      {rejeitada && (
-        <Pressable
-          style={[styles.botaoDescartar, descartando && styles.botaoDesabilitado]}
-          onPress={onDescartar}
-          disabled={descartando}
-        >
-          <Text style={styles.botaoDescartarTexto}>{descartando ? 'Descartando...' : 'Descartar'}</Text>
-        </Pressable>
-      )}
     </View>
   );
 }
@@ -154,21 +189,27 @@ function VisitaCard({ visita, onPress }: { visita: Visita; onPress: () => void }
 
   return (
     <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressionado]} onPress={onPress}>
-      <View style={styles.cardTopo}>
-        <Text style={styles.cardPdv} numberOfLines={1}>
-          {visita.ponto_venda?.fantasia}
-        </Text>
-        <View style={[styles.badge, { backgroundColor: status.bg }]}>
-          <Text style={[styles.badgeTexto, { color: status.texto }]}>{status.label}</Text>
-        </View>
+      <View style={[styles.cardIcone, { backgroundColor: status.bg }]}>
+        <MaterialCommunityIcons name={status.icone} size={20} color={status.texto} />
       </View>
-      <Text style={styles.cardData}>
-        {data.toLocaleDateString('pt-BR')} às{' '}
-        {data.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
-      </Text>
-      <Text style={styles.cardRegistros}>
-        {totalRegistros} registro{totalRegistros === 1 ? '' : 's'}
-      </Text>
+      <View style={styles.cardConteudo}>
+        <View style={styles.cardTopo}>
+          <Text style={styles.cardPdv} numberOfLines={1}>
+            {visita.ponto_venda?.fantasia}
+          </Text>
+          <View style={[styles.badge, { backgroundColor: status.bg }]}>
+            <Text style={[styles.badgeTexto, { color: status.texto }]}>{status.label}</Text>
+          </View>
+        </View>
+        <Text style={styles.cardData}>
+          {data.toLocaleDateString('pt-BR')} às{' '}
+          {data.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+        </Text>
+        <Text style={styles.cardRegistros}>
+          {totalRegistros} registro{totalRegistros === 1 ? '' : 's'}
+        </Text>
+      </View>
+      <MaterialCommunityIcons name="chevron-right" size={22} color={cores.textoTerciario} />
     </Pressable>
   );
 }
@@ -176,85 +217,98 @@ function VisitaCard({ visita, onPress }: { visita: Visita; onPress: () => void }
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: cores.fundo,
   },
   lista: {
-    padding: 16,
-    gap: 12,
+    padding: espaco.lg,
+    gap: espaco.md,
   },
   secaoLocal: {
-    gap: 8,
-    marginBottom: 8,
+    gap: espaco.sm,
+    marginBottom: espaco.sm,
   },
   secaoLocalTitulo: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#6b7280',
-    textTransform: 'uppercase',
+    ...tipografia.rotulo,
+    color: cores.textoSecundario,
     marginBottom: 2,
   },
   card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
+    padding: espaco.md,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: cores.borda,
     minHeight: 48,
-    marginBottom: 12,
+    marginBottom: espaco.md,
+    ...sombraCard,
   },
   cardRejeitada: {
-    borderColor: '#fecaca',
+    borderColor: cores.erroBorda,
   },
   cardPressionado: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: cores.divisor,
+  },
+  cardIcone: {
+    width: 40,
+    height: 40,
+    borderRadius: raio.md,
+    backgroundColor: cores.primariaClara,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardConteudo: {
+    flex: 1,
   },
   cardTopo: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: espaco.sm,
   },
   cardPdv: {
+    ...tipografia.destaque,
     flex: 1,
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#111827',
+    fontSize: 16,
+    color: cores.texto,
   },
   cardData: {
     fontSize: 14,
-    color: '#6b7280',
-    marginTop: 6,
+    color: cores.textoSecundario,
+    marginTop: espaco.xs,
   },
   cardRegistros: {
     fontSize: 13,
-    color: '#9ca3af',
+    color: cores.textoTerciario,
     marginTop: 2,
   },
   cardErro: {
     fontSize: 13,
-    color: '#b91c1c',
-    marginTop: 6,
+    color: cores.erro,
+    marginTop: espaco.xs,
   },
   botaoDescartar: {
-    marginTop: 10,
+    marginTop: espaco.sm,
     alignSelf: 'flex-start',
     minHeight: 36,
-    paddingHorizontal: 14,
+    paddingHorizontal: espaco.md,
     justifyContent: 'center',
-    borderRadius: 8,
-    backgroundColor: '#b91c1c',
+    borderRadius: raio.sm,
+    backgroundColor: cores.erro,
   },
   botaoDesabilitado: {
     opacity: 0.6,
   },
   botaoDescartarTexto: {
-    color: '#ffffff',
+    color: cores.branco,
     fontWeight: '700',
     fontSize: 13,
   },
   badge: {
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 4,
   },
   badgeTexto: {
@@ -265,30 +319,31 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 32,
-    paddingTop: 48,
+    paddingHorizontal: espaco.xxl,
+    paddingTop: espaco.xxl * 1.5,
+    gap: espaco.md,
   },
   erroTexto: {
     fontSize: 15,
-    color: '#b91c1c',
+    color: cores.erro,
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: espaco.lg,
   },
   vazioTexto: {
     fontSize: 15,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     textAlign: 'center',
   },
   botaoRetry: {
-    backgroundColor: '#2563eb',
-    borderRadius: 10,
-    paddingHorizontal: 20,
+    backgroundColor: cores.primaria,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.xl,
     minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
   botaoRetryTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontWeight: '700',
     fontSize: 15,
   },

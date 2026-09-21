@@ -40,3 +40,29 @@ function filtrarLocalmente(pontosVenda: PontoVenda[], busca: string): PontoVenda
       (pdv.bairro?.toLowerCase().includes(termo) ?? false),
   );
 }
+
+// Detalhe de uma loja (traz `contratos_ativos` e a fachada mais recente) — online, sem cache próprio:
+// a aba Dados cadastrais parte do que a lista já tinha e só complementa quando há rede.
+export async function buscarPontoVenda(uuid: string): Promise<PontoVenda> {
+  const { data } = await apiClient.get<{ ponto_venda: PontoVenda }>(`/pontos-venda/${uuid}`);
+  return data.ponto_venda;
+}
+
+// O promotor manda a foto da fachada quando a loja ainda não tem uma — o backend recusa (422) se já
+// existir, então nunca sobrescreve a foto do admin.
+export async function enviarFachadaPromotor(uuid: string, imagemUri: string): Promise<PontoVenda> {
+  const nome = imagemUri.split('/').pop() ?? 'fachada.jpg';
+  const extensao = /\.(\w+)$/.exec(nome)?.[1]?.toLowerCase();
+  const form = new FormData();
+  form.append('imagem', {
+    uri: imagemUri,
+    name: nome,
+    type: `image/${extensao === 'jpg' || !extensao ? 'jpeg' : extensao}`,
+  } as unknown as Blob);
+
+  const { data } = await apiClient.post<{ ponto_venda: PontoVenda }>(`/pontos-venda/${uuid}/fachada-promotor`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 90_000,
+  });
+  return data.ponto_venda;
+}

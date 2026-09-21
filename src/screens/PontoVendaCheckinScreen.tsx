@@ -1,14 +1,21 @@
+import { AbasLoja, type AbaLoja } from '../components/AbasLoja';
+import { AcoesCompromisso } from '../components/AcoesCompromisso';
+import { DadosCadastraisLoja } from '../components/DadosCadastraisLoja';
+import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useRef, useState } from 'react';
-import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import { useAuth } from '../lib/auth/AuthContext';
+import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
 import { buscarRaioCheckinMetros } from '../lib/api/parametros';
 import { calcularDistanciaMetros } from '../lib/location/distancia';
 import { obterLocalizacaoAtual, useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import { iniciarVisitaLocal } from '../lib/visitaLocal';
+import { cores, espaco, neutro, raio as raioUI, sombraFlutuante, tipografia, verde } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontoVendaCheckin'>;
 
@@ -21,9 +28,33 @@ type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontoVendaChecki
 // aparece pro promotor descartar no Histórico — o indicador de distância abaixo existe
 // justamente pra reduzir a chance disso acontecer.
 export function PontoVendaCheckinScreen({ route, navigation }: Props) {
-  const { pontoVenda, ordemServico } = route.params;
-  const { usuario } = useAuth();
+  const { pontoVenda, ordemServico: ordemServicoDaRota } = route.params;
+  const { usuario, token } = useAuth();
+  const queryClient = useQueryClient();
+
+  // A OS que veio pela rota foi escolhida na lista de lojas com a pendência que estava em cache
+  // NAQUELE momento — um Direcionamento criado depois (o gestor gera as OS na hora) não estava
+  // nela, e o check-in saía sem vínculo: os formulários do Direcionamento nunca apareciam em
+  // Ações. Por isso a tela rebusca as pendências ao abrir e de novo no toque em "Iniciar visita"
+  // (docs/25 §6), e vale a da rota só se a busca não trouxer nada pra esta loja.
+  const pendenciasQuery = useQuery({
+    queryKey: ['ordens-servico', 'pendentes'],
+    queryFn: listarOrdensServicoPendentes,
+    refetchOnMount: 'always',
+  });
+  const ordemServico = ordemServicoDaRota ?? escolherOrdemDaLoja((pendenciasQuery.data ?? []).filter((os) => os.ponto_venda.id === pontoVenda.id));
   const [erroCheckin, setErroCheckin] = useState<string | null>(null);
+  const [aba, setAba] = useState<'DADOS' | 'HISTORICO'>('DADOS');
+
+  // Contexto de negócio rápido antes de entrar na visita — docs/26-MELHORIAS-PRODUTIVIDADE-PROMOTOR.md
+  // §2 itens 2/3, mesmo raciocínio do card da lista (PontosVendaListScreen).
+  const contexto = [
+    pontoVenda.rede_loja?.descricao,
+    pontoVenda.ramo_atividade?.descricao,
+    pontoVenda.numero_checkouts ? `${pontoVenda.numero_checkouts} checkouts` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   const localizacao = useLocalizacaoAtual();
   // Guarda síncrona contra duplo toque — `checkinMutation.isPending` só vira true depois que o
@@ -54,10 +85,26 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   const checkinMutation = useMutation({
     mutationFn: async () => {
       const coords = await obterLocalizacaoAtual();
+      // Rebusca fresca no momento do check-in (rede primeiro, cache como fallback — mesma função
+      // do resto do app); qualquer falha cai na OS que a tela já tinha, nunca trava o check-in.
+      let ordemServicoId = ordemServico?.id;
+      try {
+        const pendencias = await queryClient.fetchQuery({
+          queryKey: ['ordens-servico', 'pendentes'],
+          queryFn: listarOrdensServicoPendentes,
+          staleTime: 0,
+        });
+        // Escolhe entre as pendentes desta loja (a com formulário por responder tem prioridade,
+        // ver escolherOrdemDaLoja). Só cai na já escolhida se a busca não trouxe nenhuma.
+        ordemServicoId =
+          escolherOrdemDaLoja(pendencias.filter((os) => os.ponto_venda.id === pontoVenda.id))?.id ?? ordemServicoId;
+      } catch {
+        // mantém ordemServicoId atual
+      }
       return iniciarVisitaLocal({
         usuarioId: usuario!.id,
         pontoVenda,
-        ordemServicoId: ordemServico?.id,
+        ordemServicoId,
         latitude: coords.latitude,
         longitude: coords.longitude,
       });
@@ -86,6 +133,9 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   if (localizacao.permissaoNegada) {
     return (
       <View style={styles.centro}>
+        <View style={styles.permissaoIcone}>
+          <MaterialCommunityIcons name="map-marker-off-outline" size={32} color={cores.primaria} />
+        </View>
         <Text style={styles.permissaoTitulo}>Precisamos da sua localização</Text>
         <Text style={styles.permissaoTexto}>
           Pra fazer check-in num ponto de venda, o app precisa confirmar que você está no local.
@@ -98,8 +148,14 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
     );
   }
 
-  return (
-    <View style={styles.container}>
+  const abas: AbaLoja<'DADOS' | 'HISTORICO'>[] = [
+    { chave: 'DADOS', rotulo: 'Dados cadastrais', icone: 'store-outline' },
+    { chave: 'HISTORICO', rotulo: 'Histórico da loja', icone: 'history' },
+  ];
+
+  // Mapa + distância: ficam logo abaixo da foto da fachada, na aba Dados cadastrais.
+  const mapaEDistancia = (
+    <View style={styles.blocoMapa}>
       <View style={styles.mapaContainer}>
         {localizacao.coords ? (
           <MapView
@@ -114,17 +170,17 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
             <Marker
               coordinate={{ latitude: pontoVenda.latitude, longitude: pontoVenda.longitude }}
               title={pontoVenda.fantasia}
-              pinColor="#2563eb"
+              pinColor={cores.primaria}
             />
-            <Marker coordinate={localizacao.coords} title="Você" pinColor="#16a34a" />
+            <Marker coordinate={localizacao.coords} title="Você" pinColor={verde[600]} />
             {/* raio Infinity (empresa desativou a validação de propósito, ver
                 lib/api/parametros.ts) não tem um círculo geométrico válido pra desenhar. */}
             {Number.isFinite(raio) && (
               <Circle
                 center={{ latitude: pontoVenda.latitude, longitude: pontoVenda.longitude }}
                 radius={raio}
-                strokeColor="rgba(37, 99, 235, 0.5)"
-                fillColor="rgba(37, 99, 235, 0.12)"
+                strokeColor="rgba(79, 70, 229, 0.5)"
+                fillColor="rgba(79, 70, 229, 0.12)"
               />
             )}
           </MapView>
@@ -136,50 +192,77 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
           </View>
         )}
       </View>
+      {distancia !== null && (
+        <Text style={[styles.distancia, dentroDoRaio ? styles.distanciaDentro : styles.distanciaFora]}>
+          {!Number.isFinite(raio)
+            ? `Você está a ${Math.round(distancia)}m do PDV — sem limite de distância configurado para este check-in.`
+            : dentroDoRaio
+              ? `Você está a ${Math.round(distancia)}m do PDV — dentro do raio de check-in (${Math.round(raio)}m).`
+              : `Você está a ${Math.round(distancia)}m do PDV — fora do raio de check-in (${Math.round(raio)}m).`}
+        </Text>
+      )}
+    </View>
+  );
 
-      <View style={styles.info}>
+  return (
+    <View style={styles.container}>
+      <View style={styles.cabecalhoLoja}>
+        <Text style={styles.fantasia}>{pontoVenda.fantasia}</Text>
+        {!!contexto && <Text style={styles.contexto}>{contexto}</Text>}
         {ordemServico && (
-          <View style={styles.osBox}>
-            <View style={styles.osTopo}>
-              <Text style={styles.osTitulo}>Ordem de serviço</Text>
-              {ordemServico.tipo_visita && (
-                <View style={[styles.osTag, { backgroundColor: ordemServico.tipo_visita.cor }]}>
-                  <Text style={styles.osTagTexto}>{ordemServico.tipo_visita.descricao}</Text>
-                </View>
-              )}
-            </View>
-            <Text style={styles.osTexto}>
-              Prazo até {new Date(ordemServico.prazo_fim).toLocaleDateString('pt-BR')}
-              {ordemServico.horario_previsto ? ` às ${ordemServico.horario_previsto}` : ''}
-              {!ordemServico.obrigatoria ? ' — sugestão, não bloqueante' : ''}
+          <View style={styles.badgeContrato}>
+            <MaterialCommunityIcons name="clipboard-text-outline" size={12} color={cores.primaria} />
+            <Text style={styles.badgeContratoTexto}>
+              Pendência: {ordemServico.direcionamento?.descricao ?? ordemServico.tipo_visita?.descricao ?? 'ordem de serviço'}
             </Text>
-            {ordemServico.prioridade === 'ALTA' && <Text style={styles.osPrioridade}>Alta prioridade</Text>}
-            {!!ordemServico.objetivo_visita && (
-              <Text style={styles.osTexto}>Objetivo: {ordemServico.objetivo_visita.descricao}</Text>
-            )}
-            {!!ordemServico.observacao && <Text style={styles.osTexto}>{ordemServico.observacao}</Text>}
           </View>
         )}
-        <Text style={styles.fantasia}>{pontoVenda.fantasia}</Text>
-        <Text style={styles.endereco}>
-          {[pontoVenda.endereco, pontoVenda.numero].filter(Boolean).join(', ')}
-        </Text>
-        {!!(pontoVenda.bairro || pontoVenda.cidade) && (
-          <Text style={styles.endereco}>
-            {[pontoVenda.bairro, pontoVenda.cidade].filter(Boolean).join(' · ')}
-          </Text>
-        )}
+      </View>
 
-        {distancia !== null && (
-          <Text style={[styles.distancia, dentroDoRaio ? styles.distanciaDentro : styles.distanciaFora]}>
-            {!Number.isFinite(raio)
-              ? `Você está a ${Math.round(distancia)}m do PDV — sem limite de distância configurado para este check-in.`
-              : dentroDoRaio
-                ? `Você está a ${Math.round(distancia)}m do PDV — dentro do raio de check-in (${Math.round(raio)}m).`
-                : `Você está a ${Math.round(distancia)}m do PDV — fora do raio de check-in (${Math.round(raio)}m).`}
-          </Text>
-        )}
+      <AbasLoja abas={abas} ativa={aba} onChange={setAba} />
 
+      <ScrollView style={styles.corpoAbas}>
+        {aba === 'DADOS' ? (
+          <>
+            {ordemServico && (
+              <View style={[styles.osBox, styles.osBoxNaAba]}>
+                <View style={styles.osTopo}>
+                  <Text style={styles.osTitulo}>Ordem de serviço</Text>
+                  {ordemServico.tipo_visita && (
+                    <View style={[styles.osTag, { backgroundColor: ordemServico.tipo_visita.cor }]}>
+                      <Text style={styles.osTagTexto}>{ordemServico.tipo_visita.descricao}</Text>
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.osTexto}>
+                  Prazo até {new Date(ordemServico.prazo_fim).toLocaleDateString('pt-BR')}
+                  {ordemServico.horario_previsto ? ` às ${ordemServico.horario_previsto}` : ''}
+                  {!ordemServico.obrigatoria ? ' — sugestão, não bloqueante' : ''}
+                </Text>
+                {ordemServico.prioridade === 'ALTA' && <Text style={styles.osPrioridade}>Alta prioridade</Text>}
+                {!!ordemServico.objetivo_visita && (
+                  <Text style={styles.osTexto}>Objetivo: {ordemServico.objetivo_visita.descricao}</Text>
+                )}
+                {!!ordemServico.observacao && <Text style={styles.osTexto}>{ordemServico.observacao}</Text>}
+              </View>
+            )}
+            <DadosCadastraisLoja pontoVenda={pontoVenda} depoisDaFachada={mapaEDistancia} />
+            {ordemServico && (
+              <View style={styles.acoesCompromissoNaAba}>
+                <AcoesCompromisso
+                  ordemServico={ordemServico}
+                  onReagendar={() => navigation.navigate('ReagendarCompromisso', { ordemServico })}
+                  onCancelado={() => navigation.goBack()}
+                />
+              </View>
+            )}
+          </>
+        ) : (
+          <HistoricoLojaPanel pontoVendaUuid={pontoVenda.id} />
+        )}
+      </ScrollView>
+
+      <View style={styles.rodapeCheckin}>
         {erroCheckin && (
           <View style={styles.erroBox}>
             <Text style={styles.erroTexto}>{erroCheckin}</Text>
@@ -191,6 +274,9 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
           onPress={iniciarVisita}
           disabled={checkinMutation.isPending}
         >
+          {!checkinMutation.isPending && (
+            <MaterialCommunityIcons name="play-circle-outline" size={20} color={cores.onPrimaria} />
+          )}
           <Text style={styles.botaoPrimarioTexto}>
             {checkinMutation.isPending ? 'Iniciando...' : 'Iniciar visita'}
           </Text>
@@ -201,13 +287,33 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
+  cabecalhoLoja: {
+    backgroundColor: cores.fundoCard,
+    paddingHorizontal: espaco.xl,
+    paddingTop: espaco.md,
+    paddingBottom: espaco.md,
+    gap: 4,
+  },
+  corpoAbas: { flex: 1, backgroundColor: cores.fundo },
+  blocoMapa: { marginBottom: espaco.md, gap: espaco.sm },
+  acoesCompromissoNaAba: { paddingHorizontal: espaco.lg, paddingBottom: espaco.xl },
+  osBoxNaAba: { margin: espaco.lg, marginBottom: 0 },
+  rodapeCheckin: {
+    backgroundColor: cores.fundoCard,
+    borderTopWidth: 1,
+    borderTopColor: cores.divisor,
+    padding: espaco.lg,
+    gap: espaco.sm,
+  },
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: cores.fundoCard,
   },
   mapaContainer: {
-    height: 260,
-    backgroundColor: '#e5e7eb',
+    height: 200,
+    borderRadius: raioUI.lg,
+    overflow: 'hidden',
+    backgroundColor: neutro[200],
   },
   mapa: {
     flex: 1,
@@ -216,123 +322,167 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 24,
+    paddingHorizontal: espaco.xl,
   },
   mapaCarregandoTexto: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     textAlign: 'center',
   },
   info: {
-    padding: 20,
+    padding: espaco.xl,
   },
   osBox: {
-    backgroundColor: '#eff6ff',
+    backgroundColor: cores.primariaClara,
     borderWidth: 1,
-    borderColor: '#bfdbfe',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
+    borderColor: cores.primariaBorda,
+    borderRadius: raioUI.md,
+    padding: espaco.md,
+    marginBottom: espaco.lg,
     gap: 2,
   },
   osTopo: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: espaco.sm,
   },
   osTitulo: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#1d4ed8',
-    textTransform: 'uppercase',
+    ...tipografia.rotulo,
+    color: cores.primariaEscura,
   },
   osTag: {
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raioUI.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 3,
   },
   osTagTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontSize: 11,
     fontWeight: '700',
   },
   osTexto: {
     fontSize: 13,
-    color: '#1e40af',
+    color: cores.primariaEscura,
   },
   osPrioridade: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#dc2626',
+    color: cores.erro,
+  },
+  identificacaoRow: {
+    flexDirection: 'row',
+    gap: espaco.md,
+  },
+  fachadaThumb: {
+    width: 72,
+    height: 72,
+    borderRadius: raioUI.md,
+    backgroundColor: neutro[200],
+  },
+  identificacaoTexto: {
+    flex: 1,
   },
   fantasia: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#111827',
+    ...tipografia.titulo,
+    color: cores.texto,
   },
   endereco: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 4,
+  },
+  contexto: {
+    fontSize: 12,
+    color: cores.textoTerciario,
+    marginTop: 4,
+  },
+  badgeContrato: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    backgroundColor: cores.primariaClara,
+    borderRadius: raioUI.sm,
+    paddingHorizontal: espaco.sm,
+    paddingVertical: 2,
+    marginTop: espaco.sm,
+  },
+  badgeContratoTexto: {
+    color: cores.primariaEscura,
+    fontSize: 11,
+    fontWeight: '700',
   },
   distancia: {
     fontSize: 15,
     fontWeight: '600',
-    marginTop: 16,
+    marginTop: espaco.lg,
   },
   distanciaDentro: {
-    color: '#15803d',
+    color: cores.sucesso,
   },
   distanciaFora: {
-    color: '#c2410c',
+    color: cores.acentoTexto,
   },
   erroBox: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: cores.erroFundo,
     borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 16,
+    borderColor: cores.erroBorda,
+    borderRadius: raioUI.md,
+    padding: espaco.md,
+    marginTop: espaco.lg,
   },
   erroTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 14,
   },
   botaoPrimario: {
-    backgroundColor: '#2563eb',
-    borderRadius: 10,
+    flexDirection: 'row',
+    gap: espaco.sm,
+    backgroundColor: cores.primaria,
+    borderRadius: raioUI.md,
     minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 24,
+    marginTop: espaco.xl,
+    ...sombraFlutuante,
+    shadowColor: cores.primaria,
+    shadowOpacity: 0.3,
   },
   botaoPressionado: {
-    opacity: 0.8,
+    opacity: 0.85,
   },
   botaoPrimarioTexto: {
-    color: '#ffffff',
+    ...tipografia.botao,
+    color: cores.onPrimaria,
     fontSize: 17,
-    fontWeight: '700',
   },
   centro: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 32,
-    backgroundColor: '#ffffff',
+    paddingHorizontal: espaco.xxl,
+    backgroundColor: cores.fundoCard,
+  },
+  permissaoIcone: {
+    width: 64,
+    height: 64,
+    borderRadius: raioUI.lg,
+    backgroundColor: cores.primariaClara,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: espaco.lg,
   },
   permissaoTitulo: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#111827',
+    ...tipografia.subtitulo,
+    color: cores.texto,
     textAlign: 'center',
   },
   permissaoTexto: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 24,
+    marginTop: espaco.sm,
+    marginBottom: espaco.xl,
   },
 });

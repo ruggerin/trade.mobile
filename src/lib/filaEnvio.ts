@@ -19,6 +19,10 @@ import { estaOnline } from './network';
 // barato, mais simples que rastrear se algo de fato mudou).
 export const filaEnvioEvents = new EventTarget();
 export const FILA_ENVIO_ATUALIZADA_EVENT = 'fila-envio:atualizada';
+// Diferente do de cima (que dispara em toda passada): este só dispara quando a passada MUDOU algo no
+// servidor (check-in, registro ou checkout confirmado) — é o gatilho pra recarregar Agenda/Histórico,
+// que mostram dado do servidor e ficavam com "Em andamento" depois da visita já finalizada.
+export const FILA_ENVIO_SERVIDOR_MUDOU_EVENT = 'fila-envio:servidor-mudou';
 
 /**
  * Motor da fila de envio (offline-first de verdade — ver docs/04-APP-MOBILE.md "Fila offline de
@@ -56,6 +60,7 @@ export interface ResultadoFilaEnvio {
   visitasRejeitadas: number;
   registrosEnviados: number;
   registrosComErro: number;
+  checkoutsConfirmados: number;
 }
 
 const RESULTADO_VAZIO: ResultadoFilaEnvio = {
@@ -63,16 +68,24 @@ const RESULTADO_VAZIO: ResultadoFilaEnvio = {
   visitasRejeitadas: 0,
   registrosEnviados: 0,
   registrosComErro: 0,
+  checkoutsConfirmados: 0,
 };
 
 // Guard simples contra duas passadas simultâneas (ex.: reconexão e volta de background quase
 // juntas) — processarFilaEnvio é seguro de chamar de novo a qualquer momento, então perder uma
 // chamada concorrente não perde trabalho, só evita duplicar upload em voo.
 let emAndamento = false;
+// Quando a passada em curso começou. Uma passada que nunca termina (chamada de rede pendurada, app
+// voltando de background com socket morto) deixava `emAndamento` verdadeiro pra sempre e TODA
+// tentativa seguinte era descartada em silêncio — a fila inteira parava até fechar o app. Passou
+// do limite, a passada nova assume.
+let inicioDaPassada = 0;
+const LIMITE_PASSADA_MS = 3 * 60_000;
 
 export async function processarFilaEnvio(usuarioId: string): Promise<ResultadoFilaEnvio> {
-  if (emAndamento) return RESULTADO_VAZIO;
+  if (emAndamento && Date.now() - inicioDaPassada < LIMITE_PASSADA_MS) return RESULTADO_VAZIO;
   emAndamento = true;
+  inicioDaPassada = Date.now();
 
   const resultado: ResultadoFilaEnvio = { ...RESULTADO_VAZIO };
 
@@ -85,9 +98,21 @@ export async function processarFilaEnvio(usuarioId: string): Promise<ResultadoFi
     for (const visita of ordenadas) {
       await processarVisita(visita, resultado);
     }
+  } catch (err) {
+    // Rede/API já são tratadas passo a passo dentro de processarVisita (enviarCheckin/
+    // enviarRegistro/enviarCheckout, cada um com seu próprio try/catch) — isso aqui é o piso de
+    // segurança pra qualquer coisa INESPERADA que escape delas (ex.: leitura do SQLite local
+    // falhando no meio da passada). Esta função roda solta, sem ninguém no chamador esperando
+    // (`void processarFilaEnvio(...)` em MainTabs.tsx) — sem este catch, uma rejeição aqui vira
+    // promise rejeitada sem handler, e é exatamente esse tipo de erro não tratado que fecha o
+    // app sozinho num build de produção (Hermes não tem red box pra amortecer, só derruba).
+    if (__DEV__) console.warn('[filaEnvio] falha inesperada processando a fila', err);
   } finally {
     emAndamento = false;
     filaEnvioEvents.dispatchEvent(new Event(FILA_ENVIO_ATUALIZADA_EVENT));
+    if (resultado.visitasEnviadas + resultado.registrosEnviados + resultado.checkoutsConfirmados > 0) {
+      filaEnvioEvents.dispatchEvent(new Event(FILA_ENVIO_SERVIDOR_MUDOU_EVENT));
+    }
   }
 
   return resultado;
@@ -116,7 +141,7 @@ async function processarVisita(visitaInicial: VisitaLocal, resultado: ResultadoF
   }
 
   if (visita.status === 'FINALIZADA_LOCAL') {
-    await enviarCheckout(visita);
+    if (await enviarCheckout(visita)) resultado.checkoutsConfirmados += 1;
   }
 }
 
@@ -133,6 +158,7 @@ async function enviarCheckin(visita: VisitaLocal, resultado: ResultadoFilaEnvio)
       idempotency_key: visita.id,
     });
     await marcarCheckinEnviado(visita.id, servidor.id);
+    console.log(`[fila] check-in confirmado (visita ${visita.id} → servidor ${servidor.id})`);
     resultado.visitasEnviadas += 1;
     return true;
   } catch (err) {
@@ -161,7 +187,7 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
       // transitória (o servidor pode ter processado a chamada sem a resposta chegar até aqui).
       idempotencyKey: registro.id,
       tipoRegistroUuid: registro.tipoRegistroUuid,
-      imagemUri: registro.imagemLocalPath ?? undefined,
+      imagensUri: registro.imagensLocais.length > 0 ? registro.imagensLocais : undefined,
       produtoAuditoriaUuid: registro.produtoAuditoriaUuid ?? undefined,
       tipoVinculo: registro.tipoVinculo ?? undefined,
       secaoUuid: registro.secaoUuid ?? undefined,
@@ -170,9 +196,9 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
       valoresCampos: registro.valoresCampos ?? undefined,
       ruptura: registro.ruptura ?? undefined,
       observacao: registro.observacao ?? undefined,
-      momento: registro.momento ?? undefined,
     });
     await marcarRegistroEnviado(registro.id, registroServidor.id);
+    console.log(`[fila] registro enviado (visita ${visita.id})`);
     resultado.registrosEnviados += 1;
     return true;
   } catch (err) {
@@ -187,17 +213,20 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
   }
 }
 
-async function enviarCheckout(visita: VisitaLocal): Promise<void> {
+async function enviarCheckout(visita: VisitaLocal): Promise<boolean> {
   try {
     await finalizarVisita(visita.servidorId!, visita.latitudeFim!, visita.longitudeFim!);
     // Servidor já tem tudo (check-in, registros e checkout confirmados) — a cópia local perdeu
     // utilidade, HistoricoScreen/VisitaDetalhe passam a mostrar essa visita vinda de lá.
-    await excluirVisitaLocalCompleta(visita.id);
+    console.log(`[fila] checkout confirmado pelo servidor (visita ${visita.id})`);
+    await excluirVisitaLocalCompleta(visita.id, 'checkout-confirmado');
+    return true;
   } catch (err) {
     const mensagem = ehErroDeRede(err)
       ? 'Sem conexão no momento do envio — tentando de novo automaticamente.'
       : (mensagemDeErroServidor(err) ?? 'Não foi possível confirmar o checkout — tentando de novo automaticamente.');
     await atualizarErroVisita(visita.id, mensagem);
+    return false;
   }
 }
 

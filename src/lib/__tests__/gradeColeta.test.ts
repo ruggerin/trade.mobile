@@ -5,6 +5,8 @@ function criarTipo(overrides: Partial<TipoRegistro> = {}): TipoRegistro {
   return {
     id: 'tipo-uuid',
     descricao: 'Ponto Natural',
+    icone: null,
+    ordem: 0,
     exige_foto: false,
     permite_vincular_catalogo: true,
     acao_obrigatoria: false,
@@ -13,6 +15,7 @@ function criarTipo(overrides: Partial<TipoRegistro> = {}): TipoRegistro {
     granularidade_padrao: 'PRODUTO',
     excecoes_granularidade: [],
     eh_ruptura: false,
+    disponivel_registro_livre: true,
     campos: [],
     ativo: true,
     ...overrides,

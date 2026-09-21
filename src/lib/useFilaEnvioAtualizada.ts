@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { FILA_ENVIO_ATUALIZADA_EVENT, filaEnvioEvents } from './filaEnvio';
+import { FILA_ENVIO_ATUALIZADA_EVENT, FILA_ENVIO_SERVIDOR_MUDOU_EVENT, filaEnvioEvents } from './filaEnvio';
 
 /**
  * Assina o evento disparado ao fim de toda passada do motor de sincronização (mesmo padrão de
@@ -11,5 +11,13 @@ export function useAoAtualizarFilaEnvio(callback: () => void): void {
   useEffect(() => {
     filaEnvioEvents.addEventListener(FILA_ENVIO_ATUALIZADA_EVENT, callback);
     return () => filaEnvioEvents.removeEventListener(FILA_ENVIO_ATUALIZADA_EVENT, callback);
+  }, [callback]);
+}
+
+/** Só quando a fila confirmou algo no servidor (check-in, registro ou checkout) — pra recarregar dado que vem de lá. */
+export function useAoServidorMudarPelaFila(callback: () => void): void {
+  useEffect(() => {
+    filaEnvioEvents.addEventListener(FILA_ENVIO_SERVIDOR_MUDOU_EVENT, callback);
+    return () => filaEnvioEvents.removeEventListener(FILA_ENVIO_SERVIDOR_MUDOU_EVENT, callback);
   }, [callback]);
 }

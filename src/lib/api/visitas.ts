@@ -1,4 +1,4 @@
-import type { MomentoRegistro, PaginatedMeta, TipoVinculoRegistro, Visita, VisitaRegistro } from '../../types/api';
+import type { PaginatedMeta, TipoVinculoRegistro, Visita, VisitaRegistro } from '../../types/api';
 import { ehErroDeRede } from '../db/database';
 import { lerVisitasHistoricoCache, salvarVisitasHistoricoCache } from '../db/visitasCache';
 import { apiClient } from './client';
@@ -73,7 +73,8 @@ export interface CriarRegistroPayload {
   // Uuid do TipoRegistro escolhido (catálogo customizável da empresa) — substitui o antigo
   // enum fixo FOTO/RUPTURA/OBSERVACAO, ver docs/01-MODELO-DE-DADOS.md#54-tipos-de-registro.
   tipoRegistroUuid: string;
-  imagemUri?: string;
+  // N fotos por registro (0..N) — ver docs/21-EVIDENCIA-EM-FOTOS.md.
+  imagensUri?: string[];
   produtoAuditoriaUuid?: string;
   // Vínculo opcional a um recorte mais amplo do catálogo (só um dos uuids abaixo, conforme
   // tipoVinculo) — mutuamente exclusivo com produtoAuditoriaUuid.
@@ -85,9 +86,6 @@ export interface CriarRegistroPayload {
   valoresCampos?: Record<string, string>;
   ruptura?: boolean;
   observacao?: string;
-  // Só aceito pelo backend quando NÃO há produtoAuditoriaUuid (registro geral) — ver
-  // StoreVisitaRegistroRequest.
-  momento?: MomentoRegistro;
 }
 
 export async function criarRegistro(payload: CriarRegistroPayload): Promise<VisitaRegistro> {
@@ -116,9 +114,6 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
   if (payload.observacao) {
     form.append('observacao', payload.observacao);
   }
-  if (payload.momento) {
-    form.append('momento', payload.momento);
-  }
   // Laravel entende a notação `campo[chave]` em multipart/form-data como array associativo —
   // não dá pra mandar um objeto direto num FormData.
   if (payload.valoresCampos) {
@@ -126,20 +121,26 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
       form.append(`valores_campos[${chave}]`, valor);
     }
   }
-  if (payload.imagemUri) {
-    const nomeArquivo = payload.imagemUri.split('/').pop() ?? 'foto.jpg';
+  for (const imagemUri of payload.imagensUri ?? []) {
+    const nomeArquivo = imagemUri.split('/').pop() ?? 'foto.jpg';
     const extensao = /\.(\w+)$/.exec(nomeArquivo)?.[1]?.toLowerCase();
     const tipoMime = `image/${extensao === 'jpg' ? 'jpeg' : (extensao ?? 'jpeg')}`;
 
     // RN/Expo aceitam esse formato {uri, name, type} como valor de FormData.append pra upload
     // de arquivo local — não é um Blob de verdade, mas o axios/fetch nativo sabe lidar com isso.
-    form.append('imagem', { uri: payload.imagemUri, name: nomeArquivo, type: tipoMime } as unknown as Blob);
+    // 'imagens[]' (repetido, um append por arquivo) é a notação que o Laravel entende como
+    // array de arquivos em multipart/form-data — mesma raciocínio de valores_campos[chave] logo
+    // acima.
+    form.append('imagens[]', { uri: imagemUri, name: nomeArquivo, type: tipoMime } as unknown as Blob);
   }
 
   const { data } = await apiClient.post<{ registro: VisitaRegistro }>(
     `/visitas/${payload.visitaId}/registros`,
     form,
-    { headers: { 'Content-Type': 'multipart/form-data' } },
+    // Upload de foto em rede móvel passa fácil dos 8s do timeout padrão do client — estourar aqui
+    // é lido como "erro de rede" (transitório) e o registro ficava tentando de novo pra sempre,
+    // travando o checkout atrás dele na fila. Folga generosa só pra este envio.
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 90_000 },
   );
   return data.registro;
 }
@@ -153,4 +154,21 @@ export async function cancelarRegistro(visitaId: string, registroId: string): Pr
     `/visitas/${visitaId}/registros/${registroId}/cancelar`,
   );
   return data.registro;
+}
+
+// Autosserviço: promotor cancela a própria visita em andamento (status ABERTA) — parametrizável
+// por empresa (VISITA_CANCELAMENTO_PERMITIDO), o botão só aparece quando o parâmetro permite
+// (ver buscarCancelamentoVisitaPermitido em lib/api/parametros.ts). Ação online, sem fila
+// offline — só faz sentido cancelar uma visita que o servidor já reconhece, ver
+// lib/visitaLocal.ts::cancelarVisitaLocal.
+// Saída de segurança pra visita travada: um gestor/admin autoriza com e-mail e senha no aparelho do
+// promotor (auditado no servidor, com limite de tentativas). Ver lib/useDescarteVisita.tsx.
+export async function cancelarVisitaAutorizado(visitaId: string, email: string, senha: string): Promise<Visita> {
+  const { data } = await apiClient.post<{ visita: Visita }>(`/visitas/${visitaId}/cancelar-autorizado`, { email, senha });
+  return data.visita;
+}
+
+export async function cancelarVisita(visitaId: string): Promise<Visita> {
+  const { data } = await apiClient.post<{ visita: Visita }>(`/visitas/${visitaId}/cancelar-propria`);
+  return data.visita;
 }

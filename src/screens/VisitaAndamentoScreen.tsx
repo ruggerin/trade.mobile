@@ -1,11 +1,23 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { AdicionarProdutoSortimentoModal } from '../components/AdicionarProdutoSortimentoModal';
+import { AbasLoja, type AbaLoja } from '../components/AbasLoja';
+import { DadosCadastraisLoja } from '../components/DadosCadastraisLoja';
+import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
+import { ConfirmarRupturaModal } from '../components/ConfirmarRupturaModal';
+import { ProdutoDetalheModal, type ProdutoDetalhe } from '../components/ProdutoDetalheModal';
 import { RegistroFormModal, type RegistroFormResultado } from '../components/RegistroFormModal';
 import { buscarProdutosDisponiveis } from '../lib/api/campanhas';
-import { buscarAutonomiaCatalogo, buscarAutonomiaSortimento, buscarCancelamentoRegistroPermitido } from '../lib/api/parametros';
+import { buscarOrdemServico } from '../lib/api/ordensServico';
+import {
+  buscarAutonomiaCatalogo,
+  buscarAutonomiaSortimento,
+  buscarCancelamentoRegistroPermitido,
+  buscarCancelamentoVisitaPermitido,
+} from '../lib/api/parametros';
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
 import { listarTiposRegistro } from '../lib/api/tiposRegistro';
 import { useAuth } from '../lib/auth/AuthContext';
@@ -14,19 +26,25 @@ import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { useEstaOnline } from '../lib/network';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import type { ProdutoDisponivel, SortimentoPontoVenda, TipoRegistro } from '../types/api';
-import type { RegistroLocal } from '../lib/db/filaRegistros';
+import { copiarImagemParaArmazenamentoPersistente, type RegistroLocal } from '../lib/db/filaRegistros';
 import {
   cancelarRegistroVisitaLocal,
+  cancelarVisitaLocal,
   criarRegistroVisitaLocal,
+  descartarVisitaLocalForcado,
   descartarVisitaRejeitada,
   finalizarVisitaLocal,
   lerVisitaLocal,
   listarRegistrosLocais,
+  reabrirVisitaLocal,
+  tentarEnviarAgora,
 } from '../lib/visitaLocal';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
+import { useDescarteVisita } from '../lib/useDescarteVisita';
+import { cores, espaco, neutro, raio, sombraCard, sombraFlutuante, tipografia } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'VisitaAndamento'>;
-type Aba = 'ACOES' | 'PRODUTOS' | 'REGISTROS';
+type Aba = 'DADOS' | 'HISTORICO' | 'ACOES' | 'PRODUTOS' | 'REGISTROS';
 
 interface GrupoCampanha {
   campanhaUuid: string;
@@ -40,16 +58,22 @@ interface GrupoCampanha {
 interface ItemSortimentoProduto {
   produtoUuid: string;
   descricao: string;
+  imagemUrl: string | null;
+  codigoBarras: string | null;
   propriedade: string | null;
   pendente: boolean;
   produtoChave: boolean;
   secaoUuid: string | null;
   secaoDescricao: string | null;
+  departamentoUuid: string | null;
+  departamentoDescricao: string | null;
 }
 
-interface ContextoModal {
-  produto: { uuid: string; descricao: string } | null;
-}
+// Critério de agrupamento da aba Mix — "Produto" é a opção "sem agrupamento" (lista plana).
+// Marca ainda não tem dado real (ProdutoAuditoria não tem marca_id até
+// docs/27-BUSCA-MULTIPLA-DE-PRODUTOS.md sair do papel), então cai tudo num grupo único e
+// honesto ("Sem marca cadastrada") em vez de fingir que funciona.
+type CriterioAgrupamentoMix = 'DEPARTAMENTO' | 'SECAO' | 'MARCA' | 'PRODUTO';
 
 // docs/05-APP-MOBILE-UX.md §3.5 — tela mais usada do app: lista de produtos a auditar
 // (agrupada por campanha) + "Registro geral" + finalizar visita. A visita e os registros vivem
@@ -57,14 +81,19 @@ interface ContextoModal {
 // confirmados pelo servidor — esta tela nunca fala com a API diretamente, só lê/escreve o
 // SQLite local (lib/visitaLocal.ts) e deixa o motor de sincronização (lib/filaEnvio.ts) cuidar
 // do envio sozinho, em segundo plano, quando houver rede.
-// Três abas com papéis bem separados: "Ações" são tarefas obrigatórias específicas desta
-// visita (TipoRegistro.acao_obrigatoria — ex.: "Auditar contrato de expositor"), resolvidas por
-// escopo (SEMPRE/CAMPANHA/CONTRATO, ver App\Enums\EscopoAcaoTipoRegistro no backend); "Produtos"
-// é o checklist de auditoria/campanha e sortimento (o que precisa ser conferido); "Registros"
-// lista TODOS os registros já feitos nesta visita — geral ou vinculado a produto, campanha ou
-// avulso — pra nada "sumir" da vista do promotor só porque o card da aba Produtos mostra status
-// agregado, não cada registro individual. Cancelar (com confirmação) é permitido ali,
-// parametrizável por empresa — ver REGISTRO_CANCELAMENTO_PERMITIDO em lib/api/parametros.ts.
+// Três abas com papéis bem separados — correção feita depois de uma primeira modelagem errada
+// (a aba de produtos virou um segundo caminho de preencher formulário, concorrendo com Ações; a
+// grade de coleta apareceu lá também, mas ela É preenchimento de formulário, não pertence a uma
+// lista de referência): "Ações" é TUDO que preenche um registro nesta visita — ações obrigatórias
+// (TipoRegistro.acao_obrigatoria, resolvida por escopo SEMPRE/CAMPANHA/CONTRATO), formulários de
+// Ordem de Serviço/Direcionamento, e o checklist em grade (várias perguntas simples de uma seção
+// de uma vez). "Mix" é só REFERÊNCIA — lista o mix do PDV (docs/14-SORTIMENTO-PONTO-VENDA.md,
+// termo "Mix" ver docs/27-BUSCA-MULTIPLA-DE-PRODUTOS.md §4), sem abrir formulário nenhum ao
+// tocar; pra registrar algo sobre um produto do mix, o caminho é Ações → Registro geral →
+// "Vincular a" (que já enxerga campanha + mix juntos pra busca). "Registros" lista TODOS os
+// registros já feitos nesta visita — geral ou vinculado a produto, campanha ou avulso — pra nada
+// "sumir" da vista do promotor. Cancelar (com confirmação) é permitido ali, parametrizável por
+// empresa — ver REGISTRO_CANCELAMENTO_PERMITIDO em lib/api/parametros.ts.
 export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const { visitaLocalId } = route.params;
   const { usuario } = useAuth();
@@ -72,22 +101,47 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const online = useEstaOnline();
   const [erroRegistro, setErroRegistro] = useState<string | null>(null);
   const [modalAberto, setModalAberto] = useState(false);
-  const [contextoModal, setContextoModal] = useState<ContextoModal>({ produto: null });
   // Só preenchido quando o formulário abre a partir da aba Ações — pula a etapa de escolher o
   // tipo, já que a Ação em si já É um TipoRegistro específico. Ver RegistroFormModal.tipoFixo.
   const [tipoFixoModal, setTipoFixoModal] = useState<TipoRegistro | null>(null);
   const [aba, setAba] = useState<Aba>('ACOES');
   const [modalAdicionarProdutoAberto, setModalAdicionarProdutoAberto] = useState(false);
+  const [produtoDetalhe, setProdutoDetalhe] = useState<ProdutoDetalhe | null>(null);
   // Só pra distinguir "nunca existiu" de "existiu e acabou de ser apagada porque terminou de
   // sincronizar" quando a query de baixo devolve null — ver useEffect mais abaixo.
   const jaViuVisita = useRef(false);
+  // Último estado visto antes da visita sumir — é o que diz SE ela terminou de verdade (estava
+  // FINALIZADA_LOCAL) ou se foi apagada no meio do caminho (descartada/cancelada).
+  const ultimoStatusVisto = useRef<string | null>(null);
 
   const visitaQuery = useQuery({
     queryKey: ['visita-local', visitaLocalId],
     queryFn: () => lerVisitaLocal(visitaLocalId),
   });
   const visita = visitaQuery.data ?? null;
-  if (visita) jaViuVisita.current = true;
+  if (visita) {
+    jaViuVisita.current = true;
+    ultimoStatusVisto.current = visita.status;
+  }
+
+  // A visita já apareceu e agora a query devolve vazio. Antes de concluir "sumiu", relê o SQLite
+  // direto: se a linha ainda existe, o problema é a query (não os dados) — restaura na tela e
+  // registra no log; se não existe, registra isso também. Sem este passo, um retorno vazio
+  // transitório da query virava "visita sincronizada/saiu do aparelho" mesmo com a visita intacta.
+  useEffect(() => {
+    if (visita || !jaViuVisita.current) return;
+    let ativo = true;
+    void lerVisitaLocal(visitaLocalId).then((linha) => {
+      if (!ativo) return;
+      console.log(
+        `[visita-tela] query devolveu vazio (status=${visitaQuery.status}/${visitaQuery.fetchStatus}, erro=${String(visitaQuery.error)}) — linha no banco: ${linha ? linha.status : 'AUSENTE'}`,
+      );
+      if (linha) queryClient.setQueryData(['visita-local', visitaLocalId], linha);
+    });
+    return () => {
+      ativo = false;
+    };
+  }, [visita, visitaLocalId, visitaQuery.status, visitaQuery.fetchStatus, visitaQuery.error, queryClient]);
 
   const registrosQuery = useQuery({
     queryKey: ['registros-local', visitaLocalId],
@@ -103,11 +157,27 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const releLocal = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['visita-local', visitaLocalId] });
     void queryClient.invalidateQueries({ queryKey: ['registros-local', visitaLocalId] });
-  }, [queryClient, visitaLocalId]);
+    // A fila de envio pode ter acabado de mandar um registro que confirma um formulário de
+    // Direcionamento (respondido_em) — reler a OS reflete isso na aba Ações assim que a rede
+    // voltar, sem o promotor precisar sair e voltar da tela.
+    void queryClient.invalidateQueries({ queryKey: ['ordem-servico', visita?.ordemServicoId] });
+  }, [queryClient, visitaLocalId, visita?.ordemServicoId]);
   useAoAtualizarFilaEnvio(releLocal);
 
   const pontoVenda = visita?.pontoVenda;
   const pontoVendaUuid = pontoVenda?.id;
+
+  // Formulários exigidos pela Ordem de Serviço desta visita (de um Direcionamento, ou
+  // vinculados direto numa OS manual avulsa) — ver docs/25-DIRECIONAMENTO-ORDEM-SERVICO.md §6.
+  // Só online: é dado que pode ter mudado desde o check-in (outro promotor pode ter respondido
+  // o mesmo formulário, se a OS for de fila aberta), sem sentido de cache offline aqui, e a
+  // visita não fica bloqueada por essa consulta falhar (mesmo padrão de produtosQuery/
+  // sortimentoQuery nesta mesma tela).
+  const ordemServicoQuery = useQuery({
+    queryKey: ['ordem-servico', visita?.ordemServicoId],
+    queryFn: () => buscarOrdemServico(visita!.ordemServicoId!),
+    enabled: Boolean(visita?.ordemServicoId) && online,
+  });
 
   const produtosQuery = useQuery({
     queryKey: ['campanhas-disponiveis', pontoVendaUuid],
@@ -136,6 +206,11 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     queryFn: buscarCancelamentoRegistroPermitido,
   });
   const cancelamentoPermitido = cancelamentoPermitidoQuery.data ?? false;
+  const cancelamentoVisitaPermitidoQuery = useQuery({
+    queryKey: ['cancelamento-visita-permitido'],
+    queryFn: buscarCancelamentoVisitaPermitido,
+  });
+  const cancelamentoVisitaPermitido = cancelamentoVisitaPermitidoQuery.data ?? false;
 
   // Só os itens de tipo_item PRODUTO viram linha no checklist — ver ItemSortimentoProduto.
   const itensSortimento = useMemo<ItemSortimentoProduto[]>(() => {
@@ -146,31 +221,67 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       .map((item) => ({
         produtoUuid: item.produto.id,
         descricao: item.produto.descricao,
+        imagemUrl: item.produto.imagem_url,
+        codigoBarras: item.produto.codigo_barras,
         propriedade: item.produto.propriedade,
         pendente: item.status_aprovacao === 'PENDENTE',
         produtoChave: item.produto.produto_chave,
         secaoUuid: item.produto.secao_uuid,
         secaoDescricao: item.produto.secao_descricao,
+        departamentoUuid: item.produto.departamento_uuid,
+        departamentoDescricao: item.produto.departamento_descricao,
       }));
   }, [sortimentoQuery.data]);
   const produtosJaNoSortimento = useMemo(() => new Set(itensSortimento.map((i) => i.produtoUuid)), [itensSortimento]);
 
-  const gruposSortimentoPorPropriedade = useMemo(() => {
-    const nossos = itensSortimento.filter((i) => i.propriedade !== 'CONCORRENTE');
-    const concorrentes = itensSortimento.filter((i) => i.propriedade === 'CONCORRENTE');
-    const grupos: { titulo: string; itens: ItemSortimentoProduto[] }[] = [];
-    if (nossos.length > 0) grupos.push({ titulo: 'Sortimento — nossos produtos', itens: nossos });
-    if (concorrentes.length > 0) grupos.push({ titulo: 'Sortimento — concorrentes', itens: concorrentes });
-    return grupos;
-  }, [itensSortimento]);
+  // Agrupamento da aba Mix — "níveis de exibição" do catálogo (Departamento/Seção/Marca), mais
+  // "Produto" como lista plana sem agrupamento. Ver docs/27-BUSCA-MULTIPLA-DE-PRODUTOS.md §4.
+  const [agrupamentoMix, setAgrupamentoMix] = useState<CriterioAgrupamentoMix>('SECAO');
+  const gruposMix = useMemo(() => {
+    if (agrupamentoMix === 'PRODUTO') {
+      return itensSortimento.length > 0 ? [{ chave: 'todos', titulo: null as string | null, itens: itensSortimento }] : [];
+    }
+    const porGrupo = new Map<string, { titulo: string; itens: ItemSortimentoProduto[] }>();
+    for (const item of itensSortimento) {
+      let chave: string;
+      let titulo: string;
+      if (agrupamentoMix === 'DEPARTAMENTO') {
+        chave = item.departamentoUuid ?? '__sem_departamento__';
+        titulo = item.departamentoDescricao ?? 'Sem departamento';
+      } else if (agrupamentoMix === 'SECAO') {
+        chave = item.secaoUuid ?? '__sem_secao__';
+        titulo = item.secaoDescricao ?? 'Sem seção';
+      } else {
+        chave = '__sem_marca__';
+        titulo = 'Sem marca cadastrada';
+      }
+      const grupo = porGrupo.get(chave) ?? { titulo, itens: [] };
+      grupo.itens.push(item);
+      porGrupo.set(chave, grupo);
+    }
+    return Array.from(porGrupo.entries())
+      .map(([chave, grupo]) => ({ chave, ...grupo }))
+      .sort((a, b) => a.titulo.localeCompare(b.titulo));
+  }, [itensSortimento, agrupamentoMix]);
 
   const tiposRegistroQuery = useQuery({
     queryKey: ['tipos-registro'],
     queryFn: listarTiposRegistro,
   });
-  const tiposRegistro = useMemo(
+  const tiposRegistroAtivos = useMemo(
     () => (tiposRegistroQuery.data ?? []).filter((t) => t.ativo),
     [tiposRegistroQuery.data],
+  );
+  // Formulário sem ícone não aparece pro promotor (pedido explícito — o ícone é o que identifica
+  // o formulário na lista/ações). Só o tipo de ruptura escapa dessa regra, ver tipoRuptura.
+  const tiposRegistro = useMemo(() => tiposRegistroAtivos.filter((t) => !!t.icone), [tiposRegistroAtivos]);
+  // Dropdown de "Registro geral" — só os tipos que podem aparecer soltos (decisão 8 de
+  // docs/20-FORMULARIO-DINAMICO-CAMPANHA.md). Um tipo com disponivel_registro_livre=false ainda
+  // aparece normalmente via Ação obrigatória (acoesPendentes, abaixo usa `tiposRegistro` cheio,
+  // não esta lista filtrada) — só não deveria se repetir aqui, duplicando a mesma pendência.
+  const tiposRegistroParaDropdown = useMemo(
+    () => tiposRegistro.filter((t) => t.disponivel_registro_livre),
+    [tiposRegistro],
   );
   const tipoRegistroPorUuid = useMemo(() => {
     const mapa = new Map<string, TipoRegistro>();
@@ -232,6 +343,29 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     [tiposRegistro, campanhasDaVisita, pontoVenda],
   );
 
+  // Formulários da Ordem de Serviço ainda não respondidos — soma "de servidor" (respondido_em)
+  // com "local, ainda não sincronizado" (já existe um RegistroLocal pra esse tipo_registro,
+  // mesmo que a fila de envio não tenha confirmado com o servidor ainda) pra não mostrar de
+  // novo algo que o promotor acabou de responder offline. Cabeçalho da seção usa o nome do
+  // Direcionamento quando existe; cai pra um rótulo genérico numa OS manual com formulário
+  // vinculado direto (§7.2 do doc).
+  const formulariosPendentesOS = useMemo(() => {
+    const formularios = ordemServicoQuery.data?.formularios ?? [];
+    return formularios.filter((f) => {
+      if (f.respondido_em) return false;
+      if ((registrosPorTipoRegistro.get(f.tipo_registro.id)?.length ?? 0) > 0) return false;
+      return true;
+    });
+  }, [ordemServicoQuery.data, registrosPorTipoRegistro]);
+  const abasDaVisita: AbaLoja<Aba>[] = [
+    { chave: 'DADOS', rotulo: 'Dados cadastrais', icone: 'store-outline' },
+    { chave: 'HISTORICO', rotulo: 'Histórico da loja', icone: 'history' },
+    { chave: 'ACOES', rotulo: 'Ações', icone: 'clipboard-check-outline', selo: acoesPendentes.length + formulariosPendentesOS.length },
+    { chave: 'PRODUTOS', rotulo: 'Mix', icone: 'package-variant-closed' },
+    { chave: 'REGISTROS', rotulo: 'Registros', icone: 'format-list-checks' },
+  ];
+  const tituloFormulariosOS = ordemServicoQuery.data?.direcionamento?.descricao ?? 'Formulários desta ordem de serviço';
+
   // "Vincular a" (busca de produto no registro geral) enxerga campanha + sortimento juntos —
   // são só duas fontes alimentando a mesma lista de escolha, sem relação com os checklists
   // separados acima. campanha_uuid/campanha_descricao ficam vazios pros itens de sortimento
@@ -242,7 +376,8 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       .map((i) => ({
         produto_uuid: i.produtoUuid,
         descricao: i.descricao,
-        imagem_url: null,
+        imagem_url: i.imagemUrl,
+        codigo_barras: i.codigoBarras,
         propriedade: i.propriedade,
         produto_chave: i.produtoChave,
         secao_uuid: i.secaoUuid,
@@ -253,36 +388,27 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     return [...produtos, ...extras];
   }, [produtos, itensSortimento]);
 
-  const totalConferidos = produtos.filter((p) => (registrosPorProduto.get(p.produto_uuid)?.length ?? 0) > 0).length;
-  // Contador do sortimento é só informativo, separado do de campanha — não se misturam nem se
-  // filtram entre si (ver docs/14-SORTIMENTO-PONTO-VENDA.md §8.3).
-  const totalConferidosSortimento = itensSortimento.filter(
+  // Contagem de referência do Mix — quantos itens do mix já têm pelo menos um registro nesta
+  // visita. Só informativo (a aba Mix é referência livre, não tem "completar" obrigatório).
+  const totalMixRegistrados = itensSortimento.filter(
     (i) => (registrosPorProduto.get(i.produtoUuid)?.length ?? 0) > 0,
   ).length;
 
-  // Produtos-chave (campanha ou sortimento) sem nenhum registro — nomeados na confirmação de
-  // finalizar em vez de só contados, ver confirmarFinalizacao() e
-  // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §6. Dedup por uuid (o mesmo produto pode vir
-  // tanto de campanha quanto de sortimento).
+  // Produtos-chave do Mix sem nenhum registro — nomeados na confirmação de finalizar em vez de
+  // só contados, ver confirmarFinalizacao() e docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §6.
   const produtosChaveFaltando = useMemo(() => {
     const nomes = new Map<string, string>();
-    for (const p of produtos) {
-      if (p.produto_chave && (registrosPorProduto.get(p.produto_uuid)?.length ?? 0) === 0) {
-        nomes.set(p.produto_uuid, p.descricao);
-      }
-    }
     for (const i of itensSortimento) {
       if (i.produtoChave && (registrosPorProduto.get(i.produtoUuid)?.length ?? 0) === 0) {
         nomes.set(i.produtoUuid, i.descricao);
       }
     }
     return Array.from(nomes.values());
-  }, [produtos, itensSortimento, registrosPorProduto]);
+  }, [itensSortimento, registrosPorProduto]);
 
-  // Seções com ao menos uma pergunta elegível pra grade (Fase 2, ver
-  // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §9) — junta produtos de campanha e sortimento
-  // por seção, dedup por uuid, só entra na lista se resolverGranularidade achar PRODUTO pra
-  // algum tipo simples (sem foto, sem campos customizados) nessa seção específica.
+  // Seções do Mix com ao menos uma pergunta elegível pra grade (Fase 2, ver
+  // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §9) — só entra na lista se resolverGranularidade
+  // achar PRODUTO pra algum tipo simples (sem foto, sem campos customizados) nessa seção.
   const gruposSecaoComGrade = useMemo(() => {
     const porSecao = new Map<string, { descricao: string; produtos: Map<string, string> }>();
 
@@ -293,7 +419,6 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       porSecao.set(secaoUuid, grupo);
     }
 
-    for (const p of produtos) adicionar(p.secao_uuid, p.secao_descricao, p.produto_uuid, p.descricao);
     for (const i of itensSortimento) adicionar(i.secaoUuid, i.secaoDescricao, i.produtoUuid, i.descricao);
 
     const grupos: { secaoUuid: string; secaoDescricao: string; produtos: { uuid: string; descricao: string }[] }[] = [];
@@ -309,22 +434,73 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       });
     }
     return grupos.sort((a, b) => a.secaoDescricao.localeCompare(b.secaoDescricao));
-  }, [produtos, itensSortimento, tiposRegistro]);
+  }, [itensSortimento, tiposRegistro]);
 
   const criarRegistroMutation = useMutation({
     mutationFn: (resultado: RegistroFormResultado) =>
       criarRegistroVisitaLocal({
         usuarioId: usuario!.id,
         visitaLocalId,
-        produtoDescricao: contextoModal.produto?.descricao,
         resultado,
       }),
-    onSuccess: () => {
+    onSuccess: (_dados, resultado) => {
       setErroRegistro(null);
       setModalAberto(false);
       releLocal();
+      // Ruptura confirmada (decisão 4 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md) — só abre a
+      // tela de confirmação DEPOIS que o registro principal (com o campo SORTIMENTO) já salvou.
+      // Guarda também as fotos do registro principal — decisão 4/§4.5: "os registros de ruptura
+      // também recebem a mesma evidência (foto) da coleta que os gerou".
+      if (resultado.produtosAusentesConfirmaveis?.length) {
+        setConfirmacaoRuptura({
+          produtos: resultado.produtosAusentesConfirmaveis,
+          imagensUriOrigem: resultado.imagensUri ?? [],
+        });
+      }
     },
     onError: () => setErroRegistro('Não foi possível salvar o registro neste aparelho. Tente de novo.'),
+  });
+
+  // Ruptura confirmada — cria um VisitaRegistro de ruptura por produto confirmado, apontando pro
+  // TipoRegistro com eh_ruptura=true da empresa (o mesmo que a Grade de Coleta já usa). Ver
+  // App\Support\GranularidadeChecklist e docs/20-FORMULARIO-DINAMICO-CAMPANHA.md §4.5.
+  const [confirmacaoRuptura, setConfirmacaoRuptura] = useState<{
+    produtos: { produtoUuid: string; descricao: string }[];
+    imagensUriOrigem: string[];
+  } | null>(null);
+  const tipoRuptura = useMemo(() => tiposRegistroAtivos.find((t) => t.eh_ruptura) ?? null, [tiposRegistroAtivos]);
+
+  const confirmarRupturaMutation = useMutation({
+    mutationFn: async (produtosConfirmados: { produtoUuid: string; descricao: string }[]) => {
+      if (!tipoRuptura || !confirmacaoRuptura) return;
+      for (const produto of produtosConfirmados) {
+        // Cópia própria pra cada registro de ruptura (não reaproveita o mesmo caminho de
+        // arquivo do registro principal) — a fila local assume que cada linha "dona" das
+        // próprias fotos as apaga sozinha ao cancelar (ver cancelarRegistroVisitaLocal); um
+        // caminho compartilhado entre registros locais diferentes quebraria essa suposição
+        // (cancelar um apagaria a foto debaixo do outro).
+        const imagensUri = await Promise.all(
+          confirmacaoRuptura.imagensUriOrigem.map((uri) => copiarImagemParaArmazenamentoPersistente(uri)),
+        );
+        await criarRegistroVisitaLocal({
+          usuarioId: usuario!.id,
+          visitaLocalId,
+          produtoDescricao: produto.descricao,
+          resultado: {
+            tipoRegistroUuid: tipoRuptura.id,
+            produtoAuditoriaUuid: produto.produtoUuid,
+            ruptura: true,
+            imagensUri: imagensUri.length > 0 ? imagensUri : undefined,
+          },
+        });
+      }
+    },
+    onSuccess: () => {
+      setConfirmacaoRuptura(null);
+      releLocal();
+    },
+    onError: () =>
+      Alert.alert('Erro', 'Não foi possível registrar as rupturas confirmadas. Tente de novo pela aba Mix.'),
   });
 
   const cancelarRegistroMutation = useMutation({
@@ -366,45 +542,100 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     onError: () => Alert.alert('Erro', 'Não foi possível descartar esta visita. Tente de novo.'),
   });
 
-  function abrirModalGeral() {
-    setErroRegistro(null);
-    setContextoModal({ produto: null });
-    setTipoFixoModal(null);
-    setModalAberto(true);
+  // Saídas pra visita TRAVADA na fila — ver descartarVisitaLocalForcado / reabrirVisitaLocal em
+  // lib/visitaLocal.ts. Funcionam sem rede e sem depender do parâmetro de cancelamento da empresa.
+  const descarteSeguro = useDescarteVisita(() => navigation.popToTop());
+
+  const descartarForcadoMutation = useMutation({
+    mutationFn: () => descartarVisitaLocalForcado(visita!),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['visitas-locais-abertas'] });
+      void queryClient.invalidateQueries({ queryKey: ['visitas-locais-pendentes'] });
+      navigation.popToTop();
+    },
+    onError: () => Alert.alert('Erro', 'Não foi possível descartar esta visita. Tente de novo.'),
+  });
+
+  const reabrirMutation = useMutation({
+    mutationFn: () => reabrirVisitaLocal(visitaLocalId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['visita-local', visitaLocalId] });
+      void queryClient.invalidateQueries({ queryKey: ['visitas-locais-abertas'] });
+    },
+    onError: () => Alert.alert('Erro', 'Não foi possível reabrir a visita. Tente de novo.'),
+  });
+
+  const tentarNovamenteMutation = useMutation({
+    mutationFn: () => tentarEnviarAgora(usuario!.id),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['visita-local', visitaLocalId] }),
+  });
+
+  function confirmarDescarteForcado() {
+    const servidor = visita?.servidorId
+      ? ' O servidor já conhece esta visita: vamos tentar cancelá-la lá, mas se não der o gestor pode ter que encerrá-la pelo admin.'
+      : '';
+    Alert.alert(
+      'Descartar visita',
+      `Tudo o que foi registrado nesta visita (inclusive fotos) será perdido e ela some do app.${servidor} Descartar mesmo assim?`,
+      [
+        { text: 'Voltar', style: 'cancel' },
+        { text: 'Descartar', style: 'destructive', onPress: () => descartarForcadoMutation.mutate() },
+      ],
+    );
   }
 
-  function abrirModalProduto(produto: { uuid: string; descricao: string }) {
+  function confirmarReabertura() {
+    Alert.alert(
+      'Reabrir visita',
+      'A visita volta para "em andamento" e o checkout pendente é cancelado. Você pode responder o que faltar e finalizar de novo.',
+      [
+        { text: 'Voltar', style: 'cancel' },
+        { text: 'Reabrir', onPress: () => reabrirMutation.mutate() },
+      ],
+    );
+  }
+
+  const cancelarVisitaMutation = useMutation({
+    mutationFn: () => cancelarVisitaLocal(visita!),
+    onSuccess: () => navigation.popToTop(),
+    onError: () => Alert.alert('Erro', 'Não foi possível cancelar a visita agora. Tente de novo.'),
+  });
+
+  function confirmarCancelamentoVisita() {
+    Alert.alert(
+      'Cancelar visita',
+      'Os registros já feitos aqui (inclusive fotos) não contam mais. Essa ação não pode ser desfeita. Cancelar mesmo assim?',
+      [
+        { text: 'Voltar', style: 'cancel' },
+        { text: 'Cancelar visita', style: 'destructive', onPress: () => cancelarVisitaMutation.mutate() },
+      ],
+    );
+  }
+
+  function abrirModalGeral() {
     setErroRegistro(null);
-    setContextoModal({ produto });
     setTipoFixoModal(null);
     setModalAberto(true);
   }
 
   function abrirModalAcao(tipo: TipoRegistro) {
     setErroRegistro(null);
-    setContextoModal({ produto: null });
     setTipoFixoModal(tipo);
     setModalAberto(true);
   }
 
   function confirmarFinalizacao() {
     const rupturas = registrosLocais.filter((r) => r.ruptura).length;
-    const naoConferidos = produtos.length - totalConferidos;
 
-    const partes: string[] = [];
-    if (produtos.length > 0) partes.push(`${totalConferidos} de ${produtos.length} itens conferidos`);
+    const partes: string[] = [`${registrosAvulsos.length} registro(s) geral(is)`];
     if (rupturas > 0) partes.push(`${rupturas} ruptura(s)`);
-    partes.push(`${registrosAvulsos.length} registro(s) geral(is)`);
 
     let mensagem = `${partes.join(', ')}.`;
     if (produtosChaveFaltando.length > 0) {
       const verbo = produtosChaveFaltando.length === 1 ? 'não foi registrado' : 'não foram registrados';
       mensagem += ` Cadê ${produtosChaveFaltando.join(', ')}? ${verbo}.`;
     }
-    mensagem +=
-      naoConferidos > 0
-        ? ` ${naoConferidos} item(ns) da campanha não foram conferidos — deseja finalizar mesmo assim?`
-        : ' Deseja finalizar a visita?';
+    mensagem += ' Deseja finalizar a visita?';
 
     Alert.alert('Finalizar visita', mensagem, [
       { text: 'Cancelar', style: 'cancel' },
@@ -426,7 +657,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   if (visitaQuery.isLoading) {
     return (
       <View style={styles.centroTela}>
-        <ActivityIndicator size="large" color="#2563eb" />
+        <ActivityIndicator size="large" color={cores.primaria} />
       </View>
     );
   }
@@ -436,9 +667,14 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     // registros + checkout todos confirmados) enquanto o promotor ainda estava nesta tela —
     // sucesso, não erro. Ver excluirVisitaLocalCompleta em lib/db/filaVisitas.ts.
     if (jaViuVisita.current) {
+      const terminou = ultimoStatusVisto.current === 'FINALIZADA_LOCAL';
       return (
         <View style={styles.centroTela}>
-          <Text style={styles.vazioTexto}>Visita sincronizada com sucesso.</Text>
+          <Text style={styles.vazioTexto}>
+            {terminou
+              ? 'Visita finalizada e enviada ao servidor com sucesso.'
+              : 'Esta visita saiu deste aparelho sem ter sido finalizada (foi descartada ou cancelada). Se você não fez isso, avise o suporte informando o horário.'}
+          </Text>
           <Pressable style={styles.botaoRetry} onPress={() => navigation.popToTop()}>
             <Text style={styles.botaoRetryTexto}>Voltar</Text>
           </Pressable>
@@ -460,14 +696,10 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           Iniciada às{' '}
           {new Date(visita.inicioEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
         </Text>
-        {produtos.length > 0 && (
-          <Text style={styles.progresso}>
-            {totalConferidos} de {produtos.length} itens de campanha conferidos
-          </Text>
-        )}
         {itensSortimento.length > 0 && (
-          <Text style={styles.progresso}>
-            {totalConferidosSortimento} de {itensSortimento.length} itens de sortimento registrados
+          <Text style={styles.mixStat}>
+            {itensSortimento.length} produto(s) no mix desta loja
+            {totalMixRegistrados > 0 ? ` (${totalMixRegistrados} com registro nesta visita)` : ''}
           </Text>
         )}
 
@@ -476,16 +708,46 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             <Text style={styles.statusBoxTexto}>
               Check-in recusado pelo servidor{visita.erro ? `: ${visita.erro}` : ''}.
             </Text>
-            <Pressable style={styles.botaoDescartar} onPress={confirmarDescarte} disabled={descartarMutation.isPending}>
-              <Text style={styles.botaoDescartarTexto}>
-                {descartarMutation.isPending ? 'Descartando...' : 'Descartar visita'}
-              </Text>
+            <Pressable style={styles.botaoDescartar} onPress={() => setAba('REGISTROS')}>
+              <Text style={styles.botaoDescartarTexto}>Descartar na aba Registros</Text>
             </Pressable>
           </View>
+        ) : visita.status === 'FINALIZADA_LOCAL' ? (
+          // Visita finalizada aqui, mas o checkout ainda não foi confirmado pelo servidor. Antes esta
+          // tela não dizia nada disso e ainda oferecia "Finalizar visita" de novo — parecia uma
+          // visita nova, e não havia como sair. Agora mostra o motivo e as três saídas.
+          <View style={[styles.statusBox, !!visita.erro && styles.statusBoxErro]}>
+            <Text style={styles.statusBoxTexto}>
+              Visita finalizada, aguardando confirmação do servidor.
+              {visita.erro ? `\n${visita.erro}` : online ? '' : '\nSem conexão — envia sozinha quando o sinal voltar.'}
+              {/formul[aá]rio/i.test(visita.erro ?? '')
+                ? '\nÉ só responder o formulário pendente em Ações: assim que ele sobe, a visita é enviada sozinha.'
+                : ''}
+            </Text>
+            <View style={{ flexDirection: 'row', gap: espaco.sm, flexWrap: 'wrap' }}>
+              <Pressable
+                style={[styles.botaoDescartar, { backgroundColor: cores.primaria }]}
+                onPress={() => tentarNovamenteMutation.mutate()}
+                disabled={tentarNovamenteMutation.isPending}
+              >
+                <Text style={styles.botaoDescartarTexto}>
+                  {tentarNovamenteMutation.isPending ? 'Enviando...' : 'Tentar enviar agora'}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.botaoDescartar, { backgroundColor: neutro[700] }]}
+                onPress={confirmarReabertura}
+                disabled={reabrirMutation.isPending}
+              >
+                <Text style={styles.botaoDescartarTexto}>Reabrir visita</Text>
+              </Pressable>
+            </View>
+          </View>
         ) : !visita.servidorId ? (
-          <View style={styles.statusBox}>
+          <View style={[styles.statusBox, !!visita.erro && styles.statusBoxErro]}>
             <Text style={styles.statusBoxTexto}>
               {online ? 'Enviando check-in...' : 'Sem conexão — check-in será enviado quando o sinal voltar.'}
+              {visita.erro ? `\n${visita.erro}` : ''}
             </Text>
           </View>
         ) : null}
@@ -497,29 +759,26 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         </View>
       )}
 
-      <View style={styles.abas}>
-        <Pressable style={[styles.aba, aba === 'ACOES' && styles.abaAtiva]} onPress={() => setAba('ACOES')}>
-          <Text style={[styles.abaTexto, aba === 'ACOES' && styles.abaTextoAtivo]}>Ações</Text>
-        </Pressable>
-        <Pressable style={[styles.aba, aba === 'PRODUTOS' && styles.abaAtiva]} onPress={() => setAba('PRODUTOS')}>
-          <Text style={[styles.abaTexto, aba === 'PRODUTOS' && styles.abaTextoAtivo]}>Produtos</Text>
-        </Pressable>
-        <Pressable style={[styles.aba, aba === 'REGISTROS' && styles.abaAtiva]} onPress={() => setAba('REGISTROS')}>
-          <Text style={[styles.abaTexto, aba === 'REGISTROS' && styles.abaTextoAtivo]}>Registros</Text>
-        </Pressable>
-      </View>
+      <AbasLoja
+        ativa={aba}
+        onChange={setAba}
+        abas={abasDaVisita}
+      />
 
-      {aba === 'ACOES' ? (
+      {aba === 'DADOS' ? (
+        <ScrollView>
+          {pontoVenda && <DadosCadastraisLoja pontoVenda={pontoVenda} />}
+        </ScrollView>
+      ) : aba === 'HISTORICO' ? (
+        <ScrollView>{!!pontoVendaUuid && <HistoricoLojaPanel pontoVendaUuid={pontoVendaUuid} />}</ScrollView>
+      ) : aba === 'ACOES' ? (
         <ScrollView contentContainerStyle={styles.lista}>
           <View style={styles.secao}>
             <Text style={styles.secaoTitulo}>Ações</Text>
-            <Text style={styles.secaoSubtitulo}>
-              Tarefas obrigatórias desta visita, além do checklist de produtos — toque pra
-              registrar.
-            </Text>
+            <Text style={styles.secaoSubtitulo}>Tarefas obrigatórias desta visita — toque pra registrar.</Text>
             {tiposRegistroQuery.isLoading ? (
               <View style={styles.centro}>
-                <ActivityIndicator color="#2563eb" />
+                <ActivityIndicator color={cores.primaria} />
               </View>
             ) : acoesPendentes.length === 0 ? (
               <Text style={styles.vazioTexto}>Nenhuma ação obrigatória pra esta visita.</Text>
@@ -534,24 +793,32 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
               ))
             )}
           </View>
-        </ScrollView>
-      ) : aba === 'PRODUTOS' ? (
-        <ScrollView contentContainerStyle={styles.lista}>
-          {produtosQuery.isLoading && (
-            <View style={styles.centro}>
-              <ActivityIndicator color="#2563eb" />
+
+          {/* Formulários de Ordem de Serviço (Direcionamento, ou vinculado direto numa OS
+              manual) — seção própria, só aparece quando há alguma pendência. Ver
+              docs/25-DIRECIONAMENTO-ORDEM-SERVICO.md §6. */}
+          {formulariosPendentesOS.length > 0 && (
+            <View style={styles.secao}>
+              <Text style={styles.secaoTitulo}>{tituloFormulariosOS}</Text>
+              <Text style={styles.secaoSubtitulo}>Formulários que você precisa responder nesta visita.</Text>
+              {formulariosPendentesOS.map((formulario) => {
+                const tipo = tipoRegistroPorUuid.get(formulario.tipo_registro.id);
+                if (!tipo) return null;
+                return (
+                  <ProdutoItem
+                    key={formulario.tipo_registro.id}
+                    descricao={formulario.obrigatorio ? tipo.descricao : `${tipo.descricao} (opcional)`}
+                    registros={[]}
+                    onPress={() => abrirModalAcao(tipo)}
+                  />
+                );
+              })}
             </View>
           )}
 
-          {produtosQuery.isError && (
-            <View style={styles.centro}>
-              <Text style={styles.vazioTexto}>Não foi possível carregar os itens da campanha.</Text>
-              <Pressable style={styles.botaoRetry} onPress={() => void produtosQuery.refetch()}>
-                <Text style={styles.botaoRetryTexto}>Tentar novamente</Text>
-              </Pressable>
-            </View>
-          )}
-
+          {/* Checklist em grade É preenchimento de formulário (marca várias respostas simples
+              de uma seção de uma vez) — por isso vive em Ações, não na aba Mix (que é só
+              referência). Ver docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §9. */}
           {gruposSecaoComGrade.length > 0 && (
             <View style={styles.secao}>
               <Text style={styles.secaoTitulo}>Checklist em grade</Text>
@@ -586,39 +853,92 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
               })}
             </View>
           )}
+        </ScrollView>
+      ) : aba === 'PRODUTOS' ? (
+        <ScrollView contentContainerStyle={styles.lista}>
+          {sortimentoQuery.isLoading && (
+            <View style={styles.centro}>
+              <ActivityIndicator color={cores.primaria} />
+            </View>
+          )}
 
-          {gruposPorCampanha.map((grupo) => (
-            <View key={grupo.campanhaUuid} style={styles.secao}>
-              <Text style={styles.secaoTitulo}>{grupo.titulo}</Text>
-              {grupo.produtos.map((produto) => (
-                <ProdutoItem
-                  key={produto.produto_uuid}
-                  descricao={produto.descricao}
-                  registros={registrosPorProduto.get(produto.produto_uuid) ?? []}
-                  onPress={() => abrirModalProduto({ uuid: produto.produto_uuid, descricao: produto.descricao })}
-                />
+          {sortimentoQuery.isError && (
+            <View style={styles.centro}>
+              <Text style={styles.vazioTexto}>Não foi possível carregar o mix desta loja.</Text>
+              <Pressable style={styles.botaoRetry} onPress={() => void sortimentoQuery.refetch()}>
+                <Text style={styles.botaoRetryTexto}>Tentar novamente</Text>
+              </Pressable>
+            </View>
+          )}
+
+          {itensSortimento.length > 0 && (
+            <View style={styles.agrupamentoRow}>
+              {(
+                [
+                  { valor: 'DEPARTAMENTO', rotulo: 'Departamento' },
+                  { valor: 'SECAO', rotulo: 'Seção' },
+                  { valor: 'MARCA', rotulo: 'Marca' },
+                  { valor: 'PRODUTO', rotulo: 'Produto' },
+                ] as { valor: CriterioAgrupamentoMix; rotulo: string }[]
+              ).map((opcao) => (
+                <Pressable
+                  key={opcao.valor}
+                  style={[styles.agrupamentoPill, agrupamentoMix === opcao.valor && styles.agrupamentoPillAtiva]}
+                  onPress={() => setAgrupamentoMix(opcao.valor)}
+                >
+                  <Text
+                    style={[
+                      styles.agrupamentoPillTexto,
+                      agrupamentoMix === opcao.valor && styles.agrupamentoPillTextoAtivo,
+                    ]}
+                  >
+                    {opcao.rotulo}
+                  </Text>
+                </Pressable>
               ))}
             </View>
-          ))}
+          )}
 
-          {gruposSortimentoPorPropriedade.map((grupo) => (
-            <View key={grupo.titulo} style={styles.secao}>
-              <Text style={styles.secaoTitulo}>{grupo.titulo}</Text>
+          {gruposMix.map((grupo) => (
+            <View key={grupo.chave} style={styles.secao}>
+              {grupo.titulo && <Text style={styles.secaoTitulo}>{grupo.titulo}</Text>}
               {grupo.itens.map((item) => (
                 <ProdutoItem
                   key={item.produtoUuid}
                   descricao={item.descricao}
                   registros={registrosPorProduto.get(item.produtoUuid) ?? []}
                   tagPendente={item.pendente}
-                  onPress={() => abrirModalProduto({ uuid: item.produtoUuid, descricao: item.descricao })}
+                  imagemUrl={item.imagemUrl}
+                  produtoChave={item.produtoChave}
+                  propriedade={item.propriedade}
+                  onPress={() =>
+                    setProdutoDetalhe({
+                      descricao: item.descricao,
+                      imagemUrl: item.imagemUrl,
+                      codigoBarras: item.codigoBarras,
+                      propriedade: item.propriedade,
+                      secaoDescricao: item.secaoDescricao,
+                      produtoChave: item.produtoChave,
+                    })
+                  }
+                  onVerDetalhes={() =>
+                    setProdutoDetalhe({
+                      descricao: item.descricao,
+                      imagemUrl: item.imagemUrl,
+                      codigoBarras: item.codigoBarras,
+                      propriedade: item.propriedade,
+                      secaoDescricao: item.secaoDescricao,
+                      produtoChave: item.produtoChave,
+                    })
+                  }
                 />
               ))}
             </View>
           ))}
 
-          {produtosQuery.isSuccess && !sortimentoQuery.isLoading && produtos.length === 0 && itensSortimento.length === 0 && (
+          {!sortimentoQuery.isLoading && itensSortimento.length === 0 && (
             <View style={styles.centro}>
-              <Text style={styles.vazioTexto}>Nenhum produto de campanha ou sortimento pra este PDV ainda.</Text>
+              <Text style={styles.vazioTexto}>Nenhum produto no mix deste PDV ainda.</Text>
             </View>
           )}
 
@@ -636,13 +956,12 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           <View style={styles.secao}>
             <Text style={styles.secaoTitulo}>Registros da visita</Text>
             <Text style={styles.secaoSubtitulo}>
-              Tudo que já foi registrado até agora, geral ou vinculado a um produto — nada some
-              da vista, mesmo depois de tocar num item da aba Produtos.
+              Tudo que já foi registrado até agora, geral ou vinculado a um produto do mix.
             </Text>
             {registrosLocais.length === 0 ? (
               <Text style={styles.vazioTexto}>
-                Nenhum registro ainda. Toque num produto na aba Produtos ou em "Registro geral"
-                aqui embaixo pra criar um.
+                Nenhum registro ainda. Toque em "Ações" pras tarefas obrigatórias, ou em
+                "Registro geral" aqui embaixo pra registrar algo do mix.
               </Text>
             ) : (
               registrosLocais.map((registro) => (
@@ -657,6 +976,32 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
               ))
             )}
           </View>
+
+          {/* Descartar visita mora aqui, não no topo: é ação rara e destrutiva. Funciona sem rede e
+              sem depender do parâmetro de cancelamento (descartarVisitaLocalForcado). */}
+          <View style={styles.zonaRisco}>
+            <Text style={styles.zonaRiscoTitulo}>Zona de risco</Text>
+            <Text style={styles.zonaRiscoTexto}>
+              Apaga esta visita e tudo o que foi registrado nela, inclusive fotos. Use quando a visita travou
+              ou foi aberta por engano.
+            </Text>
+            <Pressable
+              style={({ pressed }) => [styles.botaoZonaRisco, pressed && { opacity: 0.85 }]}
+              onPress={() => descarteSeguro.descartar(visita)}
+              disabled={descarteSeguro.ocupado}
+            >
+              <Text style={styles.botaoZonaRiscoTexto}>
+                {descarteSeguro.ocupado ? 'Descartando...' : 'Descartar visita'}
+              </Text>
+            </Pressable>
+            {cancelamentoVisitaPermitido && (visita.status === 'RASCUNHO' || visita.status === 'CHECKIN_ENVIADO') && (
+              <Pressable onPress={confirmarCancelamentoVisita} disabled={cancelarVisitaMutation.isPending} hitSlop={8}>
+                <Text style={styles.zonaRiscoLink}>
+                  {cancelarVisitaMutation.isPending ? 'Cancelando...' : 'Cancelar visita no servidor (com registro do motivo)'}
+                </Text>
+              </Pressable>
+            )}
+          </View>
         </ScrollView>
       )}
 
@@ -665,28 +1010,36 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           style={({ pressed }) => [styles.botaoSecundario, pressed && styles.botaoPressionado]}
           onPress={abrirModalGeral}
         >
-          <Text style={styles.botaoSecundarioTexto}>+ Registro geral</Text>
+          <MaterialCommunityIcons name="plus-circle-outline" size={18} color={cores.primaria} />
+          <Text style={styles.botaoSecundarioTexto}>Registro geral</Text>
         </Pressable>
 
+        {visita.status !== 'FINALIZADA_LOCAL' && visita.status !== 'REJEITADA' && (
         <Pressable
           style={({ pressed }) => [styles.botaoPrimario, pressed && styles.botaoPressionado]}
           onPress={confirmarFinalizacao}
           disabled={checkoutMutation.isPending}
         >
           {checkoutMutation.isPending ? (
-            <ActivityIndicator color="#ffffff" />
+            <ActivityIndicator color={cores.onPrimaria} />
           ) : (
-            <Text style={styles.botaoPrimarioTexto}>Finalizar visita</Text>
+            <>
+              <MaterialCommunityIcons name="flag-checkered" size={18} color={cores.onPrimaria} />
+              <Text style={styles.botaoPrimarioTexto}>Finalizar visita</Text>
+            </>
           )}
         </Pressable>
+        )}
       </View>
+
+      {descarteSeguro.elemento}
 
       <RegistroFormModal
         visible={modalAberto}
-        tiposRegistro={tiposRegistro}
+        tiposRegistro={tiposRegistroParaDropdown}
         produtosDisponiveis={produtosParaVincular}
-        produtoContexto={contextoModal.produto}
         tipoFixo={tipoFixoModal}
+        pontoVendaUuid={pontoVendaUuid}
         enviando={criarRegistroMutation.isPending}
         erro={erroRegistro}
         onClose={() => {
@@ -706,6 +1059,16 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           onAdicionado={() => setModalAdicionarProdutoAberto(false)}
         />
       )}
+
+      <ProdutoDetalheModal produto={produtoDetalhe} onClose={() => setProdutoDetalhe(null)} />
+
+      <ConfirmarRupturaModal
+        visible={confirmacaoRuptura !== null}
+        produtos={confirmacaoRuptura?.produtos ?? []}
+        enviando={confirmarRupturaMutation.isPending}
+        onCancelar={() => setConfirmacaoRuptura(null)}
+        onConfirmar={(produtosConfirmados) => confirmarRupturaMutation.mutate(produtosConfirmados)}
+      />
     </View>
   );
 }
@@ -714,7 +1077,11 @@ function ProdutoItem({
   descricao,
   registros,
   tagPendente,
+  imagemUrl,
+  produtoChave,
+  propriedade,
   onPress,
+  onVerDetalhes,
 }: {
   descricao: string;
   registros: RegistroLocal[];
@@ -722,31 +1089,58 @@ function ProdutoItem({
   // registrar normalmente, só não é oficial até o gestor decidir. Ver
   // docs/14-SORTIMENTO-PONTO-VENDA.md §9.
   tagPendente?: boolean;
+  // Foto de catálogo do produto (ProdutoAuditoria.imagem_url) — sempre a do cadastro, nunca a
+  // de um registro feito nesta visita (essa aparece dentro do próprio registro, na aba
+  // "Registros"; aqui é só identificação de qual produto é).
+  imagemUrl?: string | null;
+  // Antes só aparecia dentro do modal de detalhe (ⓘ) — docs/26-MELHORIAS-PRODUTIVIDADE-PROMOTOR.md
+  // §5 item 10: o promotor precisa saber que é chave sem precisar abrir nada, direto na lista.
+  produtoChave?: boolean;
+  // Só presente nos itens do Mix — "Nosso produto"/"Concorrente" em vez de "Não conferido"
+  // (a aba Mix é referência, não tem noção de "conferir").
+  propriedade?: string | null;
   onPress: () => void;
+  // Ausente pra itens sem ficha própria pra mostrar (ex.: Ações, que são TipoRegistro, não
+  // produto) — o botão "ⓘ" some nesse caso em vez de abrir um modal vazio.
+  onVerDetalhes?: () => void;
 }) {
-  const registroComFoto = registros.find((r) => r.imagemLocalPath);
   const temRuptura = registros.some((r) => r.ruptura);
   const temErro = registros.some((r) => r.status === 'ERRO');
   const conferido = registros.length > 0;
 
   return (
     <Pressable style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressionado]} onPress={onPress}>
-      {registroComFoto?.imagemLocalPath ? (
-        <Image source={{ uri: registroComFoto.imagemLocalPath }} style={styles.itemThumb} />
+      {imagemUrl ? (
+        <Image source={{ uri: imagemUrl }} style={[styles.itemThumb, styles.itemThumbProduto]} resizeMode="contain" />
       ) : (
         <View style={[styles.itemThumb, styles.itemThumbVazio]} />
       )}
 
       <View style={styles.itemInfo}>
-        <Text style={styles.itemNome} numberOfLines={2}>
-          {descricao}
-        </Text>
-        {!conferido && <Text style={styles.itemStatusPendente}>Não conferido</Text>}
+        <View style={styles.itemNomeLinha}>
+          {produtoChave && <MaterialCommunityIcons name="key-star" size={14} color={cores.acentoTexto} />}
+          <Text style={styles.itemNome} numberOfLines={2}>
+            {descricao}
+          </Text>
+        </View>
+        {propriedade !== undefined ? (
+          <Text style={propriedade === 'CONCORRENTE' ? styles.itemTagConcorrente : styles.itemStatusPendente}>
+            {propriedade === 'CONCORRENTE' ? 'Concorrente' : 'Nosso produto'}
+          </Text>
+        ) : (
+          !conferido && <Text style={styles.itemStatusPendente}>Não conferido</Text>
+        )}
         {temErro && <Text style={styles.itemStatusErro}>Um registro não foi aceito pelo servidor</Text>}
         {tagPendente && <Text style={styles.badgePendenteAprovacao}>Pendente de aprovação</Text>}
       </View>
 
       {temRuptura && <Text style={styles.badgeRuptura}>Ruptura</Text>}
+      {conferido && <Text style={styles.badgeContagem}>{registros.length}</Text>}
+      {onVerDetalhes && (
+        <Pressable onPress={onVerDetalhes} hitSlop={10} style={styles.botaoDetalhes}>
+          <Text style={styles.botaoDetalhesTexto}>ⓘ</Text>
+        </Pressable>
+      )}
     </Pressable>
   );
 }
@@ -769,8 +1163,13 @@ function RegistroCard({
 
   return (
     <View style={styles.itemCard}>
-      {registro.imagemLocalPath ? (
-        <Image source={{ uri: registro.imagemLocalPath }} style={styles.itemThumb} />
+      {registro.imagensLocais[0] ? (
+        <View style={styles.itemThumbWrap}>
+          <Image source={{ uri: registro.imagensLocais[0] }} style={styles.itemThumb} />
+          {registro.imagensLocais.length > 1 && (
+            <Text style={styles.itemThumbBadge}>+{registro.imagensLocais.length - 1}</Text>
+          )}
+        </View>
       ) : (
         <View style={[styles.itemThumb, styles.itemThumbVazio]} />
       )}
@@ -794,11 +1193,6 @@ function RegistroCard({
       <View style={styles.badgesColuna}>
         {registro.status === 'PENDENTE' && <Text style={styles.badgePendenteEnvio}>Aguardando envio</Text>}
         {registro.ruptura && <Text style={styles.badgeRuptura}>Ruptura</Text>}
-        {registro.momento && (
-          <Text style={registro.momento === 'ANTES' ? styles.badgeAntes : styles.badgeDepois}>
-            {registro.momento === 'ANTES' ? 'Antes' : 'Depois'}
-          </Text>
-        )}
       </View>
     </View>
   );
@@ -807,214 +1201,297 @@ function RegistroCard({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: cores.fundo,
   },
+  zonaRisco: {
+    margin: espaco.lg,
+    marginTop: espaco.xl,
+    padding: espaco.lg,
+    borderRadius: raio.lg,
+    borderWidth: 1,
+    borderColor: cores.erroBorda,
+    backgroundColor: cores.erroFundo,
+    gap: espaco.sm,
+  },
+  zonaRiscoTitulo: { fontSize: 11, fontWeight: '800', letterSpacing: 1, color: cores.erro, textTransform: 'uppercase' },
+  zonaRiscoTexto: { fontSize: 13, color: cores.textoSecundario },
+  botaoZonaRisco: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    paddingHorizontal: espaco.lg,
+    justifyContent: 'center',
+    borderRadius: raio.md,
+    borderWidth: 1.5,
+    borderColor: cores.erro,
+  },
+  botaoZonaRiscoTexto: { color: cores.erro, fontWeight: '800', fontSize: 14 },
+  zonaRiscoLink: { color: cores.erro, fontSize: 12, fontWeight: '600', textDecorationLine: 'underline' },
   centroTela: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 32,
-    gap: 16,
-    backgroundColor: '#ffffff',
+    paddingHorizontal: espaco.xxl,
+    gap: espaco.lg,
+    backgroundColor: cores.fundoCard,
   },
   abas: {
     flexDirection: 'row',
-    backgroundColor: '#ffffff',
+    backgroundColor: cores.fundoCard,
     borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+    borderBottomColor: cores.divisor,
+    padding: espaco.xs,
+    gap: espaco.xs,
   },
   aba: {
     flex: 1,
-    minHeight: 44,
+    flexDirection: 'row',
+    gap: 6,
+    minHeight: 40,
+    borderRadius: raio.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
   },
   abaAtiva: {
-    borderBottomColor: '#2563eb',
+    backgroundColor: cores.primariaClara,
   },
   abaTexto: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#6b7280',
+    color: cores.textoSecundario,
   },
   abaTextoAtivo: {
-    color: '#2563eb',
+    color: cores.primariaEscura,
   },
   cabecalho: {
-    backgroundColor: '#ffffff',
-    padding: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
-    gap: 4,
+    backgroundColor: cores.fundoCard,
+    paddingHorizontal: espaco.xl,
+    paddingVertical: espaco.md,
+    gap: 2,
   },
   pdvNome: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#111827',
+    ...tipografia.titulo,
+    color: cores.texto,
   },
   inicioTexto: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 4,
   },
-  progresso: {
-    fontSize: 14,
+  mixStat: {
+    fontSize: 13,
     fontWeight: '600',
-    color: '#2563eb',
-    marginTop: 8,
+    color: cores.textoSecundario,
+    marginTop: espaco.sm,
+  },
+  agrupamentoRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: espaco.xs,
+    marginBottom: espaco.sm,
+  },
+  agrupamentoPill: {
+    paddingHorizontal: espaco.md,
+    paddingVertical: 6,
+    borderRadius: raio.pill,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    backgroundColor: cores.fundoCard,
+  },
+  agrupamentoPillAtiva: {
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
+  },
+  agrupamentoPillTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: cores.textoSecundario,
+  },
+  agrupamentoPillTextoAtivo: {
+    color: cores.onPrimaria,
   },
   statusBox: {
-    backgroundColor: '#fffbeb',
+    backgroundColor: cores.acentoClaro,
     borderWidth: 1,
-    borderColor: '#fde68a',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 12,
+    borderColor: cores.acentoBorda,
+    borderRadius: raio.md,
+    padding: espaco.md,
+    marginTop: espaco.md,
   },
   statusBoxErro: {
-    backgroundColor: '#fef2f2',
-    borderColor: '#fecaca',
+    backgroundColor: cores.erroFundo,
+    borderColor: cores.erroBorda,
   },
   statusBoxTexto: {
     fontSize: 13,
-    color: '#92400e',
+    color: cores.acentoTexto,
   },
   botaoDescartar: {
-    marginTop: 10,
+    marginTop: espaco.sm,
     alignSelf: 'flex-start',
     minHeight: 40,
-    paddingHorizontal: 14,
+    paddingHorizontal: espaco.md,
     justifyContent: 'center',
-    borderRadius: 8,
-    backgroundColor: '#b91c1c',
+    borderRadius: raio.sm,
+    backgroundColor: cores.erro,
   },
   botaoDescartarTexto: {
-    color: '#ffffff',
+    color: cores.branco,
     fontWeight: '700',
     fontSize: 13,
   },
   erroBox: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: cores.erroFundo,
     borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 10,
-    padding: 12,
-    margin: 16,
+    borderColor: cores.erroBorda,
+    borderRadius: raio.md,
+    padding: espaco.md,
+    margin: espaco.lg,
     marginBottom: 0,
   },
   erroTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 14,
   },
   lista: {
-    padding: 16,
-    gap: 20,
+    padding: espaco.lg,
+    gap: espaco.xl,
   },
   secao: {
-    gap: 8,
+    gap: espaco.sm,
   },
   secaoTitulo: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#6b7280',
-    textTransform: 'uppercase',
+    ...tipografia.rotulo,
+    color: cores.textoSecundario,
   },
   secaoSubtitulo: {
     fontSize: 12,
-    color: '#9ca3af',
+    color: cores.textoTerciario,
     marginTop: -4,
   },
   centro: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 32,
-    gap: 12,
+    paddingVertical: espaco.xxl,
+    gap: espaco.md,
   },
   vazioTexto: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     textAlign: 'center',
   },
   botaoRetry: {
-    backgroundColor: '#2563eb',
-    borderRadius: 10,
-    paddingHorizontal: 20,
+    backgroundColor: cores.primaria,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.xl,
     minHeight: 44,
     alignItems: 'center',
     justifyContent: 'center',
   },
   botaoRetryTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontWeight: '700',
     fontSize: 14,
   },
   itemCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 12,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
+    padding: espaco.md,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    gap: 12,
+    borderColor: cores.borda,
+    gap: espaco.md,
+    ...sombraCard,
   },
   itemCardPressionado: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: neutro[100],
+  },
+  itemThumbWrap: {
+    width: 56,
+    height: 56,
   },
   itemThumb: {
     width: 56,
     height: 56,
-    borderRadius: 8,
+    borderRadius: raio.sm,
+  },
+  itemThumbProduto: {
+    backgroundColor: cores.fundoCard,
   },
   itemThumbVazio: {
-    backgroundColor: '#e5e7eb',
+    backgroundColor: cores.borda,
+  },
+  itemThumbBadge: {
+    position: 'absolute',
+    right: -4,
+    bottom: -4,
+    backgroundColor: cores.primaria,
+    color: cores.branco,
+    fontSize: 10,
+    fontWeight: '700',
+    borderRadius: raio.sm,
+    minWidth: 18,
+    textAlign: 'center',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    overflow: 'hidden',
   },
   itemInfo: {
     flex: 1,
   },
+  itemNomeLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   itemNome: {
+    flexShrink: 1,
     fontSize: 15,
     fontWeight: '600',
-    color: '#111827',
+    color: cores.texto,
   },
   itemStatusPendente: {
     fontSize: 12,
-    color: '#9ca3af',
+    color: cores.textoTerciario,
+    marginTop: 2,
+  },
+  itemTagConcorrente: {
+    fontSize: 12,
+    color: cores.acentoTexto,
+    fontWeight: '600',
     marginTop: 2,
   },
   linkGrade: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#2563eb',
+    color: cores.primaria,
   },
   itemVinculo: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#2563eb',
+    color: cores.primaria,
     marginTop: 2,
   },
   itemStatusErro: {
     fontSize: 12,
-    color: '#b91c1c',
+    color: cores.erro,
     marginTop: 2,
     fontWeight: '600',
   },
   itemCampoValor: {
     fontSize: 12,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 2,
   },
   linkCancelar: {
     fontSize: 12,
-    color: '#b91c1c',
+    color: cores.erro,
     fontWeight: '700',
-    marginTop: 6,
+    marginTop: espaco.xs,
   },
   badgePendenteAprovacao: {
     fontSize: 12,
-    color: '#92400e',
+    color: cores.acentoTexto,
     marginTop: 2,
     fontWeight: '600',
   },
@@ -1023,77 +1500,89 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   badgePendenteEnvio: {
-    backgroundColor: '#eff6ff',
-    color: '#1d4ed8',
+    backgroundColor: cores.primariaClara,
+    color: cores.primariaEscura,
     fontSize: 11,
     fontWeight: '700',
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 2,
   },
   badgeRuptura: {
-    backgroundColor: '#fef2f2',
-    color: '#b91c1c',
+    backgroundColor: cores.erroFundo,
+    color: cores.erro,
     fontSize: 12,
     fontWeight: '700',
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 2,
   },
-  badgeAntes: {
-    backgroundColor: '#fff7ed',
-    color: '#c2410c',
+  badgeContagem: {
+    backgroundColor: cores.acentoClaro,
+    color: cores.acentoTexto,
     fontSize: 12,
     fontWeight: '700',
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raio.pill,
+    minWidth: 20,
+    textAlign: 'center',
+    paddingHorizontal: espaco.sm,
     paddingVertical: 2,
   },
-  badgeDepois: {
-    backgroundColor: '#f0fdf4',
-    color: '#15803d',
-    fontSize: 12,
+  botaoDetalhes: {
+    width: 28,
+    height: 28,
+    borderRadius: raio.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  botaoDetalhesTexto: {
+    fontSize: 18,
+    color: cores.textoTerciario,
     fontWeight: '700',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
   },
   rodape: {
     flexDirection: 'row',
-    gap: 12,
-    padding: 16,
-    backgroundColor: '#ffffff',
+    gap: espaco.md,
+    padding: espaco.lg,
+    backgroundColor: cores.fundoCard,
     borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
+    borderTopColor: cores.divisor,
   },
   botaoSecundario: {
     flex: 1,
+    flexDirection: 'row',
+    gap: espaco.sm,
     minHeight: 52,
-    borderRadius: 10,
+    borderRadius: raio.md,
     borderWidth: 1,
-    borderColor: '#2563eb',
+    borderColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
   },
   botaoSecundarioTexto: {
-    color: '#2563eb',
+    color: cores.primaria,
     fontSize: 15,
     fontWeight: '700',
   },
   botaoPrimario: {
     flex: 1,
+    flexDirection: 'row',
+    gap: espaco.sm,
     minHeight: 52,
-    borderRadius: 10,
-    backgroundColor: '#2563eb',
+    borderRadius: raio.md,
+    backgroundColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
+    ...sombraFlutuante,
+    shadowColor: cores.primaria,
+    shadowOpacity: 0.3,
   },
   botaoPrimarioTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontSize: 15,
     fontWeight: '700',
   },
   botaoPressionado: {
-    opacity: 0.8,
+    opacity: 0.85,
   },
 });

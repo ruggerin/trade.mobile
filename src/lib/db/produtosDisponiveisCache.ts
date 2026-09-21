@@ -1,5 +1,5 @@
 import type { ProdutoDisponivel } from '../../types/api';
-import { getDatabase } from './database';
+import { getDatabase, comTransacao } from './database';
 
 export async function salvarProdutosDisponiveisCache(
   pontoVendaUuid: string,
@@ -8,7 +8,7 @@ export async function salvarProdutosDisponiveisCache(
   const db = await getDatabase();
   const agora = new Date().toISOString();
 
-  await db.withTransactionAsync(async () => {
+  await comTransacao(db, async () => {
     // Substitui só o recorte daquele PDV — cada loja tem sua própria "última resposta boa"
     // independente das outras.
     await db.runAsync('DELETE FROM produtos_disponiveis WHERE ponto_venda_id = ?', [pontoVendaUuid]);

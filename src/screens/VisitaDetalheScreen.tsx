@@ -2,18 +2,21 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ComentariosRegistroModal } from '../components/ComentariosRegistroModal';
+import { buscarNaoLidos } from '../lib/api/comentarios';
 import { buscarVisita, cancelarRegistro } from '../lib/api/visitas';
 import { buscarCancelamentoRegistroPermitido } from '../lib/api/parametros';
 import { useAuth } from '../lib/auth/AuthContext';
 import type { HistoricoStackParamList } from '../navigation/HistoricoStack';
 import type { StatusVisita, VisitaRegistro } from '../types/api';
+import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
 
 type Props = NativeStackScreenProps<HistoricoStackParamList, 'VisitaDetalhe'>;
 
 const STATUS_INFO: Record<StatusVisita, { label: string; bg: string; texto: string }> = {
-  ABERTA: { label: 'Aberta', bg: '#eff6ff', texto: '#1d4ed8' },
-  FINALIZADA: { label: 'Finalizada', bg: '#f0fdf4', texto: '#15803d' },
-  CANCELADA: { label: 'Cancelada', bg: '#f3f4f6', texto: '#6b7280' },
+  ABERTA: { label: 'Aberta', bg: cores.primariaClara, texto: cores.primariaEscura },
+  FINALIZADA: { label: 'Finalizada', bg: cores.sucessoFundo, texto: cores.sucesso },
+  CANCELADA: { label: 'Cancelada', bg: cores.divisor, texto: cores.textoSecundario },
 };
 
 // docs/05-APP-MOBILE-UX.md §3.7 — mesmos dados da tela de visita em andamento, mas sem
@@ -23,6 +26,13 @@ export function VisitaDetalheScreen({ route }: Props) {
   const { token } = useAuth();
   const queryClient = useQueryClient();
   const [erro, setErro] = useState<string | null>(null);
+  // Feedback do gestor (docs/28 §3) — registro aberto no modal + quais têm resposta não lida.
+  const [feedbackRegistro, setFeedbackRegistro] = useState<VisitaRegistro | null>(null);
+  const naoLidosQuery = useQuery({ queryKey: ['comentarios-nao-lidos'], queryFn: buscarNaoLidos, retry: false });
+  const registrosComNaoLido = useMemo(
+    () => new Set((naoLidosQuery.data?.registros ?? []).map((r) => r.registro_id)),
+    [naoLidosQuery.data],
+  );
 
   const query = useQuery({
     queryKey: ['visita', visitaInicial.id],
@@ -82,7 +92,7 @@ export function VisitaDetalheScreen({ route }: Props) {
 
       {query.isLoading && !visita.registros && (
         <View style={styles.centro}>
-          <ActivityIndicator color="#2563eb" />
+          <ActivityIndicator color={cores.primaria} />
         </View>
       )}
 
@@ -110,8 +120,18 @@ export function VisitaDetalheScreen({ route }: Props) {
             podeCancelar={cancelamentoPermitido}
             cancelando={cancelarMutation.isPending && cancelarMutation.variables === item.id}
             onCancelar={() => confirmarCancelamento(item)}
+            naoLido={registrosComNaoLido.has(item.id)}
+            onFeedback={() => setFeedbackRegistro(item)}
           />
         )}
+      />
+
+      <ComentariosRegistroModal
+        visible={feedbackRegistro !== null}
+        visitaUuid={visitaInicial.id}
+        registroUuid={feedbackRegistro?.id ?? null}
+        titulo={feedbackRegistro?.produto_auditoria?.descricao ?? feedbackRegistro?.tipo_registro.descricao ?? 'Registro'}
+        onClose={() => setFeedbackRegistro(null)}
       />
     </View>
   );
@@ -123,12 +143,16 @@ function RegistroCard({
   podeCancelar,
   cancelando,
   onCancelar,
+  naoLido,
+  onFeedback,
 }: {
   registro: VisitaRegistro;
   token: string | null;
   podeCancelar: boolean;
   cancelando: boolean;
   onCancelar: () => void;
+  naoLido: boolean;
+  onFeedback: () => void;
 }) {
   const vinculoLabel = registro.secao?.descricao ?? registro.departamento?.descricao ?? registro.marca?.descricao;
   const tituloPrincipal = registro.produto_auditoria?.descricao ?? vinculoLabel ?? registro.tipo_registro.descricao;
@@ -136,11 +160,16 @@ function RegistroCard({
 
   return (
     <View style={styles.registroCard}>
-      {registro.imagem_url && token ? (
-        <Image
-          source={{ uri: registro.imagem_url, headers: { Authorization: `Bearer ${token}` } }}
-          style={styles.registroImagem}
-        />
+      {registro.imagens.length > 0 && token ? (
+        <View style={styles.registroImagensLinha}>
+          {registro.imagens.map((imagem) => (
+            <Image
+              key={imagem.id}
+              source={{ uri: imagem.url, headers: { Authorization: `Bearer ${token}` } }}
+              style={styles.registroImagem}
+            />
+          ))}
+        </View>
       ) : (
         <View style={[styles.registroImagem, styles.registroImagemVazia]} />
       )}
@@ -154,11 +183,17 @@ function RegistroCard({
         ))}
         {!!registro.observacao && <Text style={styles.registroObservacao}>{registro.observacao}</Text>}
         {registro.ruptura && <Text style={styles.badgeRuptura}>Ruptura</Text>}
-        {registro.momento && (
-          <Text style={registro.momento === 'ANTES' ? styles.badgeAntes : styles.badgeDepois}>
-            {registro.momento === 'ANTES' ? 'Antes' : 'Depois'}
-          </Text>
+        {registro.pontuacao !== null && (
+          <Text style={styles.badgePontuacao}>{registro.pontuacao}% de compliance</Text>
         )}
+        <Pressable onPress={onFeedback} hitSlop={8}>
+          <Text style={styles.linkFeedback}>
+            {(registro.comentarios_count ?? 0) === 0
+              ? 'Comentar'
+              : `${registro.comentarios_count} ${registro.comentarios_count === 1 ? 'comentário' : 'comentários'}`}
+            {naoLido ? ' · nova resposta' : ''}
+          </Text>
+        </Pressable>
         {podeCancelar && (
           <Pressable onPress={onCancelar} disabled={cancelando} hitSlop={8}>
             <Text style={styles.linkCancelar}>{cancelando ? 'Cancelando...' : 'Cancelar registro'}</Text>
@@ -170,36 +205,41 @@ function RegistroCard({
 }
 
 const styles = StyleSheet.create({
+  linkFeedback: {
+    color: cores.primaria,
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: espaco.sm,
+  },
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: cores.fundo,
   },
   cabecalho: {
-    backgroundColor: '#ffffff',
-    padding: 20,
+    backgroundColor: cores.fundoCard,
+    padding: espaco.xl,
     borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+    borderBottomColor: cores.divisor,
     gap: 4,
   },
   cabecalhoTopo: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 8,
+    gap: espaco.sm,
   },
   pdvNome: {
+    ...tipografia.titulo,
     flex: 1,
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#111827',
+    color: cores.texto,
   },
   infoTexto: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
   },
   badge: {
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 4,
   },
   badgeTexto: {
@@ -209,35 +249,42 @@ const styles = StyleSheet.create({
   centro: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 48,
+    paddingVertical: espaco.xxl * 1.5,
   },
   vazioTexto: {
     fontSize: 15,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     textAlign: 'center',
   },
   lista: {
-    padding: 16,
-    gap: 12,
+    padding: espaco.lg,
+    gap: espaco.md,
     flexGrow: 1,
   },
   registroCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 12,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
+    padding: espaco.md,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    gap: 12,
+    borderColor: cores.borda,
+    gap: espaco.md,
+    ...sombraCard,
+  },
+  registroImagensLinha: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    width: 56,
   },
   registroImagem: {
     width: 56,
     height: 56,
-    borderRadius: 8,
+    borderRadius: raio.sm,
   },
   registroImagemVazia: {
-    backgroundColor: '#e5e7eb',
+    backgroundColor: cores.borda,
   },
   registroInfo: {
     flex: 1,
@@ -245,63 +292,52 @@ const styles = StyleSheet.create({
   registroTipo: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#111827',
+    color: cores.texto,
   },
   registroObservacao: {
     fontSize: 13,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 2,
   },
   badgeRuptura: {
-    marginTop: 4,
+    marginTop: espaco.xs,
     alignSelf: 'flex-start',
-    backgroundColor: '#fef2f2',
-    color: '#b91c1c',
+    backgroundColor: cores.erroFundo,
+    color: cores.erro,
     fontSize: 12,
     fontWeight: '700',
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 2,
   },
-  badgeAntes: {
-    marginTop: 4,
+  badgePontuacao: {
+    marginTop: espaco.xs,
     alignSelf: 'flex-start',
-    backgroundColor: '#fff7ed',
-    color: '#c2410c',
+    backgroundColor: cores.acentoClaro,
+    color: cores.acentoTexto,
     fontSize: 12,
     fontWeight: '700',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-  },
-  badgeDepois: {
-    marginTop: 4,
-    alignSelf: 'flex-start',
-    backgroundColor: '#f0fdf4',
-    color: '#15803d',
-    fontSize: 12,
-    fontWeight: '700',
-    borderRadius: 6,
-    paddingHorizontal: 8,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
     paddingVertical: 2,
   },
   linkCancelar: {
-    marginTop: 6,
+    marginTop: espaco.sm,
     fontSize: 12,
-    color: '#b91c1c',
+    color: cores.erro,
     fontWeight: '700',
   },
   erroBox: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: cores.erroFundo,
     borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 10,
-    padding: 12,
-    marginHorizontal: 16,
-    marginTop: 12,
+    borderColor: cores.erroBorda,
+    borderRadius: raio.md,
+    padding: espaco.md,
+    marginHorizontal: espaco.lg,
+    marginTop: espaco.md,
   },
   erroBoxTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 14,
   },
 });

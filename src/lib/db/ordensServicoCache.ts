@@ -1,11 +1,11 @@
 import type { OrdemServico } from '../../types/api';
-import { getDatabase } from './database';
+import { getDatabase, comTransacao } from './database';
 
 export async function salvarOrdensServicoCache(ordensServico: OrdemServico[]): Promise<void> {
   const db = await getDatabase();
   const agora = new Date().toISOString();
 
-  await db.withTransactionAsync(async () => {
+  await comTransacao(db, async () => {
     await db.runAsync('DELETE FROM ordens_servico');
     for (const os of ordensServico) {
       await db.runAsync('INSERT INTO ordens_servico (id, dados, atualizado_em) VALUES (?, ?, ?)', [

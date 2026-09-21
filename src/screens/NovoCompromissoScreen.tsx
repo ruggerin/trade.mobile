@@ -21,6 +21,7 @@ import { DIAS_RAPIDOS, prazoDoDia } from '../lib/prazoAgenda';
 import { useDebounce } from '../lib/useDebounce';
 import type { AgendaStackParamList } from '../navigation/AgendaStack';
 import type { ObjetivoVisita, PontoVenda, TipoVisita } from '../types/api';
+import { cores, espaco, neutro, raio, sombraFlutuante } from '../theme';
 
 type Props = NativeStackScreenProps<AgendaStackParamList, 'NovoCompromisso'>;
 
@@ -116,7 +117,7 @@ export function NovoCompromissoScreen({ navigation }: Props) {
               onChangeText={setBusca}
             />
             {pontosVendaQuery.isLoading ? (
-              <ActivityIndicator style={{ marginTop: 12 }} color="#2563eb" />
+              <ActivityIndicator style={{ marginTop: 12 }} color={cores.primaria} />
             ) : (
               // ScrollView + nestedScrollEnabled, não FlatList — o formulário inteiro já é um
               // ScrollView (mesma direção de rolagem); duas VirtualizedList aninhadas quebram
@@ -218,7 +219,7 @@ export function NovoCompromissoScreen({ navigation }: Props) {
           onPress={() => void confirmar()}
           disabled={enviando}
         >
-          {enviando ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.botaoPrimarioTexto}>Salvar compromisso</Text>}
+          {enviando ? <ActivityIndicator color={cores.onPrimaria} /> : <Text style={styles.botaoPrimarioTexto}>Salvar compromisso</Text>}
         </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -228,31 +229,31 @@ export function NovoCompromissoScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
+    backgroundColor: cores.fundoCard,
   },
   conteudo: {
-    padding: 20,
+    padding: espaco.xl,
     gap: 4,
   },
   secaoLabel: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#374151',
-    marginTop: 20,
-    marginBottom: 8,
+    color: neutro[700],
+    marginTop: espaco.xl,
+    marginBottom: espaco.sm,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    paddingHorizontal: 14,
+    borderColor: cores.borda,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.md,
     minHeight: 48,
     fontSize: 15,
-    color: '#111827',
+    color: cores.texto,
   },
   inputMultilinha: {
     minHeight: 80,
-    paddingTop: 12,
+    paddingTop: espaco.md,
     textAlignVertical: 'top',
   },
   pdvSelecionado: {
@@ -260,20 +261,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     borderWidth: 1,
-    borderColor: '#bfdbfe',
-    backgroundColor: '#eff6ff',
-    borderRadius: 10,
-    paddingHorizontal: 14,
+    borderColor: cores.primariaBorda,
+    backgroundColor: cores.primariaClara,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.md,
     minHeight: 48,
   },
   pdvSelecionadoTexto: {
     flex: 1,
     fontSize: 15,
     fontWeight: '600',
-    color: '#1e40af',
+    color: cores.primariaEscura,
   },
   linkTrocar: {
-    color: '#2563eb',
+    color: cores.primaria,
     fontWeight: '700',
     fontSize: 13,
   },
@@ -282,70 +283,73 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   itemPdv: {
-    paddingVertical: 12,
+    paddingVertical: espaco.md,
     paddingHorizontal: 4,
     borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
+    borderBottomColor: neutro[100],
   },
   itemPdvNome: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#111827',
+    color: cores.texto,
   },
   itemPdvDetalhe: {
     fontSize: 13,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 2,
   },
   vazioTexto: {
     fontSize: 13,
-    color: '#9ca3af',
-    marginTop: 12,
+    color: cores.textoTerciario,
+    marginTop: espaco.md,
     textAlign: 'center',
   },
   chipsLinha: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: espaco.sm,
   },
   chip: {
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    borderColor: cores.borda,
+    borderRadius: raio.pill,
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.sm,
   },
   chipSelecionado: {
-    backgroundColor: '#2563eb',
-    borderColor: '#2563eb',
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
   },
   chipTexto: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#374151',
+    color: neutro[700],
   },
   chipTextoSelecionado: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
   },
   erroTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 13,
-    marginTop: 16,
+    marginTop: espaco.lg,
   },
   botaoPrimario: {
-    backgroundColor: '#2563eb',
-    borderRadius: 10,
+    backgroundColor: cores.primaria,
+    borderRadius: raio.md,
     minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 24,
-    marginBottom: 12,
+    marginTop: espaco.xl,
+    marginBottom: espaco.md,
+    ...sombraFlutuante,
+    shadowColor: cores.primaria,
+    shadowOpacity: 0.3,
   },
   botaoPressionado: {
-    opacity: 0.8,
+    opacity: 0.85,
   },
   botaoPrimarioTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontSize: 16,
     fontWeight: '700',
   },

@@ -4,6 +4,7 @@ import * as authApi from '../api/auth';
 import { authEvents, UNAUTHORIZED_EVENT } from '../api/client';
 import { limparCacheLocal } from '../db/database';
 import { credenciaisStorage } from './credentialsStorage';
+import { encerrarRastreamentoNoLogout } from '../rastreamento';
 import { tokenStorage } from './tokenStorage';
 import type { Usuario } from '../../types/api';
 
@@ -19,6 +20,11 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   login: (email: string, senha: string) => Promise<void>;
   logout: () => Promise<void>;
+  // Atualiza o usuário em memória direto pela resposta de uma mutação própria (ex.: trocar a
+  // foto de perfil) — sem isso, `usuarioDoLogin` (a fonte de verdade depois do login, ver
+  // abaixo) ficaria com o dado antigo pro resto da sessão, já que meQuery.enabled desliga assim
+  // que `usuarioDoLogin` existe e nunca mais dispara sozinho.
+  atualizarUsuario: (usuario: Usuario) => void;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -66,6 +72,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // de 1 sessão, ver docs/02-API-BACKEND.md) — limpa o cache pra não vazar a carteira de
       // PDVs de quem estava logado antes.
       void limparCacheLocal();
+      void encerrarRastreamentoNoLogout().catch(() => {});
     }
 
     authEvents.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
@@ -77,6 +84,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await tokenStorage.set(response.token);
     setToken(response.token);
     setUsuarioDoLogin(response.usuario);
+  }
+
+  function atualizarUsuario(usuarioAtualizado: Usuario) {
+    setUsuarioDoLogin(usuarioAtualizado);
   }
 
   async function logout() {
@@ -96,6 +107,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Mesmo motivo do handleUnauthorized acima: aparelho pode ser compartilhado entre
     // promotores (ex.: celular da loja), o próximo login não pode herdar cache de outro.
     await limparCacheLocal();
+    // Sem isso a tarefa em segundo plano continuaria mandando posição depois do logout.
+    await encerrarRastreamentoNoLogout().catch(() => {});
   }
 
   const isLoading = !tokenCarregado || (Boolean(token) && !usuario && meQuery.isLoading);
@@ -109,6 +122,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: Boolean(token) && Boolean(usuario),
         login,
         logout,
+        atualizarUsuario,
       }}
     >
       {children}

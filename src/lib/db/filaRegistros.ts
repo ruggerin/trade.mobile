@@ -2,9 +2,9 @@
 // submódulo /legacy mantém a API antiga (documentDirectory/copyAsync/deleteAsync), oficialmente
 // suportada, mais simples pro que a gente precisa aqui (copiar/apagar por caminho string).
 import * as FileSystem from 'expo-file-system/legacy';
-import type { MomentoRegistro, TipoVinculoRegistro } from '../../types/api';
+import type { TipoVinculoRegistro } from '../../types/api';
 import { gerarUuidLocal } from '../uuid';
-import { getDatabase } from './database';
+import { getDatabase, escrever } from './database';
 
 /**
  * PENDENTE   ainda não foi tentado enviar, ou tentou e caiu por falta de rede.
@@ -35,8 +35,8 @@ export interface RegistroLocal {
   valoresCampos: Record<string, string> | null;
   ruptura: boolean | null;
   observacao: string | null;
-  momento: MomentoRegistro | null;
-  imagemLocalPath: string | null;
+  /** Cópias persistentes das fotos (0..N) — ver RegistroFormModal.capturarFoto. */
+  imagensLocais: string[];
   erro: string | null;
   criadoEm: string;
   atualizadoEm: string;
@@ -58,8 +58,8 @@ interface LinhaFilaRegistro {
   valores_campos_json: string | null;
   ruptura: number | null;
   observacao: string | null;
-  momento: string | null;
   imagem_local_path: string | null;
+  imagens_locais_json: string | null;
   erro: string | null;
   criado_em: string;
   atualizado_em: string;
@@ -82,8 +82,14 @@ function paraRegistroLocal(linha: LinhaFilaRegistro): RegistroLocal {
     valoresCampos: linha.valores_campos_json ? (JSON.parse(linha.valores_campos_json) as Record<string, string>) : null,
     ruptura: linha.ruptura === null ? null : Boolean(linha.ruptura),
     observacao: linha.observacao,
-    momento: linha.momento as MomentoRegistro | null,
-    imagemLocalPath: linha.imagem_local_path,
+    // Linha criada antes da coluna imagens_locais_json existir (ainda não sincronizada quando o
+    // app atualizou) — cai pro formato antigo de 1 foto só, ver comentário da tabela em
+    // lib/db/database.ts.
+    imagensLocais: linha.imagens_locais_json
+      ? (JSON.parse(linha.imagens_locais_json) as string[])
+      : linha.imagem_local_path
+        ? [linha.imagem_local_path]
+        : [],
     erro: linha.erro,
     criadoEm: linha.criado_em,
     atualizadoEm: linha.atualizado_em,
@@ -103,9 +109,8 @@ export interface NovoRegistroLocal {
   valoresCampos?: Record<string, string> | null;
   ruptura?: boolean | null;
   observacao?: string | null;
-  momento?: MomentoRegistro | null;
-  /** Caminho já persistente (copiado pro FileSystem.documentDirectory) — nunca a uri transitória do image picker. */
-  imagemLocalPath?: string | null;
+  /** Caminhos já persistentes (copiados pro FileSystem.documentDirectory) — nunca a uri transitória do image picker. */
+  imagensLocais?: string[];
 }
 
 export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<RegistroLocal> {
@@ -113,13 +118,13 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
   const agora = new Date().toISOString();
   const id = gerarUuidLocal();
 
-  await db.runAsync(
+  await escrever(
     `INSERT INTO fila_registros (
       id, visita_local_id, status, tipo_registro_uuid, produto_auditoria_uuid, produto_descricao,
       tipo_vinculo, secao_uuid, departamento_uuid, marca_uuid, vinculo_descricao,
-      valores_campos_json, ruptura, observacao, momento, imagem_local_path, erro, criado_em,
+      valores_campos_json, ruptura, observacao, imagens_locais_json, erro, criado_em,
       atualizado_em
-    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     [
       id,
       dados.visitaLocalId,
@@ -134,8 +139,7 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
       dados.valoresCampos ? JSON.stringify(dados.valoresCampos) : null,
       dados.ruptura === undefined || dados.ruptura === null ? null : dados.ruptura ? 1 : 0,
       dados.observacao ?? null,
-      dados.momento ?? null,
-      dados.imagemLocalPath ?? null,
+      JSON.stringify(dados.imagensLocais ?? []),
       agora,
       agora,
     ],
@@ -156,7 +160,7 @@ export async function listarRegistrosLocais(visitaLocalId: string): Promise<Regi
 
 export async function marcarRegistroEnviado(id: string, servidorId: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync(
+  await escrever(
     `UPDATE fila_registros SET status = 'ENVIADO', servidor_id = ?, erro = NULL, atualizado_em = ? WHERE id = ?`,
     [servidorId, new Date().toISOString(), id],
   );
@@ -164,7 +168,7 @@ export async function marcarRegistroEnviado(id: string, servidorId: string): Pro
 
 export async function marcarRegistroComErro(id: string, erro: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync(`UPDATE fila_registros SET status = 'ERRO', erro = ?, atualizado_em = ? WHERE id = ?`, [
+  await escrever(`UPDATE fila_registros SET status = 'ERRO', erro = ?, atualizado_em = ? WHERE id = ?`, [
     erro,
     new Date().toISOString(),
     id,
@@ -174,7 +178,7 @@ export async function marcarRegistroComErro(id: string, erro: string): Promise<v
 /** Visita-mãe foi REJEITADA — nenhum registro dela tem mais pra onde ir. */
 export async function descartarRegistrosDaVisita(visitaLocalId: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync(
+  await escrever(
     `UPDATE fila_registros SET status = 'DESCARTADO', atualizado_em = ? WHERE visita_local_id = ? AND status = 'PENDENTE'`,
     [new Date().toISOString(), visitaLocalId],
   );
@@ -182,7 +186,7 @@ export async function descartarRegistrosDaVisita(visitaLocalId: string): Promise
 
 export async function excluirRegistrosDaVisita(visitaLocalId: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync('DELETE FROM fila_registros WHERE visita_local_id = ?', [visitaLocalId]);
+  await escrever('DELETE FROM fila_registros WHERE visita_local_id = ?', [visitaLocalId]);
 }
 
 /**
@@ -195,7 +199,7 @@ export async function excluirRegistrosDaVisita(visitaLocalId: string): Promise<v
  */
 export async function excluirRegistroLocal(id: string): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync('DELETE FROM fila_registros WHERE id = ?', [id]);
+  await escrever('DELETE FROM fila_registros WHERE id = ?', [id]);
 }
 
 /**

@@ -11,6 +11,7 @@ import { resolverGranularidade } from '../lib/granularidadeChecklist';
 import { chaveGrade as chave, contarProdutosRespondidos, resolverGrade } from '../lib/gradeColeta';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import type { TipoRegistro } from '../types/api';
+import { cores, espaco, neutro, raio, sombraCard } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'GradeColeta'>;
 
@@ -45,7 +46,7 @@ export function GradeColetaScreen({ route, navigation }: Props) {
   // backend), sem foto obrigatória, sem campos customizados. Ruptura sempre primeiro.
   const colunas = useMemo(() => {
     const tipos = (tiposRegistroQuery.data ?? []).filter((t) => {
-      if (!t.ativo || t.exige_foto || t.campos.length > 0) return false;
+      if (!t.ativo || (!t.icone && !t.eh_ruptura) || t.exige_foto || t.campos.length > 0) return false;
       return resolverGranularidade(t, secaoUuid) === 'PRODUTO';
     });
     const ruptura = tipos.filter((t) => t.eh_ruptura);
@@ -173,7 +174,7 @@ export function GradeColetaScreen({ route, navigation }: Props) {
   if (carregando) {
     return (
       <View style={styles.centro}>
-        <ActivityIndicator size="large" color="#2563eb" />
+        <ActivityIndicator size="large" color={cores.primaria} />
       </View>
     );
   }
@@ -251,7 +252,7 @@ export function GradeColetaScreen({ route, navigation }: Props) {
           disabled={salvarMutation.isPending || colunas.length === 0}
         >
           {salvarMutation.isPending ? (
-            <ActivityIndicator color="#ffffff" />
+            <ActivityIndicator color={cores.onPrimaria} />
           ) : (
             <Text style={styles.botaoPrimarioTexto}>Salvar checklist</Text>
           )}
@@ -262,97 +263,98 @@ export function GradeColetaScreen({ route, navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f9fafb' },
-  centro: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
+  container: { flex: 1, backgroundColor: cores.fundo },
+  centro: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: espaco.xxl },
   cabecalho: {
-    backgroundColor: '#ffffff',
-    padding: 20,
+    backgroundColor: cores.fundoCard,
+    padding: espaco.xl,
     borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+    borderBottomColor: cores.divisor,
     gap: 4,
   },
-  titulo: { fontSize: 20, fontWeight: '700', color: '#111827' },
-  subtitulo: { fontSize: 13, color: '#6b7280' },
-  progresso: { fontSize: 13, fontWeight: '600', color: '#2563eb', marginTop: 4 },
+  titulo: { fontSize: 20, fontWeight: '700', color: cores.texto },
+  subtitulo: { fontSize: 13, color: cores.textoSecundario },
+  progresso: { fontSize: 13, fontWeight: '600', color: cores.primaria, marginTop: 4 },
   erroBox: {
-    backgroundColor: '#fef2f2',
+    backgroundColor: cores.erroFundo,
     borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: 10,
-    padding: 12,
-    margin: 16,
+    borderColor: cores.erroBorda,
+    borderRadius: raio.md,
+    padding: espaco.md,
+    margin: espaco.lg,
     marginBottom: 0,
   },
-  erroTexto: { color: '#b91c1c', fontSize: 14 },
-  vazioTexto: { fontSize: 14, color: '#6b7280', textAlign: 'center' },
-  lista: { padding: 16, gap: 20 },
+  erroTexto: { color: cores.erro, fontSize: 14 },
+  vazioTexto: { fontSize: 14, color: cores.textoSecundario, textAlign: 'center' },
+  lista: { padding: espaco.lg, gap: espaco.xl },
   secao: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: cores.borda,
     overflow: 'hidden',
+    ...sombraCard,
   },
   secaoTopo: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: '#f3f4f6',
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.sm,
+    backgroundColor: neutro[100],
   },
-  secaoTitulo: { fontSize: 14, fontWeight: '700', color: '#111827' },
-  linkMarcarTodos: { fontSize: 13, fontWeight: '600', color: '#2563eb' },
+  secaoTitulo: { fontSize: 14, fontWeight: '700', color: cores.texto },
+  linkMarcarTodos: { fontSize: 13, fontWeight: '600', color: cores.primaria },
   linha: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    gap: espaco.md,
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.md,
     borderTopWidth: 1,
-    borderTopColor: '#f3f4f6',
+    borderTopColor: neutro[100],
     minHeight: 48,
   },
-  linhaDesabilitada: { backgroundColor: '#f9fafb' },
+  linhaDesabilitada: { backgroundColor: cores.fundo },
   checkbox: {
     width: 22,
     height: 22,
     borderRadius: 6,
     borderWidth: 2,
-    borderColor: '#d1d5db',
+    borderColor: cores.borda,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  checkboxMarcado: { backgroundColor: '#2563eb', borderColor: '#2563eb' },
-  checkboxMarca: { color: '#ffffff', fontSize: 13, fontWeight: '700' },
-  linhaTexto: { fontSize: 14, color: '#111827', flex: 1 },
-  linhaTextoDesabilitado: { color: '#9ca3af', textDecorationLine: 'line-through' },
+  checkboxMarcado: { backgroundColor: cores.primaria, borderColor: cores.primaria },
+  checkboxMarca: { color: cores.branco, fontSize: 13, fontWeight: '700' },
+  linhaTexto: { fontSize: 14, color: cores.texto, flex: 1 },
+  linhaTextoDesabilitado: { color: cores.textoTerciario, textDecorationLine: 'line-through' },
   rodape: {
     flexDirection: 'row',
-    gap: 12,
-    padding: 16,
-    backgroundColor: '#ffffff',
+    gap: espaco.md,
+    padding: espaco.lg,
+    backgroundColor: cores.fundoCard,
     borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
+    borderTopColor: cores.divisor,
   },
   botaoSecundario: {
     flex: 1,
     minHeight: 52,
-    borderRadius: 10,
+    borderRadius: raio.md,
     borderWidth: 1,
-    borderColor: '#d1d5db',
+    borderColor: cores.borda,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  botaoSecundarioTexto: { color: '#374151', fontSize: 15, fontWeight: '700' },
+  botaoSecundarioTexto: { color: neutro[700], fontSize: 15, fontWeight: '700' },
   botaoPrimario: {
     flex: 2,
     minHeight: 52,
-    borderRadius: 10,
-    backgroundColor: '#2563eb',
+    borderRadius: raio.md,
+    backgroundColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  botaoPrimarioTexto: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
-  botaoPressionado: { opacity: 0.8 },
+  botaoPrimarioTexto: { color: cores.onPrimaria, fontSize: 15, fontWeight: '700' },
+  botaoPressionado: { opacity: 0.85 },
 });

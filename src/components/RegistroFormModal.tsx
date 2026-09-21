@@ -14,15 +14,25 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { IconeTipoRegistro } from './IconeTipoRegistro';
+import { buscarSortimentoCampo, type ProdutoSortimento } from '../lib/api/campoSortimento';
 import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
 import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } from '../lib/db/filaRegistros';
-import type { CampoTipoRegistro, CatalogoItem, MomentoRegistro, ProdutoDisponivel, TipoRegistro, TipoVinculoRegistro } from '../types/api';
+import type { CampoTipoRegistro, CatalogoItem, ProdutoDisponivel, TipoRegistro, TipoVinculoRegistro } from '../types/api';
+import { cores, espaco, indigo, neutro, raio, sombraCard, sombraFlutuante } from '../theme';
+
+/** Valor de um campo SORTIMENTO em valores_campos — sempre um JSON deste shape, ver decisão 3 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. */
+export interface EstadoSortimento {
+  presentes: string[];
+  ausentes: string[];
+}
 
 export interface RegistroFormResultado {
   tipoRegistroUuid: string;
-  // Já é um caminho persistente (copiado do picker pra pasta do app na hora da captura, ver
-  // capturarFoto abaixo) — nunca a uri transitória do image picker.
-  imagemUri?: string;
+  // Já são caminhos persistentes (copiados do picker pra pasta do app na hora da captura, ver
+  // capturarFoto abaixo) — nunca a uri transitória do image picker. 0..N fotos por registro, ver
+  // docs/21-EVIDENCIA-EM-FOTOS.md.
+  imagensUri?: string[];
   produtoAuditoriaUuid?: string;
   tipoVinculo?: TipoVinculoRegistro;
   secaoUuid?: string;
@@ -35,7 +45,11 @@ export interface RegistroFormResultado {
   vinculoLabel?: string;
   valoresCampos?: Record<string, string>;
   ruptura?: boolean;
-  momento?: MomentoRegistro;
+  // Produtos marcados ausentes num campo SORTIMENTO com confirmar_ruptura_ausentes=true (decisão
+  // 4 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md) — o app pai (VisitaAndamentoScreen) usa isso
+  // pra abrir a tela de confirmação de ruptura DEPOIS que este registro for salvo. Vazio/ausente
+  // quando não há nenhum campo assim neste tipo, ou nenhum produto ficou marcado ausente.
+  produtosAusentesConfirmaveis?: { produtoUuid: string; descricao: string }[];
 }
 
 interface RegistroFormModalProps {
@@ -43,12 +57,15 @@ interface RegistroFormModalProps {
   tiposRegistro: TipoRegistro[];
   produtosDisponiveis: ProdutoDisponivel[];
   // Quando vem de "tirar foto"/"marcar ruptura" num produto específico da campanha — nesse
-  // caso o vínculo de catálogo e a marcação antes/depois não fazem sentido (produto já é o
-  // contexto, ver StoreVisitaRegistroRequest: `momento` é proibido junto de produto_auditoria_uuid).
+  // caso o vínculo de catálogo não faz sentido (produto já é o contexto).
   produtoContexto?: { uuid: string; descricao: string } | null;
   // Quando vem de uma Ação (aba Ações da visita, ver TipoRegistro.acao_obrigatoria) — pula a
   // etapa de escolher o tipo, o formulário já abre direto nele.
   tipoFixo?: TipoRegistro | null;
+  // Necessário só pra campos SORTIMENTO (resolve o checklist pra este PDV) — ver
+  // lib/api/campoSortimento.ts. `undefined` faz o campo aparecer vazio (nunca deveria acontecer
+  // na prática, a visita sempre tem um PDV).
+  pontoVendaUuid?: string;
   enviando: boolean;
   erro: string | null;
   onClose: () => void;
@@ -73,6 +90,7 @@ export function RegistroFormModal({
   produtosDisponiveis,
   produtoContexto,
   tipoFixo,
+  pontoVendaUuid,
   enviando,
   erro,
   onClose,
@@ -80,21 +98,24 @@ export function RegistroFormModal({
 }: RegistroFormModalProps) {
   const [tipo, setTipo] = useState<TipoRegistro | null>(null);
   const [valoresCampos, setValoresCampos] = useState<Record<string, string>>({});
-  const [imagemUri, setImagemUri] = useState<string | null>(null);
+  // Descrição de cada produto resolvido pelos campos SORTIMENTO deste formulário (chaveado por
+  // uuid do produto) — só pra montar `produtosAusentesConfirmaveis` no submit sem precisar
+  // re-buscar a lista lá (o CampoSortimentoInput já buscou, só reporta de volta pra cá).
+  const [produtosSortimentoPorUuid, setProdutosSortimentoPorUuid] = useState<Record<string, string>>({});
+  const [imagensUri, setImagensUri] = useState<string[]>([]);
   const [ruptura, setRuptura] = useState(false);
-  const [momento, setMomento] = useState<MomentoRegistro | null>(null);
   const [vinculo, setVinculo] = useState<{ categoria: Categoria; uuid: string; label: string } | null>(null);
   const [categoriaAberta, setCategoriaAberta] = useState<Categoria | null>(null);
   const [erroLocal, setErroLocal] = useState<string | null>(null);
-  // Acompanha o valor mais recente de imagemUri e se o registro chegou a ser de fato submetido
+  // Acompanha o valor mais recente de imagensUri e se o registro chegou a ser de fato submetido
   // — usados só pelo efeito de limpeza abaixo (não dá pra ler estado direto de dentro dele sem
   // recriar o efeito a cada tecla).
-  const imagemUriRef = useRef<string | null>(null);
+  const imagensUriRef = useRef<string[]>([]);
   const submetidoRef = useRef(false);
 
   useEffect(() => {
-    imagemUriRef.current = imagemUri;
-  }, [imagemUri]);
+    imagensUriRef.current = imagensUri;
+  }, [imagensUri]);
 
   // Reseta tudo sempre que o modal reabre — nunca deixa resíduo de um registro anterior.
   useEffect(() => {
@@ -102,18 +123,20 @@ export function RegistroFormModal({
       submetidoRef.current = false;
       setTipo(tipoFixo ?? null);
       setValoresCampos({});
-      setImagemUri(null);
+      setProdutosSortimentoPorUuid({});
+      setImagensUri([]);
       setRuptura(false);
-      setMomento(null);
       setVinculo(null);
       setCategoriaAberta(null);
       setErroLocal(null);
-    } else if (!submetidoRef.current && imagemUriRef.current) {
+    } else if (!submetidoRef.current && imagensUriRef.current.length > 0) {
       // Modal fechado sem confirmar (botão Fechar, back do Android, ou o pai desmontou por
-      // outro motivo) com uma foto já copiada pro armazenamento persistente (ver capturarFoto) —
-      // sem essa limpeza, o arquivo ficava no disco pra sempre, sem nenhum registro apontando
-      // pra ele.
-      void apagarImagemPersistente(imagemUriRef.current);
+      // outro motivo) com fotos já copiadas pro armazenamento persistente (ver capturarFoto) —
+      // sem essa limpeza, os arquivos ficavam no disco pra sempre, sem nenhum registro apontando
+      // pra eles.
+      for (const uri of imagensUriRef.current) {
+        void apagarImagemPersistente(uri);
+      }
     }
   }, [visible, tipoFixo]);
 
@@ -136,6 +159,18 @@ export function RegistroFormModal({
   const camposOrdenados = useMemo(
     () => (tipo ? [...tipo.campos].sort((a, b) => a.ordem - b.ordem) : []),
     [tipo],
+  );
+
+  // Campo condicional (docs/20-FORMULARIO-DINAMICO-CAMPANHA.md decisão 7) — só entra na tela (e
+  // só é validado como obrigatório) quando o campo do qual depende tiver o valor esperado; o
+  // backend aplica a mesma regra na submissão (StoreVisitaRegistroRequest), então uma resposta
+  // "escondida" aqui nunca seria salva mesmo que o promotor conseguisse preenchê-la.
+  const camposVisiveis = useMemo(
+    () =>
+      camposOrdenados.filter(
+        (campo) => !campo.depende_de_chave || valoresCampos[campo.depende_de_chave] === campo.depende_de_valor,
+      ),
+    [camposOrdenados, valoresCampos],
   );
 
   function definirValorCampo(chave: string, valor: string) {
@@ -178,17 +213,18 @@ export function RegistroFormModal({
       // isso, um formulário longo (ou o app indo pro background no meio) podia perder a foto e o
       // registro inteiro junto na hora de salvar.
       const caminhoPersistente = await copiarImagemParaArmazenamentoPersistente(asset.uri);
-      setImagemUri(caminhoPersistente);
+      setImagensUri((atual) => [...atual, caminhoPersistente]);
     } catch {
       setErroLocal('Não foi possível salvar a foto. Tente novamente.');
     }
   }
 
-  function removerFoto() {
-    if (imagemUri) {
-      void apagarImagemPersistente(imagemUri);
+  function removerFoto(indice: number) {
+    const uri = imagensUri[indice];
+    if (uri) {
+      void apagarImagemPersistente(uri);
     }
-    setImagemUri(null);
+    setImagensUri((atual) => atual.filter((_, i) => i !== indice));
   }
 
   function escolherOrigemFoto() {
@@ -211,14 +247,17 @@ export function RegistroFormModal({
 
   function validar(): string | null {
     if (!tipo) return 'Escolha um tipo de registro.';
-    if (tipo.exige_foto && !imagemUri) return `O tipo "${tipo.descricao}" exige uma foto.`;
+    if (tipo.exige_foto && imagensUri.length === 0) return `O tipo "${tipo.descricao}" exige uma foto.`;
     if (exigeProduto && vinculo?.categoria !== 'PRODUTO') {
       return `O tipo "${tipo.descricao}" exige vincular um produto específico.`;
     }
-    for (const campo of camposOrdenados) {
+    for (const campo of camposVisiveis) {
       const valor = valoresCampos[campo.chave];
       if (campo.obrigatorio && (!valor || valor.trim() === '')) {
         return `O campo "${campo.rotulo}" é obrigatório.`;
+      }
+      if (campo.tipo_campo === 'DATA' && valor && !/^\d{2}\/\d{2}\/\d{4}$/.test(valor)) {
+        return `O campo "${campo.rotulo}" precisa de uma data completa (dd/mm/aaaa).`;
       }
     }
     return null;
@@ -234,13 +273,29 @@ export function RegistroFormModal({
     if (!tipo) return;
 
     // NUMERO/MOEDA vêm de teclado decimal — normaliza vírgula pra ponto antes de enviar
-    // (a API valida com is_numeric, que não aceita "1,5").
+    // (a API valida com is_numeric, que não aceita "1,5"). Só os campos VISÍVEIS agora — uma
+    // resposta escondida por uma condição não satisfeita nunca deveria ter sido dada (o backend
+    // descartaria mesmo assim, ver StoreVisitaRegistroRequest, mas nem faz sentido mandar).
     const valoresNormalizados: Record<string, string> = {};
-    for (const campo of camposOrdenados) {
+    for (const campo of camposVisiveis) {
       const valor = valoresCampos[campo.chave];
       if (valor === undefined || valor === '') continue;
       valoresNormalizados[campo.chave] =
         campo.tipo_campo === 'NUMERO' || campo.tipo_campo === 'MOEDA' ? valor.replace(',', '.') : valor;
+    }
+
+    // Produtos marcados ausentes em campos SORTIMENTO com confirmar_ruptura_ausentes=true —
+    // decisão 4 do doc 20. O pai decide o que fazer com isso (abrir a tela de confirmação) só
+    // DEPOIS que este registro salvar com sucesso.
+    const produtosAusentesConfirmaveis: { produtoUuid: string; descricao: string }[] = [];
+    for (const campo of camposVisiveis) {
+      if (campo.tipo_campo !== 'SORTIMENTO' || !campo.confirmar_ruptura_ausentes) continue;
+      const valor = valoresCampos[campo.chave];
+      if (!valor) continue;
+      const estado = JSON.parse(valor) as EstadoSortimento;
+      for (const produtoUuid of estado.ausentes) {
+        produtosAusentesConfirmaveis.push({ produtoUuid, descricao: produtosSortimentoPorUuid[produtoUuid] ?? produtoUuid });
+      }
     }
 
     // Marca como submetido ANTES de chamar onSubmit — o efeito de limpeza (ver acima) só deve
@@ -250,7 +305,7 @@ export function RegistroFormModal({
 
     onSubmit({
       tipoRegistroUuid: tipo.id,
-      imagemUri: imagemUri ?? undefined,
+      imagensUri: imagensUri.length > 0 ? imagensUri : undefined,
       produtoAuditoriaUuid: produtoContexto?.uuid ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.uuid : undefined),
       tipoVinculo: !produtoContexto && vinculo ? vinculo.categoria : undefined,
       secaoUuid: vinculo?.categoria === 'SECAO' ? vinculo.uuid : undefined,
@@ -259,10 +314,7 @@ export function RegistroFormModal({
       vinculoLabel: !produtoContexto && vinculo && vinculo.categoria !== 'PRODUTO' ? vinculo.label : undefined,
       valoresCampos: Object.keys(valoresNormalizados).length > 0 ? valoresNormalizados : undefined,
       ruptura: ruptura || undefined,
-      // Livre mesmo com produto vinculado (por produtoContexto ou por "Vincular a > Produto")
-      // — o mesmo produto pode ter mais de um registro na visita (antes, depois, um outro tipo),
-      // cada um com seu próprio momento opcional. Ver StoreVisitaRegistroRequest.
-      momento: momento ?? undefined,
+      produtosAusentesConfirmaveis: produtosAusentesConfirmaveis.length > 0 ? produtosAusentesConfirmaveis : undefined,
     });
   }
 
@@ -291,9 +343,12 @@ export function RegistroFormModal({
           ) : (
             <View style={styles.cabecalhoAcaoEspaco} />
           )}
-          <Text style={styles.cabecalhoTitulo} numberOfLines={1}>
-            {tipo ? tipo.descricao : 'Tipo de registro'}
-          </Text>
+          <View style={styles.cabecalhoTituloLinha}>
+            {tipo?.icone && <IconeTipoRegistro icone={tipo.icone} size={18} />}
+            <Text style={styles.cabecalhoTitulo} numberOfLines={1}>
+              {tipo ? tipo.descricao : 'Tipo de registro'}
+            </Text>
+          </View>
           <Pressable onPress={onClose} hitSlop={12}>
             <Text style={styles.cabecalhoAcao}>Fechar</Text>
           </Pressable>
@@ -311,8 +366,13 @@ export function RegistroFormModal({
                 style={({ pressed }) => [styles.tipoCard, pressed && styles.itemPressionado]}
                 onPress={() => setTipo(t)}
               >
-                <Text style={styles.tipoNome}>{t.descricao}</Text>
-                {t.exige_foto && <Text style={styles.tipoDetalhe}>Exige foto</Text>}
+                <View style={styles.tipoCardConteudo}>
+                  <IconeTipoRegistro icone={t.icone} />
+                  <View style={styles.tipoTextos}>
+                    <Text style={styles.tipoNome}>{t.descricao}</Text>
+                    {t.exige_foto && <Text style={styles.tipoDetalhe}>Exige foto</Text>}
+                  </View>
+                </View>
               </Pressable>
             ))}
           </ScrollView>
@@ -324,31 +384,46 @@ export function RegistroFormModal({
               {produtoContexto && <Text style={styles.contextoTexto}>Registro para: {produtoContexto.descricao}</Text>}
 
               <View style={styles.secaoForm}>
-                <Text style={styles.secaoLabel}>Foto {tipo.exige_foto ? '(obrigatória)' : '(opcional)'}</Text>
-                {imagemUri ? (
-                  <View style={styles.fotoPreviewBox}>
-                    <Image source={{ uri: imagemUri }} style={styles.fotoPreview} />
-                    <Pressable onPress={removerFoto}>
-                      <Text style={styles.linkRemover}>Remover foto</Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <Pressable
-                    style={({ pressed }) => [styles.botaoSecundario, pressed && styles.itemPressionado]}
-                    onPress={escolherOrigemFoto}
-                  >
-                    <Text style={styles.botaoSecundarioTexto}>Adicionar foto</Text>
-                  </Pressable>
+                <Text style={styles.secaoLabel}>
+                  Fotos {tipo.exige_foto ? '(pelo menos 1)' : '(opcional)'}
+                </Text>
+                {imagensUri.length > 0 && (
+                  <ScrollView horizontal contentContainerStyle={styles.fotosLinha} showsHorizontalScrollIndicator={false}>
+                    {imagensUri.map((uri, indice) => (
+                      <View key={uri} style={styles.fotoPreviewBox}>
+                        <Image source={{ uri }} style={styles.fotoPreview} />
+                        <Pressable onPress={() => removerFoto(indice)}>
+                          <Text style={styles.linkRemover}>Remover</Text>
+                        </Pressable>
+                      </View>
+                    ))}
+                  </ScrollView>
                 )}
+                <Pressable
+                  style={({ pressed }) => [styles.botaoSecundario, pressed && styles.itemPressionado]}
+                  onPress={escolherOrigemFoto}
+                >
+                  <Text style={styles.botaoSecundarioTexto}>
+                    {imagensUri.length > 0 ? 'Adicionar mais uma foto' : 'Adicionar foto'}
+                  </Text>
+                </Pressable>
               </View>
 
-              {camposOrdenados.map((campo) => (
-                <CampoInput
-                  key={campo.id}
-                  campo={campo}
-                  valor={valoresCampos[campo.chave] ?? ''}
-                  onChange={(valor) => definirValorCampo(campo.chave, valor)}
-                />
+              {camposVisiveis.map((campo) => (
+                <View key={campo.id} style={campo.depende_de_chave ? styles.campoCondicional : undefined}>
+                  <CampoInput
+                    campo={campo}
+                    valor={valoresCampos[campo.chave] ?? ''}
+                    onChange={(valor) => definirValorCampo(campo.chave, valor)}
+                    pontoVendaUuid={pontoVendaUuid}
+                    onProdutosResolvidos={(produtos) =>
+                      setProdutosSortimentoPorUuid((atual) => ({
+                        ...atual,
+                        ...Object.fromEntries(produtos.map((p) => [p.produto_uuid, p.descricao])),
+                      }))
+                    }
+                  />
+                </View>
               ))}
 
               <View style={styles.secaoForm}>
@@ -388,7 +463,7 @@ export function RegistroFormModal({
 
                   {categoriaAberta && (
                     <View style={styles.subListaBox}>
-                      {carregandoCategoria && <ActivityIndicator color="#2563eb" style={{ padding: 12 }} />}
+                      {carregandoCategoria && <ActivityIndicator color={cores.primaria} style={{ padding: 12 }} />}
                       <ScrollView style={styles.subLista} nestedScrollEnabled>
                         {itensDaCategoria(categoriaAberta).map((item) => (
                           <Pressable
@@ -410,23 +485,6 @@ export function RegistroFormModal({
                   )}
                 </View>
               )}
-
-              <View style={styles.secaoForm}>
-                <Text style={styles.secaoLabel}>Marcação (opcional)</Text>
-                <View style={styles.chipsLinha}>
-                  {(['ANTES', 'DEPOIS'] as MomentoRegistro[]).map((m) => (
-                    <Pressable
-                      key={m}
-                      style={[styles.chip, momento === m && styles.chipSelecionado]}
-                      onPress={() => setMomento(momento === m ? null : m)}
-                    >
-                      <Text style={[styles.chipTexto, momento === m && styles.chipTextoSelecionado]}>
-                        {m === 'ANTES' ? 'Antes' : 'Depois'}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </View>
             </ScrollView>
 
             <View style={styles.rodape}>
@@ -437,7 +495,7 @@ export function RegistroFormModal({
                 disabled={enviando}
               >
                 {enviando ? (
-                  <ActivityIndicator color="#ffffff" />
+                  <ActivityIndicator color={cores.branco} />
                 ) : (
                   <Text style={styles.botaoPrimarioTexto}>Salvar registro</Text>
                 )}
@@ -454,11 +512,35 @@ function CampoInput({
   campo,
   valor,
   onChange,
+  pontoVendaUuid,
+  onProdutosResolvidos,
 }: {
   campo: CampoTipoRegistro;
   valor: string;
   onChange: (valor: string) => void;
+  pontoVendaUuid?: string;
+  onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
 }) {
+  const situacao = campo.tipo_campo === 'DATA' ? situacaoData(valor) : null;
+
+  if (campo.tipo_campo === 'SORTIMENTO') {
+    return (
+      <View style={styles.secaoForm}>
+        <Text style={styles.secaoLabel}>
+          {campo.rotulo}
+          {campo.obrigatorio ? ' *' : ''}
+        </Text>
+        <CampoSortimentoInput
+          campo={campo}
+          valor={valor}
+          onChange={onChange}
+          pontoVendaUuid={pontoVendaUuid}
+          onProdutosResolvidos={onProdutosResolvidos}
+        />
+      </View>
+    );
+  }
+
   return (
     <View style={styles.secaoForm}>
       <Text style={styles.secaoLabel}>
@@ -479,6 +561,30 @@ function CampoInput({
             </Pressable>
           ))}
         </View>
+      ) : campo.tipo_campo === 'BOOLEANO' ? (
+        // "0"/"1" — mesma convenção do campo `ruptura` já existente, ver
+        // StoreVisitaRegistroRequest::withValidator no backend.
+        <View style={styles.chipsLinha}>
+          <Pressable style={[styles.chip, valor === '1' && styles.chipSelecionado]} onPress={() => onChange('1')}>
+            <Text style={[styles.chipTexto, valor === '1' && styles.chipTextoSelecionado]}>Sim</Text>
+          </Pressable>
+          <Pressable style={[styles.chip, valor === '0' && styles.chipSelecionado]} onPress={() => onChange('0')}>
+            <Text style={[styles.chipTexto, valor === '0' && styles.chipTextoSelecionado]}>Não</Text>
+          </Pressable>
+        </View>
+      ) : campo.tipo_campo === 'DATA' ? (
+        <>
+          <TextInput
+            style={[styles.input, situacao && styles.inputDataAlerta]}
+            value={valor}
+            onChangeText={(texto) => onChange(formatarDataDigitada(texto))}
+            keyboardType="number-pad"
+            placeholder="dd/mm/aaaa"
+            maxLength={10}
+          />
+          {situacao === 'vencida' && <Text style={styles.textoDataVencida}>Data já vencida.</Text>}
+          {situacao === 'proxima' && <Text style={styles.textoDataProxima}>Vencimento próximo.</Text>}
+        </>
       ) : (
         <TextInput
           style={styles.input}
@@ -492,6 +598,126 @@ function CampoInput({
   );
 }
 
+/**
+ * Checklist de produtos presente/ausente (decisão 3 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md)
+ * — busca o recorte já resolvido pro PDV (backend decide origem dinâmica/fixa, ver
+ * App\Support\ResolverSortimentoCampo), nasce com tudo pré-marcado como presente (decisão 3), o
+ * promotor só desmarca o que está faltando.
+ */
+function CampoSortimentoInput({
+  campo,
+  valor,
+  onChange,
+  pontoVendaUuid,
+  onProdutosResolvidos,
+}: {
+  campo: CampoTipoRegistro;
+  valor: string;
+  onChange: (valor: string) => void;
+  pontoVendaUuid?: string;
+  onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
+}) {
+  const query = useQuery({
+    queryKey: ['sortimento-campo', campo.id, pontoVendaUuid],
+    queryFn: () => buscarSortimentoCampo(campo.id, pontoVendaUuid!),
+    enabled: !!pontoVendaUuid,
+  });
+
+  const estado: EstadoSortimento | null = valor ? (JSON.parse(valor) as EstadoSortimento) : null;
+
+  useEffect(() => {
+    if (query.data) onProdutosResolvidos(query.data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.data]);
+
+  // Nasce com tudo pré-marcado como presente — só semeia se ainda não tem resposta (não
+  // sobrescreve o que o promotor já ajustou se o componente re-renderizar).
+  useEffect(() => {
+    if (query.data && !valor) {
+      onChange(JSON.stringify({ presentes: query.data.map((p) => p.produto_uuid), ausentes: [] } satisfies EstadoSortimento));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.data, valor]);
+
+  function alternarProduto(produtoUuid: string) {
+    if (!estado) return;
+    const estaPresente = estado.presentes.includes(produtoUuid);
+    const novoEstado: EstadoSortimento = estaPresente
+      ? { presentes: estado.presentes.filter((u) => u !== produtoUuid), ausentes: [...estado.ausentes, produtoUuid] }
+      : { presentes: [...estado.presentes, produtoUuid], ausentes: estado.ausentes.filter((u) => u !== produtoUuid) };
+    onChange(JSON.stringify(novoEstado));
+  }
+
+  if (!pontoVendaUuid) {
+    return <Text style={styles.vazioTexto}>PDV não identificado — não é possível carregar o mix.</Text>;
+  }
+
+  if (query.isLoading) {
+    return <ActivityIndicator color={cores.primaria} style={{ padding: 12 }} />;
+  }
+
+  if (query.isError) {
+    return <Text style={styles.textoDataVencida}>Não foi possível carregar a lista de produtos. Feche e tente de novo.</Text>;
+  }
+
+  if ((query.data ?? []).length === 0) {
+    return <Text style={styles.vazioTexto}>Nenhum produto no mix deste PDV pra este recorte.</Text>;
+  }
+
+  return (
+    <View style={styles.subListaBox}>
+      <ScrollView style={styles.subLista} nestedScrollEnabled>
+        {(query.data ?? []).map((produto) => {
+          const presente = estado?.presentes.includes(produto.produto_uuid) ?? true;
+          return (
+            <Pressable
+              key={produto.produto_uuid}
+              style={({ pressed }) => [styles.checkboxLinha, styles.subListaItem, pressed && styles.itemPressionado]}
+              onPress={() => alternarProduto(produto.produto_uuid)}
+            >
+              <View style={[styles.checkbox, presente && styles.checkboxMarcado]}>
+                {presente && <Text style={styles.checkboxMarca}>✓</Text>}
+              </View>
+              <Text style={styles.subListaItemTexto}>{produto.descricao}</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+/** Insere as barras automaticamente conforme o promotor digita — nunca um calendário nativo, ver docs/20-FORMULARIO-DINAMICO-CAMPANHA.md decisão 2. */
+function formatarDataDigitada(texto: string): string {
+  const digitos = texto.replace(/\D/g, '').slice(0, 8);
+  if (digitos.length <= 2) return digitos;
+  if (digitos.length <= 4) return `${digitos.slice(0, 2)}/${digitos.slice(2)}`;
+  return `${digitos.slice(0, 2)}/${digitos.slice(2, 4)}/${digitos.slice(4)}`;
+}
+
+/**
+ * Alerta imediato de validade (decisão 9 do doc) — "vencida" (já passou) ou "proxima" (dentro de
+ * 30 dias, limiar não fechado no doc, escolhido por ser um padrão comum de aviso de validade).
+ * `null` pra data incompleta/inválida (nem toda data mal-formada deveria acender alerta).
+ */
+function situacaoData(valor: string): 'vencida' | 'proxima' | null {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(valor);
+  if (!match) return null;
+
+  const dia = Number(match[1]);
+  const mes = Number(match[2]);
+  const ano = Number(match[3]);
+  const data = new Date(ano, mes - 1, dia);
+  if (data.getDate() !== dia || data.getMonth() !== mes - 1 || data.getFullYear() !== ano) return null;
+
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const diffDias = (data.getTime() - hoje.getTime()) / 86_400_000;
+  if (diffDias < 0) return 'vencida';
+  if (diffDias <= 30) return 'proxima';
+  return null;
+}
+
 function mapCatalogoItem(item: CatalogoItem): { uuid: string; label: string } {
   return { uuid: item.id, label: item.descricao };
 }
@@ -499,21 +725,21 @@ function mapCatalogoItem(item: CatalogoItem): { uuid: string; label: string } {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: cores.fundo,
   },
   cabecalho: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    backgroundColor: cores.fundoCard,
+    paddingHorizontal: espaco.lg,
+    paddingVertical: espaco.md,
     borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
-    gap: 8,
+    borderBottomColor: cores.divisor,
+    gap: espaco.sm,
   },
   cabecalhoAcao: {
-    color: '#2563eb',
+    color: cores.primaria,
     fontSize: 15,
     fontWeight: '600',
   },
@@ -525,87 +751,133 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 16,
     fontWeight: '700',
-    color: '#111827',
+    color: cores.texto,
   },
   lista: {
-    padding: 16,
-    gap: 12,
+    padding: espaco.lg,
+    gap: espaco.md,
   },
   contextoTexto: {
     fontSize: 13,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginBottom: 4,
   },
   vazioTexto: {
     fontSize: 14,
-    color: '#9ca3af',
+    color: cores.textoTerciario,
     textAlign: 'center',
-    padding: 12,
+    padding: espaco.md,
   },
   tipoCard: {
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
+    padding: espaco.lg,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: cores.borda,
     minHeight: 48,
     justifyContent: 'center',
+    ...sombraCard,
   },
   itemPressionado: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: neutro[100],
+  },
+  tipoCardConteudo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+  },
+  tipoTextos: {
+    flex: 1,
+  },
+  cabecalhoTituloLinha: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   tipoNome: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#111827',
+    color: cores.texto,
   },
   tipoDetalhe: {
     fontSize: 12,
-    color: '#9ca3af',
+    color: cores.textoTerciario,
     marginTop: 2,
   },
   secaoForm: {
-    gap: 8,
+    gap: espaco.sm,
+  },
+  // Indica visualmente que este campo só apareceu por causa de outra resposta (decisão 7/9 do
+  // doc 20) — borda esquerda + recuo, mesmo padrão de "isso é uma consequência do que veio antes".
+  campoCondicional: {
+    borderLeftWidth: 2,
+    borderLeftColor: indigo[300],
+    paddingLeft: espaco.md,
+    marginLeft: 4,
+  },
+  inputDataAlerta: {
+    borderColor: cores.erro,
+  },
+  textoDataVencida: {
+    color: cores.erro,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: -4,
+  },
+  textoDataProxima: {
+    color: cores.acentoTexto,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: -4,
   },
   secaoLabel: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#374151',
+    color: neutro[700],
   },
   input: {
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 10,
-    paddingHorizontal: 14,
+    borderColor: cores.borda,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.md,
     minHeight: 48,
     fontSize: 15,
-    backgroundColor: '#ffffff',
+    backgroundColor: cores.fundoCard,
+  },
+  fotosLinha: {
+    flexDirection: 'row',
+    gap: espaco.md,
   },
   fotoPreviewBox: {
-    gap: 8,
+    gap: espaco.sm,
+    alignItems: 'center',
   },
   fotoPreview: {
     width: 120,
     height: 120,
-    borderRadius: 10,
+    borderRadius: raio.md,
   },
   linkRemover: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 13,
     fontWeight: '600',
   },
   botaoSecundario: {
+    flexDirection: 'row',
+    gap: espaco.sm,
     minHeight: 48,
-    borderRadius: 10,
+    borderRadius: raio.md,
     borderWidth: 1,
-    borderColor: '#2563eb',
+    borderColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: espaco.lg,
     alignSelf: 'flex-start',
   },
   botaoSecundarioTexto: {
-    color: '#2563eb',
+    color: cores.primaria,
     fontSize: 14,
     fontWeight: '700',
   },
@@ -619,103 +891,106 @@ const styles = StyleSheet.create({
     height: 24,
     borderRadius: 6,
     borderWidth: 2,
-    borderColor: '#d1d5db',
+    borderColor: cores.borda,
     alignItems: 'center',
     justifyContent: 'center',
   },
   checkboxMarcado: {
-    backgroundColor: '#2563eb',
-    borderColor: '#2563eb',
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
   },
   checkboxMarca: {
-    color: '#ffffff',
+    color: cores.branco,
     fontSize: 14,
     fontWeight: '700',
   },
   chipsLinha: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: espaco.sm,
   },
   chip: {
     minHeight: 40,
-    borderRadius: 20,
+    borderRadius: raio.pill,
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    paddingHorizontal: 14,
+    borderColor: cores.borda,
+    paddingHorizontal: espaco.md,
     alignItems: 'center',
     justifyContent: 'center',
   },
   chipSelecionado: {
-    backgroundColor: '#2563eb',
-    borderColor: '#2563eb',
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
   },
   chipTexto: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#374151',
+    color: neutro[700],
   },
   chipTextoSelecionado: {
-    color: '#ffffff',
+    color: cores.branco,
   },
   chipRemover: {
     minHeight: 40,
     justifyContent: 'center',
-    paddingHorizontal: 8,
+    paddingHorizontal: espaco.sm,
   },
   chipRemoverTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 13,
     fontWeight: '600',
   },
   vinculoSelecionado: {
     fontSize: 13,
-    color: '#2563eb',
+    color: cores.primaria,
     fontWeight: '600',
   },
   subListaBox: {
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    borderRadius: 10,
-    backgroundColor: '#ffffff',
+    borderColor: cores.borda,
+    borderRadius: raio.md,
+    backgroundColor: cores.fundoCard,
     overflow: 'hidden',
   },
   subLista: {
     maxHeight: 200,
   },
   subListaItem: {
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.md,
     borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
+    borderBottomColor: neutro[100],
     minHeight: 44,
     justifyContent: 'center',
   },
   subListaItemTexto: {
     fontSize: 14,
-    color: '#111827',
+    color: cores.texto,
   },
   rodape: {
-    padding: 16,
-    backgroundColor: '#ffffff',
+    padding: espaco.lg,
+    backgroundColor: cores.fundoCard,
     borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
-    gap: 8,
+    borderTopColor: cores.divisor,
+    gap: espaco.sm,
   },
   erroTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 13,
     textAlign: 'center',
   },
   botaoPrimario: {
     minHeight: 52,
-    borderRadius: 10,
-    backgroundColor: '#2563eb',
+    borderRadius: raio.md,
+    backgroundColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
+    ...sombraFlutuante,
+    shadowColor: cores.primaria,
+    shadowOpacity: 0.3,
   },
   botaoPrimarioTexto: {
-    color: '#ffffff',
+    color: cores.branco,
     fontSize: 15,
     fontWeight: '700',
   },

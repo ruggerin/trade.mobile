@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'rea
 import { reagendarOrdemServico } from '../lib/api/ordensServico';
 import type { AgendaStackParamList } from '../navigation/AgendaStack';
 import { DIAS_RAPIDOS, prazoDoDia } from '../lib/prazoAgenda';
+import { cores, espaco, neutro, raio, sombraFlutuante } from '../theme';
 
 type Props = NativeStackScreenProps<AgendaStackParamList, 'ReagendarCompromisso'>;
 
@@ -38,7 +39,7 @@ export function ReagendarCompromissoScreen({ route, navigation }: Props) {
         atualizada.status === 'REAGENDAMENTO_SOLICITADO'
           ? 'Sua empresa exige aprovação do gestor — o prazo atual continua valendo até ele decidir.'
           : 'O novo prazo já está valendo.',
-        [{ text: 'OK', onPress: () => navigation.goBack() }],
+        [{ text: 'OK', onPress: () => navigation.popToTop() }],
       );
     } catch {
       setErro('Não foi possível reagendar agora. Tente novamente.');
@@ -74,7 +75,11 @@ export function ReagendarCompromissoScreen({ route, navigation }: Props) {
         onPress={() => void confirmar()}
         disabled={enviando}
       >
-        {enviando ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.botaoPrimarioTexto}>Confirmar reagendamento</Text>}
+        {enviando ? (
+          <ActivityIndicator color={cores.onPrimaria} />
+        ) : (
+          <Text style={styles.botaoPrimarioTexto}>Confirmar reagendamento</Text>
+        )}
       </Pressable>
     </View>
   );
@@ -83,68 +88,71 @@ export function ReagendarCompromissoScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#ffffff',
-    padding: 20,
+    backgroundColor: cores.fundoCard,
+    padding: espaco.xl,
   },
   titulo: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#111827',
+    color: cores.texto,
   },
   subtitulo: {
     fontSize: 14,
-    color: '#6b7280',
+    color: cores.textoSecundario,
     marginTop: 4,
   },
   secaoLabel: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#374151',
-    marginTop: 24,
-    marginBottom: 8,
+    color: neutro[700],
+    marginTop: espaco.xl,
+    marginBottom: espaco.sm,
   },
   chipsLinha: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: espaco.sm,
   },
   chip: {
     borderWidth: 1,
-    borderColor: '#d1d5db',
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    borderColor: cores.borda,
+    borderRadius: raio.pill,
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.sm,
   },
   chipSelecionado: {
-    backgroundColor: '#2563eb',
-    borderColor: '#2563eb',
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
   },
   chipTexto: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#374151',
+    color: neutro[700],
   },
   chipTextoSelecionado: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
   },
   erroTexto: {
-    color: '#b91c1c',
+    color: cores.erro,
     fontSize: 13,
-    marginTop: 16,
+    marginTop: espaco.lg,
   },
   botaoPrimario: {
-    backgroundColor: '#2563eb',
-    borderRadius: 10,
+    backgroundColor: cores.primaria,
+    borderRadius: raio.md,
     minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 32,
+    marginTop: espaco.xxl,
+    ...sombraFlutuante,
+    shadowColor: cores.primaria,
+    shadowOpacity: 0.3,
   },
   botaoPressionado: {
-    opacity: 0.8,
+    opacity: 0.85,
   },
   botaoPrimarioTexto: {
-    color: '#ffffff',
+    color: cores.onPrimaria,
     fontSize: 16,
     fontWeight: '700',
   },

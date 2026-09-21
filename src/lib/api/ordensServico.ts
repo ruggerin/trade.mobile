@@ -7,10 +7,27 @@ import { apiClient } from './client';
 // sinal — mesmo padrão de lib/api/pontosVenda.ts. Só busca PENDENTE: EM_ANDAMENTO já vira uma
 // visita aberta (visível pelo fluxo normal), CONCLUIDA/CANCELADA não são mais acionáveis. Usado
 // só pro badge "Pendência" da lista de PDV — a aba Agenda usa listarOrdensServicoAgenda abaixo.
+// `por_pagina` pega tudo de uma vez (capado em 200 no backend) — sem data de corte (diferente da
+// Agenda), então um Direcionamento gerando muitas OS de uma vez facilmente passa dos 15 padrão;
+// sem isso, PDV fora da 1ª página nunca ganhava o badge nem a OS anexada no check-in.
+/**
+ * Uma visita só se vincula a UMA ordem de serviço. Quando a loja tem mais de uma pendente (ex.: a
+ * de hoje vinda da Agenda + a de um Direcionamento com formulário), a que carrega formulário por
+ * responder vem primeiro — antes valia só o prazo, e a ordem da Agenda (sem formulário nenhum)
+ * "roubava" a visita: o formulário do Direcionamento nunca aparecia em Ações. Empate: prazo mais curto.
+ */
+export function escolherOrdemDaLoja(ordens: OrdemServico[]): OrdemServico | undefined {
+  const comFormularioPendente = (os: OrdemServico) => (os.formularios ?? []).some((f) => !f.respondido_em);
+  return [...ordens].sort((a, b) => {
+    const porFormulario = Number(comFormularioPendente(b)) - Number(comFormularioPendente(a));
+    return porFormulario !== 0 ? porFormulario : a.prazo_fim.localeCompare(b.prazo_fim);
+  })[0];
+}
+
 export async function listarOrdensServicoPendentes(): Promise<OrdemServico[]> {
   try {
     const { data } = await apiClient.get<{ ordens_servico: OrdemServico[] }>('/ordens-servico', {
-      params: { status: 'PENDENTE' },
+      params: { status: 'PENDENTE', por_pagina: 200 },
     });
     void salvarOrdensServicoCache(data.ordens_servico).catch(() => {});
     return data.ordens_servico;
@@ -73,5 +90,15 @@ export async function reagendarOrdemServico(
 
 export async function cancelarOrdemServico(ordemServicoUuid: string): Promise<OrdemServico> {
   const { data } = await apiClient.post<{ ordem_servico: OrdemServico }>(`/ordens-servico/${ordemServicoUuid}/cancelar`);
+  return data.ordem_servico;
+}
+
+// Busca individual, com os formulários exigidos (obrigatorio/calcula_percentual_compliance/
+// respondido_em) — a aba Ações da visita usa isso pra saber o que ainda falta responder. Sem
+// fallback offline: só faz sentido pedir isso com sinal (é dado que pode ter mudado desde o
+// check-in — outro promotor pode ter respondido o mesmo formulário nesse meio tempo, se a OS
+// for de fila aberta), e a visita não fica bloqueada por essa consulta falhar.
+export async function buscarOrdemServico(ordemServicoUuid: string): Promise<OrdemServico> {
+  const { data } = await apiClient.get<{ ordem_servico: OrdemServico }>(`/ordens-servico/${ordemServicoUuid}`);
   return data.ordem_servico;
 }

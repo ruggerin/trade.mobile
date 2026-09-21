@@ -2,6 +2,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { GradeColetaScreen } from '../screens/GradeColetaScreen';
 import { PontoVendaCheckinScreen } from '../screens/PontoVendaCheckinScreen';
 import { PontosVendaListScreen } from '../screens/PontosVendaListScreen';
+import { ReagendarCompromissoScreen } from '../screens/ReagendarCompromissoScreen';
 import { VisitaAndamentoScreen } from '../screens/VisitaAndamentoScreen';
 import type { OrdemServico, PontoVenda } from '../types/api';
 
@@ -13,6 +14,8 @@ export type PontosVendaStackParamList = {
   // vindo da aba Agenda, ver AgendaStack) — ausente pra check-in espontâneo, que continua o
   // fluxo comum. Ver docs/07-ORDEM-DE-SERVICO.md.
   PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico };
+  // Aberto a partir das ações do compromisso dentro da tela da loja (AcoesCompromisso).
+  ReagendarCompromisso: { ordemServico: OrdemServico };
   // Só o id local (fila_visitas) — a visita nasce e vive na fila de envio até o checkout ser
   // confirmado pelo servidor, nunca chega aqui como um objeto Visita "de servidor" (ver
   // lib/visitaLocal.ts e docs/04-APP-MOBILE.md "Fila offline de envio").
@@ -43,6 +46,7 @@ export function PontosVendaStack() {
         component={PontoVendaCheckinScreen}
         options={{ title: 'Check-in' }}
       />
+      <Stack.Screen name="ReagendarCompromisso" component={ReagendarCompromissoScreen} options={{ title: 'Reagendar' }} />
       <Stack.Screen
         name="VisitaAndamento"
         component={VisitaAndamentoScreen}
