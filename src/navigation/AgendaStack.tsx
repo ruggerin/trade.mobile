@@ -1,4 +1,5 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { AgendaScreen } from '../screens/AgendaScreen';
 import { NovoCompromissoScreen } from '../screens/NovoCompromissoScreen';
 import { PontoVendaCheckinScreen } from '../screens/PontoVendaCheckinScreen';
@@ -24,7 +25,11 @@ const Stack = createNativeStackNavigator<AgendaStackParamList>();
 export function AgendaStack() {
   return (
     <Stack.Navigator screenOptions={{ headerTitleStyle: { fontWeight: '700' } }}>
-      <Stack.Screen name="AgendaLista" component={AgendaScreen} options={{ title: 'Agenda' }} />
+      <Stack.Screen
+        name="AgendaLista"
+        component={AgendaScreen}
+        options={{ title: 'Agenda', headerRight: () => <BotaoNotificacoes /> }}
+      />
       <Stack.Screen name="NovoCompromisso" component={NovoCompromissoScreen} options={{ title: 'Novo compromisso' }} />
       <Stack.Screen
         name="ReagendarCompromisso"

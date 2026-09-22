@@ -1,5 +1,5 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { GradeColetaScreen } from '../screens/GradeColetaScreen';
+import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { PontoVendaCheckinScreen } from '../screens/PontoVendaCheckinScreen';
 import { PontosVendaListScreen } from '../screens/PontosVendaListScreen';
 import { ReagendarCompromissoScreen } from '../screens/ReagendarCompromissoScreen';
@@ -20,15 +20,6 @@ export type PontosVendaStackParamList = {
   // confirmado pelo servidor, nunca chega aqui como um objeto Visita "de servidor" (ver
   // lib/visitaLocal.ts e docs/04-APP-MOBILE.md "Fila offline de envio").
   VisitaAndamento: { visitaLocalId: string };
-  // Checklist em grade pra uma linha/seção (Fase 2, ver
-  // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §9) — a lista de produtos já vem resolvida de
-  // quem navega (aba Produtos), sem essa tela precisar recalcular campanha/sortimento sozinha.
-  GradeColeta: {
-    visitaLocalId: string;
-    secaoUuid: string;
-    secaoDescricao: string;
-    produtos: { uuid: string; descricao: string }[];
-  };
 };
 
 const Stack = createNativeStackNavigator<PontosVendaStackParamList>();
@@ -39,7 +30,7 @@ export function PontosVendaStack() {
       <Stack.Screen
         name="PontosVendaLista"
         component={PontosVendaListScreen}
-        options={{ title: 'Lojas' }}
+        options={{ title: 'Lojas', headerRight: () => <BotaoNotificacoes /> }}
       />
       <Stack.Screen
         name="PontoVendaCheckin"
@@ -51,11 +42,6 @@ export function PontosVendaStack() {
         name="VisitaAndamento"
         component={VisitaAndamentoScreen}
         options={{ title: 'Visita em andamento' }}
-      />
-      <Stack.Screen
-        name="GradeColeta"
-        component={GradeColetaScreen}
-        options={{ title: 'Checklist em grade' }}
       />
     </Stack.Navigator>
   );

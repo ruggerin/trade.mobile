@@ -1,6 +1,6 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { ComentariosRegistroModal } from '../components/ComentariosRegistroModal';
 import { buscarNaoLidos } from '../lib/api/comentarios';
@@ -20,9 +20,12 @@ const STATUS_INFO: Record<StatusVisita, { label: string; bg: string; texto: stri
 };
 
 // docs/05-APP-MOBILE-UX.md §3.7 — mesmos dados da tela de visita em andamento, mas sem
-// nenhuma ação (só leitura): sem "Registro geral", sem "Finalizar visita".
+// nenhuma ação (só leitura): sem "Registro geral", sem "Finalizar visita". Chegada por dois
+// caminhos (docs/29-NOTIFICACOES-MOBILE.md): do Histórico, que já tem o objeto `Visita` inteiro
+// (`visita` no param, usado como `initialData` — sem round-trip); ou de uma notificação, que só
+// tem `visitaId` e busca do zero, com `abrirRegistroId` pra já abrir a conversa certa.
 export function VisitaDetalheScreen({ route }: Props) {
-  const { visita: visitaInicial } = route.params;
+  const { visitaId, visita: visitaInicial, abrirRegistroId } = route.params;
   const { token } = useAuth();
   const queryClient = useQueryClient();
   const [erro, setErro] = useState<string | null>(null);
@@ -35,10 +38,22 @@ export function VisitaDetalheScreen({ route }: Props) {
   );
 
   const query = useQuery({
-    queryKey: ['visita', visitaInicial.id],
-    queryFn: () => buscarVisita(visitaInicial.id),
+    queryKey: ['visita', visitaId],
+    queryFn: () => buscarVisita(visitaId),
     initialData: visitaInicial,
   });
+
+  // Abre a conversa direto ao chegar de uma notificação — só uma vez (o ref evita reabrir depois
+  // que o promotor fecha o modal e a query revalida por outro motivo).
+  const abriuAutomaticoRef = useRef(false);
+  useEffect(() => {
+    if (abriuAutomaticoRef.current || !abrirRegistroId || !query.data?.registros) return;
+    const registro = query.data.registros.find((r) => r.id === abrirRegistroId);
+    if (registro) {
+      abriuAutomaticoRef.current = true;
+      setFeedbackRegistro(registro);
+    }
+  }, [abrirRegistroId, query.data]);
 
   const cancelamentoPermitidoQuery = useQuery({
     queryKey: ['cancelamento-registro-permitido'],
@@ -47,10 +62,10 @@ export function VisitaDetalheScreen({ route }: Props) {
   const cancelamentoPermitido = cancelamentoPermitidoQuery.data ?? false;
 
   const cancelarMutation = useMutation({
-    mutationFn: (registroId: string) => cancelarRegistro(visitaInicial.id, registroId),
+    mutationFn: (registroId: string) => cancelarRegistro(visitaId, registroId),
     onSuccess: () => {
       setErro(null);
-      void queryClient.invalidateQueries({ queryKey: ['visita', visitaInicial.id] });
+      void queryClient.invalidateQueries({ queryKey: ['visita', visitaId] });
     },
     onError: () => setErro('Não foi possível cancelar o registro agora. Tente de novo.'),
   });
@@ -65,7 +80,18 @@ export function VisitaDetalheScreen({ route }: Props) {
   const visita = query.data;
   // Cancelado é soft no servidor (mantém rastro histórico), mas some da lista igual qualquer
   // "cancelar" — mesmo raciocínio do filtro de DESCARTADO na visita em andamento.
-  const registros = useMemo(() => (visita.registros ?? []).filter((r) => !r.cancelado_em), [visita.registros]);
+  const registros = useMemo(() => (visita?.registros ?? []).filter((r) => !r.cancelado_em), [visita?.registros]);
+
+  // Sem initialData (chegada por notificação, só com `visitaId`) o primeiro render não tem
+  // `visita` ainda — diferente de antes, quando o objeto vinha sempre pronto do Histórico.
+  if (!visita) {
+    return (
+      <View style={[styles.container, styles.centro]}>
+        <ActivityIndicator color={cores.primaria} />
+      </View>
+    );
+  }
+
   const status = STATUS_INFO[visita.status];
   const inicio = new Date(visita.inicio_data);
 
@@ -90,12 +116,6 @@ export function VisitaDetalheScreen({ route }: Props) {
         )}
       </View>
 
-      {query.isLoading && !visita.registros && (
-        <View style={styles.centro}>
-          <ActivityIndicator color={cores.primaria} />
-        </View>
-      )}
-
       {erro && (
         <View style={styles.erroBox}>
           <Text style={styles.erroBoxTexto}>{erro}</Text>
@@ -107,11 +127,9 @@ export function VisitaDetalheScreen({ route }: Props) {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.lista}
         ListEmptyComponent={
-          !query.isLoading ? (
-            <View style={styles.centro}>
-              <Text style={styles.vazioTexto}>Nenhum registro nesta visita.</Text>
-            </View>
-          ) : null
+          <View style={styles.centro}>
+            <Text style={styles.vazioTexto}>Nenhum registro nesta visita.</Text>
+          </View>
         }
         renderItem={({ item }) => (
           <RegistroCard
@@ -128,7 +146,7 @@ export function VisitaDetalheScreen({ route }: Props) {
 
       <ComentariosRegistroModal
         visible={feedbackRegistro !== null}
-        visitaUuid={visitaInicial.id}
+        visitaUuid={visitaId}
         registroUuid={feedbackRegistro?.id ?? null}
         titulo={feedbackRegistro?.produto_auditoria?.descricao ?? feedbackRegistro?.tipo_registro.descricao ?? 'Registro'}
         onClose={() => setFeedbackRegistro(null)}

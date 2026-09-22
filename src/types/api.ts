@@ -226,14 +226,10 @@ export interface TipoRegistro {
   campanha_auditoria_uuid: string | null;
   // Granularidade da resposta (linha/seção vs. produto individual) — ver
   // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §4. `null` = sem regra, vínculo livre (atual).
-  // O backend continua sendo a autoridade final (StoreVisitaRegistroRequest); o app usa isto
-  // pra restringir "Vincular a" (RegistroFormModal) e pra resolver colunas da grade de coleta
-  // (GradeColetaScreen, ver lib/granularidadeChecklist.ts — mesma lógica de
-  // App\Support\GranularidadeChecklist no backend).
+  // O backend continua sendo a autoridade final (StoreVisitaRegistroRequest); o app usa isto só
+  // pra restringir "Vincular a" (RegistroFormModal.exigeProduto) — o checklist em grade que
+  // também lia isto foi removido do mobile (22/09/2026, doc 16 §9 descontinuada nesse ponto).
   granularidade_padrao: GranularidadeResposta | null;
-  excecoes_granularidade: { secao_uuid: string; secao_descricao: string; granularidade: GranularidadeResposta }[];
-  // Marca a coluna "Ruptura" da grade de coleta (Fase 2) — sempre a primeira, marcar um produto
-  // exclui ele das demais colunas da mesma linha. Ver docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §9.
   eh_ruptura: boolean;
   // Controla se o tipo aparece solto no dropdown de "criar registro" do promotor — decisão 8 de
   // docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. `false` pra tipos nascidos dentro de uma campanha

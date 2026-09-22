@@ -29,7 +29,14 @@ export async function criarComentario(visitaUuid: string, registroUuid: string, 
 
 export interface NaoLidos {
   total: number;
-  registros: { registro_id: string; visita_id: string; nao_lidos: number; ultimo: { autor: string; texto: string; em: string } }[];
+  registros: {
+    registro_id: string;
+    visita_id: string;
+    ponto_venda: string | null;
+    sobre: string;
+    nao_lidos: number;
+    ultimo: { autor: string; texto: string; em: string };
+  }[];
 }
 
 export async function buscarNaoLidos(): Promise<NaoLidos> {

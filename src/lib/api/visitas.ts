@@ -161,10 +161,15 @@ export async function cancelarRegistro(visitaId: string, registroId: string): Pr
 // (ver buscarCancelamentoVisitaPermitido em lib/api/parametros.ts). Ação online, sem fila
 // offline — só faz sentido cancelar uma visita que o servidor já reconhece, ver
 // lib/visitaLocal.ts::cancelarVisitaLocal.
-// Saída de segurança pra visita travada: um gestor/admin autoriza com e-mail e senha no aparelho do
-// promotor (auditado no servidor, com limite de tentativas). Ver lib/useDescarteVisita.tsx.
-export async function cancelarVisitaAutorizado(visitaId: string, email: string, senha: string): Promise<Visita> {
-  const { data } = await apiClient.post<{ visita: Visita }>(`/visitas/${visitaId}/cancelar-autorizado`, { email, senha });
+// Saída de segurança pra visita travada: um gestor/admin autoriza (auditado no servidor, com
+// limite de tentativas). Dois jeitos — `codigo` gerado no admin web (o gestor nunca digita
+// e-mail/senha no aparelho de outra pessoa, preferido) ou, por compatibilidade, e-mail+senha dele
+// direto. Ver lib/useDescarteVisita.tsx e docs/15-INTERVENCAO-ADMINISTRATIVA-VISITA.md §12.
+export async function cancelarVisitaAutorizado(
+  visitaId: string,
+  credencial: { codigo: string } | { email: string; senha: string },
+): Promise<Visita> {
+  const { data } = await apiClient.post<{ visita: Visita }>(`/visitas/${visitaId}/cancelar-autorizado`, credencial);
   return data.visita;
 }
 

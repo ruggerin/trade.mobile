@@ -1,4 +1,5 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { PlanogramaDetalheScreen } from '../screens/PlanogramaDetalheScreen';
 import { PlanogramasListScreen } from '../screens/PlanogramasListScreen';
 
@@ -14,7 +15,11 @@ const Stack = createNativeStackNavigator<PlanogramasStackParamList>();
 export function PlanogramasStack() {
   return (
     <Stack.Navigator screenOptions={{ headerTitleStyle: { fontWeight: '700' } }}>
-      <Stack.Screen name="PlanogramasLista" component={PlanogramasListScreen} options={{ title: 'Planogramas' }} />
+      <Stack.Screen
+        name="PlanogramasLista"
+        component={PlanogramasListScreen}
+        options={{ title: 'Planogramas', headerRight: () => <BotaoNotificacoes /> }}
+      />
       <Stack.Screen name="PlanogramaDetalhe" component={PlanogramaDetalheScreen} options={{ title: 'Planograma' }} />
     </Stack.Navigator>
   );

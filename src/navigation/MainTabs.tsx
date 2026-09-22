@@ -1,11 +1,12 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { NavigatorScreenParams } from '@react-navigation/native';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { AppState, StyleSheet, type AppStateStatus } from 'react-native';
+import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
 import { useAuth } from '../lib/auth/AuthContext';
-import { buscarNaoLidos } from '../lib/api/comentarios';
 import { processarFilaEnvio } from '../lib/filaEnvio';
 import { aoReconectar } from '../lib/network';
 import { useAoServidorMudarPelaFila } from '../lib/useFilaEnvioAtualizada';
@@ -14,7 +15,7 @@ import { sincronizarSeNecessario } from '../lib/sync';
 import { PerfilScreen } from '../screens/PerfilScreen';
 import { cores, neutro } from '../theme';
 import { AgendaStack } from './AgendaStack';
-import { HistoricoStack } from './HistoricoStack';
+import { HistoricoStack, type HistoricoStackParamList } from './HistoricoStack';
 import { PlanogramasStack } from './PlanogramasStack';
 import { PontosVendaStack } from './PontosVendaStack';
 
@@ -37,7 +38,10 @@ export type MainTabsParamList = {
   Agenda: undefined;
   PontosVenda: undefined;
   Planogramas: undefined;
-  Historico: undefined;
+  // Aninhado (não `undefined`) desde que o sino de notificações passou a navegar direto pra
+  // dentro desta aba de qualquer lugar do app — ver components/BotaoNotificacoes.tsx e
+  // docs/29-NOTIFICACOES-MOBILE.md §4.
+  Historico: NavigatorScreenParams<HistoricoStackParamList>;
   Perfil: undefined;
 };
 
@@ -48,17 +52,6 @@ export function MainTabs() {
   // Rastreamento em tempo real (docs/11-RASTREAMENTO-TEMPO-REAL.md) — só PROMOTOR. Mantém a
   // tarefa em segundo plano viva e mostra a explicação antes de pedir a permissão "Sempre".
   const rastreamento = useRastreamento(usuario?.user_type === 'PROMOTOR');
-
-  // Feedback do gestor não lido (docs/28 §3) — badge na aba Histórico, por polling (sem push).
-  // Falha silenciosa: offline o badge só não atualiza.
-  const naoLidosQuery = useQuery({
-    queryKey: ['comentarios-nao-lidos'],
-    queryFn: buscarNaoLidos,
-    enabled: usuario?.user_type === 'PROMOTOR',
-    refetchInterval: 60_000,
-    retry: false,
-  });
-  const totalNaoLidos = naoLidosQuery.data?.total ?? 0;
 
   // Visita finalizada/registro enviado pela fila: Agenda, pendências, Histórico e o histórico da loja
   // vêm do servidor e ficavam mostrando "Em andamento" até o app ser reaberto.
@@ -155,12 +148,12 @@ export function MainTabs() {
         component={PlanogramasStack}
         options={{ title: 'Planogramas', headerShown: false }}
       />
+      <Tab.Screen name="Historico" component={HistoricoStack} options={{ title: 'Histórico', headerShown: false }} />
       <Tab.Screen
-        name="Historico"
-        component={HistoricoStack}
-        options={{ title: 'Histórico', headerShown: false, tabBarBadge: totalNaoLidos > 0 ? totalNaoLidos : undefined }}
+        name="Perfil"
+        component={PerfilScreen}
+        options={{ title: 'Perfil', headerRight: () => <BotaoNotificacoes /> }}
       />
-      <Tab.Screen name="Perfil" component={PerfilScreen} options={{ title: 'Perfil' }} />
     </Tab.Navigator>
     </>
   );

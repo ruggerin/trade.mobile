@@ -241,7 +241,7 @@ export function RegistroFormModal({
   // seria uma resposta agregada, o que essa pergunta não aceita). produtoContexto já satisfaz
   // isso sozinho (já é um produto específico). O backend é a autoridade final — isto aqui só
   // evita o promotor escolher um caminho que já sabe que vai ser rejeitado; exceções por seção
-  // (ver TipoRegistro.excecoes_granularidade) só são checadas no servidor.
+  // só são checadas no servidor.
   const exigeProduto = !produtoContexto && tipo?.granularidade_padrao === 'PRODUTO';
   const categoriasDisponiveis = exigeProduto ? CATEGORIAS.filter((c) => c.valor === 'PRODUTO') : CATEGORIAS;
 

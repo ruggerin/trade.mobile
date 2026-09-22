@@ -101,7 +101,7 @@ export function HistoricoScreen({ navigation }: Props) {
           ) : null
         }
         renderItem={({ item }) => (
-          <VisitaCard visita={item} onPress={() => navigation.navigate('VisitaDetalhe', { visita: item })} />
+          <VisitaCard visita={item} onPress={() => navigation.navigate('VisitaDetalhe', { visitaId: item.id, visita: item })} />
         )}
       />
       {descarteSeguro.elemento}

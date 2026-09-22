@@ -5,12 +5,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { AdicionarProdutoSortimentoModal } from '../components/AdicionarProdutoSortimentoModal';
 import { AbasLoja, type AbaLoja } from '../components/AbasLoja';
+import { ComentariosRegistroModal } from '../components/ComentariosRegistroModal';
 import { DadosCadastraisLoja } from '../components/DadosCadastraisLoja';
 import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
 import { ConfirmarRupturaModal } from '../components/ConfirmarRupturaModal';
 import { ProdutoDetalheModal, type ProdutoDetalhe } from '../components/ProdutoDetalheModal';
+import { RegistroDetalheModal, type RegistroDetalhe } from '../components/RegistroDetalheModal';
 import { RegistroFormModal, type RegistroFormResultado } from '../components/RegistroFormModal';
 import { buscarProdutosDisponiveis } from '../lib/api/campanhas';
+import { buscarNaoLidos } from '../lib/api/comentarios';
 import { buscarOrdemServico } from '../lib/api/ordensServico';
 import {
   buscarAutonomiaCatalogo,
@@ -21,7 +24,6 @@ import {
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
 import { listarTiposRegistro } from '../lib/api/tiposRegistro';
 import { useAuth } from '../lib/auth/AuthContext';
-import { resolverGranularidade } from '../lib/granularidadeChecklist';
 import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { useEstaOnline } from '../lib/network';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
@@ -82,12 +84,10 @@ type CriterioAgrupamentoMix = 'DEPARTAMENTO' | 'SECAO' | 'MARCA' | 'PRODUTO';
 // SQLite local (lib/visitaLocal.ts) e deixa o motor de sincronização (lib/filaEnvio.ts) cuidar
 // do envio sozinho, em segundo plano, quando houver rede.
 // Três abas com papéis bem separados — correção feita depois de uma primeira modelagem errada
-// (a aba de produtos virou um segundo caminho de preencher formulário, concorrendo com Ações; a
-// grade de coleta apareceu lá também, mas ela É preenchimento de formulário, não pertence a uma
-// lista de referência): "Ações" é TUDO que preenche um registro nesta visita — ações obrigatórias
-// (TipoRegistro.acao_obrigatoria, resolvida por escopo SEMPRE/CAMPANHA/CONTRATO), formulários de
-// Ordem de Serviço/Direcionamento, e o checklist em grade (várias perguntas simples de uma seção
-// de uma vez). "Mix" é só REFERÊNCIA — lista o mix do PDV (docs/14-SORTIMENTO-PONTO-VENDA.md,
+// (a aba de produtos virou um segundo caminho de preencher formulário, concorrendo com Ações):
+// "Ações" é TUDO que preenche um registro nesta visita — ações obrigatórias
+// (TipoRegistro.acao_obrigatoria, resolvida por escopo SEMPRE/CAMPANHA/CONTRATO) e formulários de
+// Ordem de Serviço/Direcionamento. "Mix" é só REFERÊNCIA — lista o mix do PDV (docs/14-SORTIMENTO-PONTO-VENDA.md,
 // termo "Mix" ver docs/27-BUSCA-MULTIPLA-DE-PRODUTOS.md §4), sem abrir formulário nenhum ao
 // tocar; pra registrar algo sobre um produto do mix, o caminho é Ações → Registro geral →
 // "Vincular a" (que já enxerga campanha + mix juntos pra busca). "Registros" lista TODOS os
@@ -104,9 +104,22 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // Só preenchido quando o formulário abre a partir da aba Ações — pula a etapa de escolher o
   // tipo, já que a Ação em si já É um TipoRegistro específico. Ver RegistroFormModal.tipoFixo.
   const [tipoFixoModal, setTipoFixoModal] = useState<TipoRegistro | null>(null);
+  // Preenchido quando o formulário abre a partir de um produto do Mix — o produto já é o
+  // contexto, não faz sentido pedir "vincular a" de novo. Ver RegistroFormModal.produtoContexto.
+  const [produtoContextoModal, setProdutoContextoModal] = useState<{ uuid: string; descricao: string } | null>(null);
   const [aba, setAba] = useState<Aba>('ACOES');
   const [modalAdicionarProdutoAberto, setModalAdicionarProdutoAberto] = useState(false);
   const [produtoDetalhe, setProdutoDetalhe] = useState<ProdutoDetalhe | null>(null);
+  const [registroDetalhe, setRegistroDetalhe] = useState<RegistroDetalhe | null>(null);
+  // Feedback do gestor (docs/28 §3) já durante a visita, não só depois no Histórico — só faz
+  // sentido pra registro que já sincronizou (tem servidorId), comentário é conversa online, não
+  // faz parte da fila offline. Ver docs/29-NOTIFICACOES-MOBILE.md (item que motivou isto).
+  const [feedbackRegistro, setFeedbackRegistro] = useState<RegistroLocal | null>(null);
+  const naoLidosQuery = useQuery({ queryKey: ['comentarios-nao-lidos'], queryFn: buscarNaoLidos, retry: false });
+  const registrosComNaoLido = useMemo(
+    () => new Set((naoLidosQuery.data?.registros ?? []).map((r) => r.registro_id)),
+    [naoLidosQuery.data],
+  );
   // Só pra distinguir "nunca existiu" de "existiu e acabou de ser apagada porque terminou de
   // sincronizar" quando a query de baixo devolve null — ver useEffect mais abaixo.
   const jaViuVisita = useRef(false);
@@ -406,36 +419,6 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     return Array.from(nomes.values());
   }, [itensSortimento, registrosPorProduto]);
 
-  // Seções do Mix com ao menos uma pergunta elegível pra grade (Fase 2, ver
-  // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §9) — só entra na lista se resolverGranularidade
-  // achar PRODUTO pra algum tipo simples (sem foto, sem campos customizados) nessa seção.
-  const gruposSecaoComGrade = useMemo(() => {
-    const porSecao = new Map<string, { descricao: string; produtos: Map<string, string> }>();
-
-    function adicionar(secaoUuid: string | null, secaoDescricao: string | null, produtoUuid: string, produtoDescricao: string) {
-      if (!secaoUuid || !secaoDescricao) return;
-      const grupo = porSecao.get(secaoUuid) ?? { descricao: secaoDescricao, produtos: new Map<string, string>() };
-      grupo.produtos.set(produtoUuid, produtoDescricao);
-      porSecao.set(secaoUuid, grupo);
-    }
-
-    for (const i of itensSortimento) adicionar(i.secaoUuid, i.secaoDescricao, i.produtoUuid, i.descricao);
-
-    const grupos: { secaoUuid: string; secaoDescricao: string; produtos: { uuid: string; descricao: string }[] }[] = [];
-    for (const [secaoUuid, grupo] of porSecao) {
-      const temColuna = tiposRegistro.some(
-        (t) => !t.exige_foto && t.campos.length === 0 && resolverGranularidade(t, secaoUuid) === 'PRODUTO',
-      );
-      if (!temColuna) continue;
-      grupos.push({
-        secaoUuid,
-        secaoDescricao: grupo.descricao,
-        produtos: Array.from(grupo.produtos.entries()).map(([uuid, descricao]) => ({ uuid, descricao })),
-      });
-    }
-    return grupos.sort((a, b) => a.secaoDescricao.localeCompare(b.secaoDescricao));
-  }, [itensSortimento, tiposRegistro]);
-
   const criarRegistroMutation = useMutation({
     mutationFn: (resultado: RegistroFormResultado) =>
       criarRegistroVisitaLocal({
@@ -446,6 +429,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     onSuccess: (_dados, resultado) => {
       setErroRegistro(null);
       setModalAberto(false);
+      setProdutoContextoModal(null);
       releLocal();
       // Ruptura confirmada (decisão 4 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md) — só abre a
       // tela de confirmação DEPOIS que o registro principal (com o campo SORTIMENTO) já salvou.
@@ -615,12 +599,23 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   function abrirModalGeral() {
     setErroRegistro(null);
     setTipoFixoModal(null);
+    setProdutoContextoModal(null);
     setModalAberto(true);
   }
 
   function abrirModalAcao(tipo: TipoRegistro) {
     setErroRegistro(null);
     setTipoFixoModal(tipo);
+    setProdutoContextoModal(null);
+    setModalAberto(true);
+  }
+
+  // Toque num item do Mix: a ação principal é registrar a coleta já vinculada a este produto
+  // (era o que abria o detalhe do produto antes, sem opção de coletar). Ver "ⓘ" pro detalhe.
+  function abrirModalParaProduto(item: { produtoUuid: string; descricao: string }) {
+    setErroRegistro(null);
+    setTipoFixoModal(null);
+    setProdutoContextoModal({ uuid: item.produtoUuid, descricao: item.descricao });
     setModalAberto(true);
   }
 
@@ -816,43 +811,6 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             </View>
           )}
 
-          {/* Checklist em grade É preenchimento de formulário (marca várias respostas simples
-              de uma seção de uma vez) — por isso vive em Ações, não na aba Mix (que é só
-              referência). Ver docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §9. */}
-          {gruposSecaoComGrade.length > 0 && (
-            <View style={styles.secao}>
-              <Text style={styles.secaoTitulo}>Checklist em grade</Text>
-              <Text style={styles.secaoSubtitulo}>
-                Marque vários produtos de uma linha de uma vez, por pergunta — em vez de um
-                registro por vez.
-              </Text>
-              {gruposSecaoComGrade.map((grupo) => {
-                const respondidos = grupo.produtos.filter((p) => (registrosPorProduto.get(p.uuid)?.length ?? 0) > 0).length;
-                return (
-                  <Pressable
-                    key={grupo.secaoUuid}
-                    style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressionado]}
-                    onPress={() =>
-                      navigation.navigate('GradeColeta', {
-                        visitaLocalId,
-                        secaoUuid: grupo.secaoUuid,
-                        secaoDescricao: grupo.secaoDescricao,
-                        produtos: grupo.produtos,
-                      })
-                    }
-                  >
-                    <View style={styles.itemInfo}>
-                      <Text style={styles.itemNome}>{grupo.secaoDescricao}</Text>
-                      <Text style={styles.itemStatusPendente}>
-                        {respondidos} de {grupo.produtos.length} produto(s)
-                      </Text>
-                    </View>
-                    <Text style={styles.linkGrade}>Preencher ›</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          )}
         </ScrollView>
       ) : aba === 'PRODUTOS' ? (
         <ScrollView contentContainerStyle={styles.lista}>
@@ -911,16 +869,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
                   imagemUrl={item.imagemUrl}
                   produtoChave={item.produtoChave}
                   propriedade={item.propriedade}
-                  onPress={() =>
-                    setProdutoDetalhe({
-                      descricao: item.descricao,
-                      imagemUrl: item.imagemUrl,
-                      codigoBarras: item.codigoBarras,
-                      propriedade: item.propriedade,
-                      secaoDescricao: item.secaoDescricao,
-                      produtoChave: item.produtoChave,
-                    })
-                  }
+                  onPress={() => abrirModalParaProduto({ produtoUuid: item.produtoUuid, descricao: item.descricao })}
                   onVerDetalhes={() =>
                     setProdutoDetalhe({
                       descricao: item.descricao,
@@ -972,6 +921,21 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
                   podeCancelar={cancelamentoPermitido}
                   cancelando={cancelarRegistroMutation.isPending}
                   onCancelar={() => confirmarCancelamentoRegistro(registro)}
+                  onDetalhar={() =>
+                    setRegistroDetalhe({
+                      tipoDescricao: tipoRegistroPorUuid.get(registro.tipoRegistroUuid)?.descricao ?? 'Registro',
+                      vinculoLabel: registro.produtoDescricao ?? registro.vinculoDescricao,
+                      valoresCampos: registro.valoresCampos ? Object.entries(registro.valoresCampos) : [],
+                      ruptura: !!registro.ruptura,
+                      observacao: registro.observacao,
+                      imagensLocais: registro.imagensLocais,
+                      criadoEm: registro.criadoEm,
+                      erro: registro.status === 'ERRO' ? (registro.erro ?? 'Não foi aceito pelo servidor') : null,
+                    })
+                  }
+                  podeComentar={!!registro.servidorId && !!visita?.servidorId}
+                  naoLido={!!registro.servidorId && registrosComNaoLido.has(registro.servidorId)}
+                  onFeedback={() => setFeedbackRegistro(registro)}
                 />
               ))
             )}
@@ -1038,6 +1002,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         visible={modalAberto}
         tiposRegistro={tiposRegistroParaDropdown}
         produtosDisponiveis={produtosParaVincular}
+        produtoContexto={produtoContextoModal}
         tipoFixo={tipoFixoModal}
         pontoVendaUuid={pontoVendaUuid}
         enviando={criarRegistroMutation.isPending}
@@ -1045,6 +1010,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         onClose={() => {
           setModalAberto(false);
           setErroRegistro(null);
+          setProdutoContextoModal(null);
         }}
         onSubmit={(resultado) => criarRegistroMutation.mutate(resultado)}
       />
@@ -1061,6 +1027,22 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       )}
 
       <ProdutoDetalheModal produto={produtoDetalhe} onClose={() => setProdutoDetalhe(null)} />
+      <RegistroDetalheModal registro={registroDetalhe} onClose={() => setRegistroDetalhe(null)} />
+
+      <ComentariosRegistroModal
+        visible={feedbackRegistro !== null}
+        visitaUuid={visita?.servidorId ?? ''}
+        registroUuid={feedbackRegistro?.servidorId ?? null}
+        titulo={
+          feedbackRegistro
+            ? (feedbackRegistro.produtoDescricao ??
+              feedbackRegistro.vinculoDescricao ??
+              tipoRegistroPorUuid.get(feedbackRegistro.tipoRegistroUuid)?.descricao ??
+              'Registro')
+            : 'Registro'
+        }
+        onClose={() => setFeedbackRegistro(null)}
+      />
 
       <ConfirmarRupturaModal
         visible={confirmacaoRuptura !== null}
@@ -1151,18 +1133,31 @@ function RegistroCard({
   podeCancelar,
   cancelando,
   onCancelar,
+  onDetalhar,
+  podeComentar,
+  naoLido,
+  onFeedback,
 }: {
   registro: RegistroLocal;
   tipoRegistro: TipoRegistro | undefined;
   podeCancelar: boolean;
   cancelando: boolean;
   onCancelar: () => void;
+  onDetalhar: () => void;
+  // Comentário é conversa online com o gestor (docs/28 §3) — só existe pra registro que já
+  // sincronizou (tem servidorId na visita e nele mesmo). Enquanto pendente de envio, sem link.
+  podeComentar: boolean;
+  naoLido: boolean;
+  onFeedback: () => void;
 }) {
   const vinculoLabel = registro.produtoDescricao ?? registro.vinculoDescricao;
   const valoresCampos = registro.valoresCampos ? Object.entries(registro.valoresCampos) : [];
 
   return (
-    <View style={styles.itemCard}>
+    <Pressable
+      style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressionado]}
+      onPress={onDetalhar}
+    >
       {registro.imagensLocais[0] ? (
         <View style={styles.itemThumbWrap}>
           <Image source={{ uri: registro.imagensLocais[0] }} style={styles.itemThumb} />
@@ -1184,6 +1179,11 @@ function RegistroCard({
         {registro.status === 'ERRO' && (
           <Text style={styles.itemStatusErro}>{registro.erro ?? 'Não foi aceito pelo servidor'}</Text>
         )}
+        {podeComentar && (
+          <Pressable onPress={onFeedback} hitSlop={8}>
+            <Text style={styles.linkFeedback}>Comentários{naoLido ? ' · nova resposta' : ''}</Text>
+          </Pressable>
+        )}
         {podeCancelar && (
           <Pressable onPress={onCancelar} disabled={cancelando} hitSlop={8}>
             <Text style={styles.linkCancelar}>{cancelando ? 'Cancelando...' : 'Cancelar registro'}</Text>
@@ -1194,7 +1194,7 @@ function RegistroCard({
         {registro.status === 'PENDENTE' && <Text style={styles.badgePendenteEnvio}>Aguardando envio</Text>}
         {registro.ruptura && <Text style={styles.badgeRuptura}>Ruptura</Text>}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -1461,11 +1461,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 2,
   },
-  linkGrade: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: cores.primaria,
-  },
   itemVinculo: {
     fontSize: 12,
     fontWeight: '600',
@@ -1486,6 +1481,12 @@ const styles = StyleSheet.create({
   linkCancelar: {
     fontSize: 12,
     color: cores.erro,
+    fontWeight: '700',
+    marginTop: espaco.xs,
+  },
+  linkFeedback: {
+    fontSize: 12,
+    color: cores.primaria,
     fontWeight: '700',
     marginTop: espaco.xs,
   },

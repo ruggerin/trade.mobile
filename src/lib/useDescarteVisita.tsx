@@ -98,12 +98,12 @@ export function useDescarteVisita(aoDescartar?: () => void): {
     );
   }
 
-  async function enviarAutorizacao(email: string, senha: string) {
+  async function enviarAutorizacao(credencial: { codigo: string } | { email: string; senha: string }) {
     if (!autorizando) return;
     setOcupado(true);
     setErroAutorizacao(null);
     try {
-      await cancelarVisitaAutorizado(autorizando.servidorId!, email, senha);
+      await cancelarVisitaAutorizado(autorizando.servidorId!, credencial);
       await excluirVisitaLocalCompleta(autorizando.id, 'descarte-forcado');
       concluir();
     } catch (err) {
@@ -114,7 +114,9 @@ export function useDescarteVisita(aoDescartar?: () => void): {
           : status === 429
             ? 'Muitas tentativas. Aguarde alguns minutos e tente de novo.'
             : status === 403
-              ? 'Autorização negada. Confira o e-mail e a senha do gestor.'
+              ? 'codigo' in credencial
+                ? 'Autorização negada. Confira o código.'
+                : 'Autorização negada. Confira o e-mail e a senha do gestor.'
               : 'Não foi possível autorizar agora. Tente de novo.',
       );
     } finally {
@@ -127,7 +129,8 @@ export function useDescarteVisita(aoDescartar?: () => void): {
       visible={autorizando !== null}
       enviando={ocupado}
       erro={erroAutorizacao}
-      onEnviar={(email, senha) => void enviarAutorizacao(email, senha)}
+      onEnviarCodigo={(codigo) => void enviarAutorizacao({ codigo })}
+      onEnviarSenha={(email, senha) => void enviarAutorizacao({ email, senha })}
       onSoNesteAparelho={() => autorizando && void soNesteAparelho(autorizando)}
       onClose={() => setAutorizando(null)}
     />
