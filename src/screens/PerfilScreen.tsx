@@ -109,6 +109,9 @@ export function PerfilScreen() {
     mutationFn: sincronizarAgora,
     onSuccess: (resultado) => {
       setUltimaSincronizacao(new Date().toISOString());
+      // Sem isso o SQLite ficava atualizado mas as telas (ex.: lista de Lojas) seguiam com o que
+      // já tinham em memória até reabrir o app.
+      void queryClient.invalidateQueries();
       Alert.alert(
         'Sincronizado',
         `${resultado.pontosVenda} ponto(s) de venda, ${resultado.tiposRegistro} tipo(s) de registro e ${resultado.parametros} parâmetro(s) atualizados.`,

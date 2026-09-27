@@ -46,14 +46,35 @@ export interface IniciarVisitaLocalParams {
   longitude: number;
 }
 
+/**
+ * Visita que o promotor ainda está fazendo (check-in feito, não finalizada) — FINALIZADA_LOCAL não
+ * conta: pro promotor ela já acabou, só falta o checkout subir, e segurar a próxima loja por
+ * causa de falta de sinal quebraria o offline-first.
+ */
+export async function buscarVisitaEmAndamento(usuarioId: string): Promise<VisitaLocal | null> {
+  const abertas = await listarVisitasLocaisAbertas(usuarioId);
+  return abertas.find((v) => v.status === 'RASCUNHO' || v.status === 'CHECKIN_ENVIADO') ?? null;
+}
+
+/** Promotor tentou iniciar uma visita tendo outra em andamento em OUTRA loja — premissa: uma visita por vez. */
+export class VisitaEmAndamentoError extends Error {
+  constructor(public readonly visita: VisitaLocal) {
+    super(`Você já está em uma visita em ${visita.pontoVenda.fantasia}. Finalize-a antes de iniciar outra.`);
+    this.name = 'VisitaEmAndamentoError';
+  }
+}
+
 export async function iniciarVisitaLocal(params: IniciarVisitaLocalParams): Promise<VisitaLocal> {
-  // Já existe uma visita em andamento nesta loja? Retoma ela em vez de abrir outra. Duas visitas
-  // abertas na mesma loja era o que fazia o formulário do Direcionamento "não aparecer": a
-  // ordem de serviço fica presa à PRIMEIRA visita, e a segunda nascia sem vínculo nenhum.
-  const emAndamento = (await listarVisitasLocaisAbertas(params.usuarioId)).find(
-    (v) => v.pontoVenda.id === params.pontoVenda.id && (v.status === 'RASCUNHO' || v.status === 'CHECKIN_ENVIADO'),
-  );
-  if (emAndamento) return emAndamento;
+  // Premissa: o promotor só tem UMA visita em andamento por vez. Se for nesta mesma loja, retoma
+  // ela em vez de abrir outra (duas visitas abertas na mesma loja era o que fazia o formulário do
+  // Direcionamento "não aparecer": a ordem de serviço fica presa à PRIMEIRA visita, e a segunda
+  // nascia sem vínculo nenhum). Se for em outra loja, recusa — as telas já bloqueiam antes, isso
+  // aqui é a última trava.
+  const emAndamento = await buscarVisitaEmAndamento(params.usuarioId);
+  if (emAndamento) {
+    if (emAndamento.pontoVenda.id === params.pontoVenda.id) return emAndamento;
+    throw new VisitaEmAndamentoError(emAndamento);
+  }
 
   const visita = await criarVisitaLocal({
     usuarioId: params.usuarioId,

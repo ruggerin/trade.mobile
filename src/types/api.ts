@@ -9,6 +9,8 @@ export interface Empresa {
   razao_social: string;
   nome_fantasia: string;
   cnpj: string;
+  // Módulo pago Pedido de Venda (docs/38-PEDIDO-VENDEDOR.md §12) — sem ele, nada de aba Pedidos.
+  pedidos_venda_habilitado?: boolean;
   ativo: boolean;
 }
 
@@ -30,6 +32,9 @@ export interface Usuario {
   foto_url: string | null;
   empresa?: Empresa;
   dispositivo?: Dispositivo | null;
+  // Permissões do perfil — o app decide o que mostrar por elas, ex.: aba "Pedidos" só com
+  // pedidos_venda.criar ("modo Vendedor", docs/38-PEDIDO-VENDEDOR.md §4).
+  perfil?: { id: string; nome: string; permissoes?: string[] } | null;
 }
 
 export interface PontoVenda {
@@ -188,6 +193,9 @@ export interface CampoTipoRegistro {
   opcoes: string[] | null;
   obrigatorio: boolean;
   ordem: number;
+  // Só tem efeito quando tipo_campo = DATA (docs/35-LIMITE-RETROATIVO-CAMPO-DATA.md) — `null` =
+  // sem limite, aceita qualquer data passada (comportamento padrão, sempre foi assim).
+  limite_dias_retroativos: number | null;
   // Campo condicional (docs/20-FORMULARIO-DINAMICO-CAMPANHA.md decisão 7) — `depende_de_chave` é
   // a `chave` de outro campo do mesmo tipo_registro (não um uuid), só aparece/é obrigatório
   // quando esse campo pai tiver o valor `depende_de_valor`.
@@ -202,7 +210,8 @@ export interface CampoTipoRegistro {
 // Catálogo customizável por empresa do que o promotor pode registrar numa visita — substitui o
 // antigo enum fixo FOTO/RUPTURA/OBSERVACAO. Toda empresa nasce com esses 3 como padrão, mas
 // pode criar outros (ex.: "Ponto extra") com campos próprios.
-export type EscopoAcaoTipoRegistro = 'SEMPRE' | 'CAMPANHA' | 'CONTRATO';
+// LOJA_REDE = só nas lojas/redes escolhidas no tipo (docs/40-ACAO-OBRIGATORIA-LOJA-REDE.md).
+export type EscopoAcaoTipoRegistro = 'SEMPRE' | 'CAMPANHA' | 'CONTRATO' | 'LOJA_REDE';
 export type GranularidadeResposta = 'LINHA' | 'PRODUTO';
 
 export interface TipoRegistro {
@@ -224,6 +233,13 @@ export interface TipoRegistro {
   acao_obrigatoria: boolean;
   escopo_acao: EscopoAcaoTipoRegistro | null;
   campanha_auditoria_uuid: string | null;
+  // Escopo LOJA_REDE — loja OU rede do PDV basta; as duas vazias = todas as lojas. Opcional:
+  // cache antigo (antes da doc 40) não tem esses campos.
+  pontos_venda_uuids?: string[];
+  redes_lojas_uuids?: string[];
+  // Lista predefinida de produtos (granularidade PRODUTO) — com ela, as opções de vínculo são só
+  // estes produtos, em qualquer loja. Opcional: cache antigo não tem o campo.
+  produtos_predefinidos?: { id: string; descricao: string; codigo_barras: string | null; codigo_externo: string | null }[];
   // Granularidade da resposta (linha/seção vs. produto individual) — ver
   // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §4. `null` = sem regra, vínculo livre (atual).
   // O backend continua sendo a autoridade final (StoreVisitaRegistroRequest); o app usa isto só
@@ -336,6 +352,58 @@ export interface ProdutoCatalogo {
   status_aprovacao: StatusAprovacao;
   marca?: { id: string; descricao: string } | null;
   secao?: { id: string; descricao: string } | null;
+  // Pedido de Venda (docs/38 §6) — null = sem preço configurado, não pode entrar em pedido.
+  preco_tabela?: number | null;
+  desconto_maximo_pct?: number | null;
+}
+
+// Pedido de Venda digitado pelo vendedor (docs/38-PEDIDO-VENDEDOR.md) — espelha
+// PedidoVendaResource da API. Diferente de `pedidos-loja` (somente leitura, espelho do ERP).
+export type StatusPedidoVenda = 'RASCUNHO' | 'PENDENTE_AUTORIZACAO' | 'APROVADO' | 'CONCLUIDO' | 'CANCELADO';
+
+export interface PedidoVendaItem {
+  id: string;
+  produto: {
+    id: string;
+    descricao: string;
+    codigo_barras: string | null;
+    codigo_externo: string | null;
+    imagem_url: string | null;
+  } | null;
+  quantidade: number;
+  preco_tabela: number;
+  desconto_maximo_pct: number | null;
+  preco_minimo: number;
+  preco: number;
+  desconto_pct: number;
+  subtotal: number;
+  requer_autorizacao: boolean;
+}
+
+export interface PedidoVendaHistorico {
+  id: string;
+  acao: string;
+  descricao: string;
+  motivo: string | null;
+  usuario: { id: string; nome: string } | null;
+  created_at: string;
+}
+
+export interface PedidoVenda {
+  id: string;
+  status: StatusPedidoVenda;
+  ponto_venda?: { id: string; fantasia: string; razao_social: string | null; cnpj: string | null } | null;
+  vendedor?: { id: string; nome: string } | null;
+  visita_id?: string | null;
+  observacao: string | null;
+  total: number | null;
+  total_itens: number | null;
+  requer_autorizacao: boolean | null;
+  itens: PedidoVendaItem[] | null;
+  historico?: PedidoVendaHistorico[];
+  concluido_em: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Visita {

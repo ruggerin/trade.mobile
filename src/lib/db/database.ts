@@ -213,6 +213,17 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       criado_em TEXT NOT NULL,
       atualizado_em TEXT NOT NULL
     );
+
+    -- Rascunho da coleta guiada (formulário com lista predefinida de produtos) — o promotor
+    -- preenche produto por produto e só no "Salvar" final tudo entra em fila_registros. Uma linha
+    -- por visita × formulário, produtos num JSON. Ver lib/db/rascunhosColeta.ts.
+    CREATE TABLE IF NOT EXISTS rascunhos_coleta (
+      visita_local_id TEXT NOT NULL,
+      tipo_registro_uuid TEXT NOT NULL,
+      dados_json TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL,
+      PRIMARY KEY (visita_local_id, tipo_registro_uuid)
+    );
   `);
 
   // Aparelho que já tinha o app instalado antes da coluna `ativo` existir — `CREATE TABLE IF

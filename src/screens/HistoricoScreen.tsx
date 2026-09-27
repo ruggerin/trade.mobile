@@ -1,11 +1,15 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { listarMinhasVisitas } from '../lib/api/visitas';
 import { useAuth } from '../lib/auth/AuthContext';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import { useDescarteVisita } from '../lib/useDescarteVisita';
+import { useRecarregarAoFocar } from '../lib/useRecarregarAoFocar';
 import {
   listarVisitasLocaisPendentesOuRejeitadas,
   tentarEnviarAgora,
@@ -13,16 +17,23 @@ import {
 } from '../lib/visitaLocal';
 import type { HistoricoStackParamList } from '../navigation/HistoricoStack';
 import type { StatusVisita, Visita } from '../types/api';
-import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
+import { cores, espaco, neutro, raio, tipografia } from '../theme';
 
 type Props = NativeStackScreenProps<HistoricoStackParamList, 'HistoricoLista'>;
 type IconeMdi = keyof typeof MaterialCommunityIcons.glyphMap;
+type Filtro = 'todas' | 'FINALIZADA' | 'CANCELADA';
 
 const STATUS_INFO: Record<StatusVisita, { label: string; bg: string; texto: string; icone: IconeMdi }> = {
   ABERTA: { label: 'Aberta', bg: cores.primariaClara, texto: cores.primariaEscura, icone: 'progress-clock' },
   FINALIZADA: { label: 'Finalizada', bg: cores.sucessoFundo, texto: cores.sucesso, icone: 'check-circle-outline' },
   CANCELADA: { label: 'Cancelada', bg: cores.divisor, texto: cores.textoSecundario, icone: 'close-circle-outline' },
 };
+
+const FILTROS: { chave: Filtro; label: string }[] = [
+  { chave: 'todas', label: 'Todas' },
+  { chave: 'FINALIZADA', label: 'Finalizadas' },
+  { chave: 'CANCELADA', label: 'Canceladas' },
+];
 
 // docs/05-APP-MOBILE-UX.md §3.7 — visitas do próprio promotor, mais recentes primeiro. Além da
 // lista já confirmada pelo servidor, mostra no topo o que ainda está na fila de envio local
@@ -31,6 +42,11 @@ const STATUS_INFO: Record<StatusVisita, { label: string; bg: string; texto: stri
 export function HistoricoScreen({ navigation }: Props) {
   const { usuario } = useAuth();
   const queryClient = useQueryClient();
+  // Header nativo desligado nesta tela (ver HistoricoStack.tsx) — o cabeçalho próprio precisa do
+  // inset do topo manualmente, sem ele o texto entra embaixo da barra de status/notch.
+  const insets = useSafeAreaInsets();
+  const [busca, setBusca] = useState('');
+  const [filtro, setFiltro] = useState<Filtro>('todas');
 
   const query = useQuery({
     queryKey: ['visitas', 'historico'],
@@ -43,6 +59,8 @@ export function HistoricoScreen({ navigation }: Props) {
     enabled: Boolean(usuario),
   });
   useAoAtualizarFilaEnvio(() => void queryClient.invalidateQueries({ queryKey: ['visitas-locais-pendentes'] }));
+  // Visita finalizada/comentada pelo gestor aparece ao voltar pra aba (ver lib/useRecarregarAoFocar.ts).
+  const { atualizando, puxarParaAtualizar } = useRecarregarAoFocar(query.refetch, locaisQuery.refetch);
 
   // Descarte seguro (cancela no servidor / pede autorização do gestor) — ver lib/useDescarteVisita.tsx.
   const descarteSeguro = useDescarteVisita();
@@ -53,10 +71,59 @@ export function HistoricoScreen({ navigation }: Props) {
   });
 
   const locais = locaisQuery.data ?? [];
-  const semNadaAMostrar = locais.length === 0 && query.data?.visitas.length === 0;
+  const visitas = query.data?.visitas ?? [];
+  const semNadaAMostrar = locais.length === 0 && visitas.length === 0;
+
+  const buscaNormalizada = busca.trim().toLowerCase();
+  const visitasFiltradas = useMemo(
+    () =>
+      visitas.filter((v) => {
+        if (filtro !== 'todas' && v.status !== filtro) return false;
+        if (buscaNormalizada && !v.ponto_venda?.fantasia?.toLowerCase().includes(buscaNormalizada)) return false;
+        return true;
+      }),
+    [visitas, filtro, buscaNormalizada],
+  );
+  const contagemFiltro = (chave: Filtro) => (chave === 'todas' ? visitas.length : visitas.filter((v) => v.status === chave).length);
 
   return (
     <View style={styles.container}>
+      <View style={[styles.cabecalho, { paddingTop: insets.top + espaco.sm }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.tituloTela}>Histórico</Text>
+          <Text style={styles.resumoTexto}>{visitas.length} visita(s) registradas</Text>
+        </View>
+        <BotaoNotificacoes />
+      </View>
+
+      <View style={styles.buscaContainer}>
+        <MaterialCommunityIcons name="magnify" size={20} color={cores.textoTerciario} />
+        <TextInput
+          style={styles.busca}
+          value={busca}
+          onChangeText={setBusca}
+          placeholder="Buscar por loja"
+          placeholderTextColor={cores.textoTerciario}
+          autoCapitalize="none"
+        />
+      </View>
+
+      <View style={styles.filtrosLinha}>
+        {FILTROS.map((f) => {
+          const ativo = filtro === f.chave;
+          return (
+            <Pressable
+              key={f.chave}
+              style={[styles.filtroChip, ativo && styles.filtroChipAtivo]}
+              onPress={() => setFiltro(f.chave)}
+            >
+              <Text style={[styles.filtroChipTexto, ativo && styles.filtroChipTextoAtivo]}>{f.label}</Text>
+              <Text style={[styles.filtroChipContagem, ativo && styles.filtroChipTextoAtivo]}>{contagemFiltro(f.chave)}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
       {query.isLoading && locais.length === 0 && (
         <View style={styles.centro}>
           <ActivityIndicator size="large" color={cores.primaria} />
@@ -79,10 +146,17 @@ export function HistoricoScreen({ navigation }: Props) {
         </View>
       )}
 
+      {!semNadaAMostrar && !query.isLoading && !query.isError && visitasFiltradas.length === 0 && locais.length === 0 && (
+        <View style={styles.centro}>
+          <Text style={styles.vazioTexto}>Nenhuma visita encontrada.</Text>
+        </View>
+      )}
+
       <FlatList
-        data={query.data?.visitas ?? []}
+        data={visitasFiltradas}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.lista}
+        refreshControl={<RefreshControl refreshing={atualizando} onRefresh={puxarParaAtualizar} colors={[cores.primaria]} />}
         ListHeaderComponent={
           locais.length > 0 ? (
             <View style={styles.secaoLocal}>
@@ -219,12 +293,83 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: cores.fundo,
   },
+  cabecalho: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingHorizontal: espaco.lg,
+    paddingBottom: 2,
+    backgroundColor: cores.fundo,
+  },
+  tituloTela: {
+    ...tipografia.tituloGrande,
+    color: cores.texto,
+  },
+  resumoTexto: {
+    fontSize: 13,
+    color: cores.textoSecundario,
+    marginTop: 2,
+  },
+  buscaContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.sm,
+    marginHorizontal: espaco.lg,
+    marginTop: espaco.lg,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    borderRadius: raio.md,
+    paddingHorizontal: espaco.md,
+    minHeight: 48,
+    backgroundColor: cores.fundoCard,
+  },
+  busca: {
+    flex: 1,
+    fontSize: 16,
+    color: cores.texto,
+  },
+  filtrosLinha: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: espaco.sm,
+    paddingHorizontal: espaco.lg,
+    marginTop: espaco.md,
+  },
+  filtroChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 34,
+    paddingHorizontal: espaco.md,
+    borderRadius: raio.pill,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    backgroundColor: cores.fundoCard,
+  },
+  filtroChipAtivo: {
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
+  },
+  filtroChipTexto: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: neutro[700],
+  },
+  filtroChipContagem: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: neutro[500],
+  },
+  filtroChipTextoAtivo: {
+    color: cores.onPrimaria,
+  },
   lista: {
     padding: espaco.lg,
-    gap: espaco.md,
+    paddingTop: espaco.md,
+    gap: espaco.sm,
   },
   secaoLocal: {
-    gap: espaco.sm,
+    gap: 6,
     marginBottom: espaco.sm,
   },
   secaoLocalTitulo: {
@@ -232,18 +377,18 @@ const styles = StyleSheet.create({
     color: cores.textoSecundario,
     marginBottom: 2,
   },
+  // Sem sombra de propósito — só borda 1px. Card "flat", sem a sombra genérica que dá cara de
+  // tela gerada por IA; mesmo tratamento normalizado com o card de PontosVendaListScreen.
   card: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: espaco.md,
+    gap: espaco.sm,
     backgroundColor: cores.fundoCard,
-    borderRadius: raio.lg,
-    padding: espaco.md,
+    borderRadius: raio.md,
+    padding: 10,
     borderWidth: 1,
     borderColor: cores.borda,
     minHeight: 48,
-    marginBottom: espaco.md,
-    ...sombraCard,
   },
   cardRejeitada: {
     borderColor: cores.erroBorda,

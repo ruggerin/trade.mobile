@@ -3,6 +3,7 @@ import type { PontoVenda } from '../../types/api';
 import { gerarUuidLocal } from '../uuid';
 import { getDatabase, escrever } from './database';
 import { excluirRegistrosDaVisita, listarRegistrosLocais } from './filaRegistros';
+import { apagarRascunhosDaVisita } from './rascunhosColeta';
 
 /**
  * Ver docs/04-APP-MOBILE.md "Fila offline de envio" e o comentário no topo de `database.ts`.
@@ -241,9 +242,20 @@ export type MotivoExclusaoVisita =
   | 'descarte-forcado'
   | 'cancelamento-pelo-promotor';
 
+// Por que cada visita saiu do aparelho nesta sessão do app — a tela da visita usa pra dizer
+// "finalizada com sucesso" em vez de "saiu sem ser finalizada" quando o checkout confirmou tão
+// rápido que ela nem chegou a ver o status FINALIZADA_LOCAL. Só memória: depois de reabrir o app
+// a tela não existe mais pra perguntar.
+const motivosExclusao = new Map<string, MotivoExclusaoVisita>();
+
+export function motivoExclusaoVisita(id: string): MotivoExclusaoVisita | null {
+  return motivosExclusao.get(id) ?? null;
+}
+
 export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclusaoVisita): Promise<void> {
   // Log pra rastrear "a visita sumiu": sempre diz QUEM apagou a visita do aparelho.
   console.log(`[fila] visita ${id} removida do aparelho — motivo: ${motivo}`);
+  motivosExclusao.set(id, motivo);
   const registros = await listarRegistrosLocais(id);
   for (const registro of registros) {
     for (const uri of registro.imagensLocais) {
@@ -251,6 +263,8 @@ export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclu
     }
   }
   await excluirRegistrosDaVisita(id);
+  // Coleta guiada não salva (rascunho) — sem a visita, não tem mais pra onde ir.
+  await apagarRascunhosDaVisita(id);
 
   const db = await getDatabase();
   await escrever('DELETE FROM fila_visitas WHERE id = ?', [id]);

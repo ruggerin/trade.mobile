@@ -3,8 +3,8 @@ import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -80,9 +80,13 @@ export function LoginScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior="padding"
     >
-      <View style={styles.conteudo}>
+      <ScrollView
+        contentContainerStyle={styles.conteudo}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.logoBadge}>
           <MaterialCommunityIcons name="storefront" size={32} color={cores.primaria} />
         </View>
@@ -151,7 +155,7 @@ export function LoginScreen() {
             <Text style={styles.botaoTexto}>Entrar</Text>
           )}
         </Pressable>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -162,9 +166,10 @@ const styles = StyleSheet.create({
     backgroundColor: cores.fundoCard,
   },
   conteudo: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: 'center',
     paddingHorizontal: espaco.xl,
+    paddingVertical: espaco.xl,
   },
   logoBadge: {
     width: 64,

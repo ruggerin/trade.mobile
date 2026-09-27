@@ -3,12 +3,14 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AdicionarProdutoSortimentoModal } from '../components/AdicionarProdutoSortimentoModal';
 import { AbasLoja, type AbaLoja } from '../components/AbasLoja';
 import { ComentariosRegistroModal } from '../components/ComentariosRegistroModal';
 import { DadosCadastraisLoja } from '../components/DadosCadastraisLoja';
 import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
 import { ConfirmarRupturaModal } from '../components/ConfirmarRupturaModal';
+import { FinalizarVisitaModal } from '../components/FinalizarVisitaModal';
 import { ProdutoDetalheModal, type ProdutoDetalhe } from '../components/ProdutoDetalheModal';
 import { RegistroDetalheModal, type RegistroDetalhe } from '../components/RegistroDetalheModal';
 import { RegistroFormModal, type RegistroFormResultado } from '../components/RegistroFormModal';
@@ -24,6 +26,9 @@ import {
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
 import { listarTiposRegistro } from '../lib/api/tiposRegistro';
 import { useAuth } from '../lib/auth/AuthContext';
+import { acaoConcluida, acaoValeNestaVisita, progressoLista } from '../lib/acaoObrigatoria';
+import { motivoExclusaoVisita } from '../lib/db/filaVisitas';
+import { podeTirarPedido } from '../lib/pedidoVenda';
 import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { useEstaOnline } from '../lib/network';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
@@ -43,10 +48,17 @@ import {
 } from '../lib/visitaLocal';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import { useDescarteVisita } from '../lib/useDescarteVisita';
-import { cores, espaco, neutro, raio, sombraCard, sombraFlutuante, tipografia } from '../theme';
+import { IconeTipoRegistro } from '../components/IconeTipoRegistro';
+import { amber, cores, espaco, indigo, neutro, raio, sombraCard, sombraFlutuante, tipografia } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'VisitaAndamento'>;
-type Aba = 'DADOS' | 'HISTORICO' | 'ACOES' | 'PRODUTOS' | 'REGISTROS';
+// Só 4 abas — Dados cadastrais e Histórico da loja vivem JUNTOS em "Loja" (uma rolagem só, dados
+// em cima e "Últimas visitas" embaixo). Decisão do protótipo Claude Design (docs/…/CLAUDE.md:
+// "Visita Andamento.dc.html, aba Loja → Últimas visitas") — diverge de uma rodada anterior desta
+// mesma tela, que tinha Dados e Histórico como abas separadas; o check-in (`PontoVendaCheckinScreen`)
+// continua com as duas separadas, porque lá elas cabem cada uma na própria tela sem concorrer com
+// Ações/Mix/Registros.
+type Aba = 'LOJA' | 'ACOES' | 'PRODUTOS' | 'REGISTROS';
 
 interface GrupoCampanha {
   campanhaUuid: string;
@@ -94,11 +106,20 @@ type CriterioAgrupamentoMix = 'DEPARTAMENTO' | 'SECAO' | 'MARCA' | 'PRODUTO';
 // registros já feitos nesta visita — geral ou vinculado a produto, campanha ou avulso — pra nada
 // "sumir" da vista do promotor. Cancelar (com confirmação) é permitido ali, parametrizável por
 // empresa — ver REGISTRO_CANCELAMENTO_PERMITIDO em lib/api/parametros.ts.
+// "1h 12min" / "32min" — sem hora quando dá menos de uma, mesmo formato do protótipo Claude Design.
+function formatarCronometro(inicioISO: string): string {
+  const seg = Math.max(0, Math.floor((Date.now() - new Date(inicioISO).getTime()) / 1000));
+  const h = Math.floor(seg / 3600);
+  const min = Math.floor(seg / 60) % 60;
+  return h > 0 ? `${h}h ${String(min).padStart(2, '0')}min` : `${min}min`;
+}
+
 export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const { visitaLocalId } = route.params;
   const { usuario } = useAuth();
   const queryClient = useQueryClient();
   const online = useEstaOnline();
+  const insets = useSafeAreaInsets();
   const [erroRegistro, setErroRegistro] = useState<string | null>(null);
   const [modalAberto, setModalAberto] = useState(false);
   // Só preenchido quando o formulário abre a partir da aba Ações — pula a etapa de escolher o
@@ -108,6 +129,10 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // contexto, não faz sentido pedir "vincular a" de novo. Ver RegistroFormModal.produtoContexto.
   const [produtoContextoModal, setProdutoContextoModal] = useState<{ uuid: string; descricao: string } | null>(null);
   const [aba, setAba] = useState<Aba>('ACOES');
+  // Cronômetro do cabeçalho — só força um re-render por segundo (o texto em si é derivado de
+  // `visita.inicioEm` mais abaixo), mesmo truque do protótipo. Sem `visita` ainda (tela carregando)
+  // o efeito abaixo não agenda nada; ver o `useEffect` logo após a query da visita.
+  const [, forcarTick] = useState(0);
   const [modalAdicionarProdutoAberto, setModalAdicionarProdutoAberto] = useState(false);
   const [produtoDetalhe, setProdutoDetalhe] = useState<ProdutoDetalhe | null>(null);
   const [registroDetalhe, setRegistroDetalhe] = useState<RegistroDetalhe | null>(null);
@@ -137,6 +162,16 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     ultimoStatusVisto.current = visita.status;
   }
 
+  // Cronômetro "X min na loja" do cabeçalho — só corre enquanto a visita está mesmo em andamento
+  // (ABERTA localmente = RASCUNHO/CHECKIN_ENVIADO); parado nos demais estados (rejeitada,
+  // finalizada aguardando envio) pra não continuar contando depois que o promotor já saiu.
+  const cronometroAtivo = visita?.status === 'RASCUNHO' || visita?.status === 'CHECKIN_ENVIADO';
+  useEffect(() => {
+    if (!cronometroAtivo) return;
+    const id = setInterval(() => forcarTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [cronometroAtivo]);
+
   // A visita já apareceu e agora a query devolve vazio. Antes de concluir "sumiu", relê o SQLite
   // direto: se a linha ainda existe, o problema é a query (não os dados) — restaura na tela e
   // registra no log; se não existe, registra isso também. Sem este passo, um retorno vazio
@@ -163,6 +198,18 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const registrosLocais = useMemo(
     () => (registrosQuery.data ?? []).filter((r) => r.status !== 'DESCARTADO'),
     [registrosQuery.data],
+  );
+
+  // Coleta guiada (lista predefinida de produtos no formulário): quais produtos já têm registro
+  // deste tipo NESTA visita — o check verde de cada item da lista no RegistroFormModal.
+  const produtosColetadosPorTipo = useCallback(
+    (tipoRegistroUuid: string): ReadonlySet<string> =>
+      new Set(
+        registrosLocais
+          .filter((r) => r.tipoRegistroUuid === tipoRegistroUuid && r.produtoAuditoriaUuid)
+          .map((r) => r.produtoAuditoriaUuid as string),
+      ),
+    [registrosLocais],
   );
 
   // O motor de sincronização roda em segundo plano (nunca via React Query) — sem isso, a tela
@@ -313,8 +360,6 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     return mapa;
   }, [registrosLocais]);
 
-  const registrosAvulsos = useMemo(() => registrosLocais.filter((r) => !r.produtoAuditoriaUuid), [registrosLocais]);
-
   const gruposPorCampanha = useMemo(() => {
     const grupos = new Map<string, GrupoCampanha>();
     for (const produto of produtos) {
@@ -343,16 +388,12 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // escopo (ver App\Enums\EscopoAcaoTipoRegistro no backend): SEMPRE entra sempre; CAMPANHA só
   // quando alguma campanha desta visita bate com a campanha configurada no tipo; CONTRATO só
   // quando o PDV tem contrato ativo (booleano vindo pronto do backend, o app nunca lida com
-  // dado de contrato em si — ver docs/04-APP-MOBILE.md).
+  // dado de contrato em si — ver docs/04-APP-MOBILE.md); LOJA_REDE só nas lojas/redes escolhidas
+  // no tipo (docs/40). Regra em lib/acaoObrigatoria.ts.
   const campanhasDaVisita = useMemo(() => new Set(gruposPorCampanha.map((g) => g.campanhaUuid)), [gruposPorCampanha]);
   const acoesPendentes = useMemo(
     () =>
-      tiposRegistro.filter((t) => {
-        if (!t.acao_obrigatoria) return false;
-        if (t.escopo_acao === 'CAMPANHA') return !!t.campanha_auditoria_uuid && campanhasDaVisita.has(t.campanha_auditoria_uuid);
-        if (t.escopo_acao === 'CONTRATO') return pontoVenda?.tem_contrato_ativo ?? false;
-        return t.escopo_acao === 'SEMPRE';
-      }),
+      tiposRegistro.filter((t) => acaoValeNestaVisita(t, pontoVenda, campanhasDaVisita)),
     [tiposRegistro, campanhasDaVisita, pontoVenda],
   );
 
@@ -370,12 +411,25 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       return true;
     });
   }, [ordemServicoQuery.data, registrosPorTipoRegistro]);
+
+  // Progresso das obrigatórias no cabeçalho — Ações (sempre obrigatórias) + formulários
+  // obrigatórios do Direcionamento desta OS, cada um "feito" quando já tem registro nesta visita
+  // ou já veio respondido do servidor (respondido_em).
+  const formulariosObrigatoriosOS = useMemo(
+    () => (ordemServicoQuery.data?.formularios ?? []).filter((f) => f.obrigatorio),
+    [ordemServicoQuery.data],
+  );
+  const totalObrigatorias = acoesPendentes.length + formulariosObrigatoriosOS.length;
+  const feitasObrigatorias =
+    acoesPendentes.filter((a) => acaoConcluida(a, registrosPorTipoRegistro.get(a.id) ?? [])).length +
+    formulariosObrigatoriosOS.filter((f) => f.respondido_em || (registrosPorTipoRegistro.get(f.tipo_registro.id)?.length ?? 0) > 0)
+      .length;
+
   const abasDaVisita: AbaLoja<Aba>[] = [
-    { chave: 'DADOS', rotulo: 'Dados cadastrais', icone: 'store-outline' },
-    { chave: 'HISTORICO', rotulo: 'Histórico da loja', icone: 'history' },
     { chave: 'ACOES', rotulo: 'Ações', icone: 'clipboard-check-outline', selo: acoesPendentes.length + formulariosPendentesOS.length },
     { chave: 'PRODUTOS', rotulo: 'Mix', icone: 'package-variant-closed' },
     { chave: 'REGISTROS', rotulo: 'Registros', icone: 'format-list-checks' },
+    { chave: 'LOJA', rotulo: 'Loja', icone: 'store-outline' },
   ];
   const tituloFormulariosOS = ordemServicoQuery.data?.direcionamento?.descricao ?? 'Formulários desta ordem de serviço';
 
@@ -425,12 +479,16 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         usuarioId: usuario!.id,
         visitaLocalId,
         resultado,
+        produtoDescricao: resultado.produtoDescricao ?? null,
       }),
     onSuccess: (_dados, resultado) => {
       setErroRegistro(null);
+      releLocal();
+      // Coleta guiada por lista de produtos: o modal volta sozinho pra lista — só fecha se precisar
+      // abrir a confirmação de ruptura logo abaixo (dois modais empilhados não dá).
+      if (resultado.permanecerAberto && !resultado.produtosAusentesConfirmaveis?.length) return;
       setModalAberto(false);
       setProdutoContextoModal(null);
-      releLocal();
       // Ruptura confirmada (decisão 4 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md) — só abre a
       // tela de confirmação DEPOIS que o registro principal (com o campo SORTIMENTO) já salvou.
       // Guarda também as fotos do registro principal — decisão 4/§4.5: "os registros de ruptura
@@ -503,19 +561,12 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     ]);
   }
 
+  const [finalizarAberto, setFinalizarAberto] = useState(false);
+
   const checkoutMutation = useMutation({
     mutationFn: async () => {
       const coords = await obterLocalizacaoAtual();
       await finalizarVisitaLocal({ usuarioId: usuario!.id, visitaLocalId, latitude: coords.latitude, longitude: coords.longitude });
-    },
-    onSuccess: () => {
-      Alert.alert(
-        'Visita finalizada',
-        online
-          ? 'Enviando pro servidor agora — pode fechar o app, o envio continua sozinho.'
-          : 'Sem conexão no momento — será enviada automaticamente assim que o sinal voltar.',
-      );
-      navigation.popToTop();
     },
     onError: () => Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.'),
   });
@@ -619,24 +670,26 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     setModalAberto(true);
   }
 
-  function confirmarFinalizacao() {
-    const rupturas = registrosLocais.filter((r) => r.ruptura).length;
-
-    const partes: string[] = [`${registrosAvulsos.length} registro(s) geral(is)`];
-    if (rupturas > 0) partes.push(`${rupturas} ruptura(s)`);
-
-    let mensagem = `${partes.join(', ')}.`;
-    if (produtosChaveFaltando.length > 0) {
-      const verbo = produtosChaveFaltando.length === 1 ? 'não foi registrado' : 'não foram registrados';
-      mensagem += ` Cadê ${produtosChaveFaltando.join(', ')}? ${verbo}.`;
-    }
-    mensagem += ' Deseja finalizar a visita?';
-
-    Alert.alert('Finalizar visita', mensagem, [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Finalizar', style: 'destructive', onPress: () => checkoutMutation.mutate() },
-    ]);
-  }
+  // Nomeia o que falta em vez de só contar — mesmo padrão do protótipo Claude Design (bottom
+  // sheet "Finalizar visita?"), junta obrigatórias (Ações + formulários obrigatórios da OS,
+  // ambos já filtrados pra só quem ainda não tem registro) com produtos-chave do Mix.
+  const faltandoFinalizar = useMemo(
+    () => [
+      ...acoesPendentes
+        .filter((a) => !acaoConcluida(a, registrosPorTipoRegistro.get(a.id) ?? []))
+        .map((a) => {
+          // Lista de produtos: nomeia quanto falta ("Pesquisa de Preço (2 de 4)").
+          const progresso = progressoLista(a, (registrosPorTipoRegistro.get(a.id) ?? []).map((r) => r.produtoAuditoriaUuid));
+          return progresso ? `${a.descricao} (${progresso.feitos} de ${progresso.total})` : a.descricao;
+        }),
+      ...formulariosPendentesOS
+        .filter((f) => f.obrigatorio)
+        .map((f) => tipoRegistroPorUuid.get(f.tipo_registro.id)?.descricao ?? 'Formulário obrigatório'),
+      ...produtosChaveFaltando.map((nome) => `${nome} (produto-chave)`),
+    ],
+    [acoesPendentes, formulariosPendentesOS, registrosPorTipoRegistro, tipoRegistroPorUuid, produtosChaveFaltando],
+  );
+  const nRupturasFinalizar = registrosLocais.filter((r) => r.ruptura).length;
 
   function confirmarDescarte() {
     Alert.alert(
@@ -662,13 +715,31 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     // registros + checkout todos confirmados) enquanto o promotor ainda estava nesta tela —
     // sucesso, não erro. Ver excluirVisitaLocalCompleta em lib/db/filaVisitas.ts.
     if (jaViuVisita.current) {
-      const terminou = ultimoStatusVisto.current === 'FINALIZADA_LOCAL';
+      // Três sinais de sucesso, qualquer um basta: a fila apagou por checkout confirmado, o
+      // checkout foi feito nesta tela, ou a tela chegou a ver FINALIZADA_LOCAL. Sem os dois
+      // primeiros, um checkout confirmado rápido demais (a tela não via FINALIZADA_LOCAL antes da
+      // visita sumir) aparecia como "saiu sem ser finalizada".
+      const terminou =
+        motivoExclusaoVisita(visitaLocalId) === 'checkout-confirmado' ||
+        checkoutMutation.isSuccess ||
+        ultimoStatusVisto.current === 'FINALIZADA_LOCAL';
+      if (terminou) {
+        return (
+          <View style={styles.centroTela}>
+            <MaterialCommunityIcons name="check-circle" size={56} color={cores.sucesso} />
+            <Text style={[styles.pdvNome, { textAlign: 'center' }]}>Visita finalizada</Text>
+            <Text style={styles.vazioTexto}>Tudo foi enviado ao servidor com sucesso.</Text>
+            <Pressable style={styles.botaoRetry} onPress={() => navigation.popToTop()}>
+              <Text style={styles.botaoRetryTexto}>Voltar</Text>
+            </Pressable>
+          </View>
+        );
+      }
       return (
         <View style={styles.centroTela}>
           <Text style={styles.vazioTexto}>
-            {terminou
-              ? 'Visita finalizada e enviada ao servidor com sucesso.'
-              : 'Esta visita saiu deste aparelho sem ter sido finalizada (foi descartada ou cancelada). Se você não fez isso, avise o suporte informando o horário.'}
+            Esta visita saiu deste aparelho sem ter sido finalizada (foi descartada ou cancelada). Se você não fez isso,
+            avise o suporte informando o horário.
           </Text>
           <Pressable style={styles.botaoRetry} onPress={() => navigation.popToTop()}>
             <Text style={styles.botaoRetryTexto}>Voltar</Text>
@@ -685,12 +756,49 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.cabecalho}>
-        <Text style={styles.pdvNome}>{pontoVenda?.fantasia}</Text>
+      <View style={[styles.cabecalho, { paddingTop: insets.top + espaco.sm }]}>
+        <View style={styles.cabecalhoTopo}>
+          <Pressable onPress={() => navigation.goBack()} hitSlop={10} style={styles.botaoVoltar}>
+            <MaterialCommunityIcons name="chevron-left" size={24} color={cores.primaria} />
+          </Pressable>
+          <Text style={styles.pdvNome} numberOfLines={1}>
+            {pontoVenda?.fantasia}
+          </Text>
+          <View style={styles.cronometroPill}>
+            <View style={[styles.cronometroPonto, !cronometroAtivo && { backgroundColor: neutro[400] }]} />
+            <Text style={styles.cronometroTexto}>{formatarCronometro(visita.inicioEm)}</Text>
+          </View>
+        </View>
         <Text style={styles.inicioTexto}>
           Iniciada às{' '}
           {new Date(visita.inicioEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
         </Text>
+        {totalObrigatorias > 0 && (
+          <View style={styles.progressoBox}>
+            <View style={styles.progressoLinha}>
+              <Text style={styles.progressoRotulo}>Obrigatórias</Text>
+              <Text
+                style={[
+                  styles.progressoValor,
+                  { color: feitasObrigatorias === totalObrigatorias ? cores.sucesso : cores.primaria },
+                ]}
+              >
+                {feitasObrigatorias} de {totalObrigatorias}
+              </Text>
+            </View>
+            <View style={styles.progressoTrilho}>
+              <View
+                style={[
+                  styles.progressoPreenchido,
+                  {
+                    width: `${Math.round((feitasObrigatorias / totalObrigatorias) * 100)}%`,
+                    backgroundColor: feitasObrigatorias === totalObrigatorias ? cores.sucesso : cores.primaria,
+                  },
+                ]}
+              />
+            </View>
+          </View>
+        )}
         {itensSortimento.length > 0 && (
           <Text style={styles.mixStat}>
             {itensSortimento.length} produto(s) no mix desta loja
@@ -746,6 +854,23 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             </Text>
           </View>
         ) : null}
+
+        {/* "Modo Vendedor" (docs/38-PEDIDO-VENDEDOR.md §8) — o pedido nasce no contexto da
+            visita. Se o check-in ainda não sincronizou, o pedido sai sem visita_id (mesma loja). */}
+        {podeTirarPedido(usuario) && !!pontoVenda && visita.status !== 'REJEITADA' && (
+          <Pressable
+            style={styles.botaoTirarPedido}
+            onPress={() =>
+              navigation.navigate('PedidoVenda', {
+                pontoVenda: { id: pontoVenda.id, fantasia: pontoVenda.fantasia },
+                visitaServidorId: visita.servidorId ?? null,
+              })
+            }
+          >
+            <MaterialCommunityIcons name="cart-plus" size={18} color={cores.primaria} />
+            <Text style={styles.botaoTirarPedidoTexto}>Tirar pedido</Text>
+          </Pressable>
+        )}
       </View>
 
       {erroRegistro && !modalAberto && (
@@ -760,12 +885,16 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         abas={abasDaVisita}
       />
 
-      {aba === 'DADOS' ? (
+      {aba === 'LOJA' ? (
         <ScrollView>
           {pontoVenda && <DadosCadastraisLoja pontoVenda={pontoVenda} />}
+          {!!pontoVendaUuid && (
+            <View style={styles.secaoHistoricoLoja}>
+              <Text style={styles.secaoTitulo}>Últimas visitas</Text>
+              <HistoricoLojaPanel pontoVendaUuid={pontoVendaUuid} />
+            </View>
+          )}
         </ScrollView>
-      ) : aba === 'HISTORICO' ? (
-        <ScrollView>{!!pontoVendaUuid && <HistoricoLojaPanel pontoVendaUuid={pontoVendaUuid} />}</ScrollView>
       ) : aba === 'ACOES' ? (
         <ScrollView contentContainerStyle={styles.lista}>
           <View style={styles.secao}>
@@ -779,10 +908,13 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
               <Text style={styles.vazioTexto}>Nenhuma ação obrigatória pra esta visita.</Text>
             ) : (
               acoesPendentes.map((acao) => (
-                <ProdutoItem
+                <AcaoItem
                   key={acao.id}
-                  descricao={acao.descricao}
+                  icone={acao.icone}
+                  nome={acao.descricao}
+                  sub={acao.exige_foto ? 'Exige foto' : undefined}
                   registros={registrosPorTipoRegistro.get(acao.id) ?? []}
+                  progresso={progressoLista(acao, (registrosPorTipoRegistro.get(acao.id) ?? []).map((r) => r.produtoAuditoriaUuid))}
                   onPress={() => abrirModalAcao(acao)}
                 />
               ))
@@ -800,10 +932,13 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
                 const tipo = tipoRegistroPorUuid.get(formulario.tipo_registro.id);
                 if (!tipo) return null;
                 return (
-                  <ProdutoItem
+                  <AcaoItem
                     key={formulario.tipo_registro.id}
-                    descricao={formulario.obrigatorio ? tipo.descricao : `${tipo.descricao} (opcional)`}
+                    icone={tipo.icone}
+                    nome={tipo.descricao}
                     registros={[]}
+                    tracejado
+                    tag={{ label: formulario.obrigatorio ? 'Obrigatório' : 'Opcional', obrigatoria: formulario.obrigatorio }}
                     onPress={() => abrirModalAcao(tipo)}
                   />
                 );
@@ -969,7 +1104,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         </ScrollView>
       )}
 
-      <View style={styles.rodape}>
+      <View style={[styles.rodape, { paddingBottom: espaco.lg + insets.bottom }]}>
         <Pressable
           style={({ pressed }) => [styles.botaoSecundario, pressed && styles.botaoPressionado]}
           onPress={abrirModalGeral}
@@ -981,22 +1116,35 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         {visita.status !== 'FINALIZADA_LOCAL' && visita.status !== 'REJEITADA' && (
         <Pressable
           style={({ pressed }) => [styles.botaoPrimario, pressed && styles.botaoPressionado]}
-          onPress={confirmarFinalizacao}
-          disabled={checkoutMutation.isPending}
+          onPress={() => setFinalizarAberto(true)}
         >
-          {checkoutMutation.isPending ? (
-            <ActivityIndicator color={cores.onPrimaria} />
-          ) : (
-            <>
-              <MaterialCommunityIcons name="flag-checkered" size={18} color={cores.onPrimaria} />
-              <Text style={styles.botaoPrimarioTexto}>Finalizar visita</Text>
-            </>
-          )}
+          <MaterialCommunityIcons name="flag-checkered" size={18} color={cores.onPrimaria} />
+          <Text style={styles.botaoPrimarioTexto}>Finalizar visita</Text>
         </Pressable>
         )}
       </View>
 
       {descarteSeguro.elemento}
+
+      <FinalizarVisitaModal
+        visible={finalizarAberto}
+        cronometroTexto={formatarCronometro(visita.inicioEm)}
+        nRegistros={registrosLocais.length}
+        feitasObrigatorias={feitasObrigatorias}
+        totalObrigatorias={totalObrigatorias}
+        nRupturas={nRupturasFinalizar}
+        faltando={faltandoFinalizar}
+        enviando={checkoutMutation.isPending}
+        sucesso={checkoutMutation.isSuccess}
+        mensagemSucesso={
+          online
+            ? 'Enviando pro servidor agora — pode fechar o app, o envio continua sozinho.'
+            : 'Sem conexão no momento — será enviada automaticamente assim que o sinal voltar.'
+        }
+        onCancelar={() => setFinalizarAberto(false)}
+        onConfirmar={() => checkoutMutation.mutate()}
+        onVoltarInicio={() => navigation.popToTop()}
+      />
 
       <RegistroFormModal
         visible={modalAberto}
@@ -1012,7 +1160,9 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           setErroRegistro(null);
           setProdutoContextoModal(null);
         }}
-        onSubmit={(resultado) => criarRegistroMutation.mutate(resultado)}
+        onSubmit={(resultado) => criarRegistroMutation.mutateAsync(resultado)}
+        produtosColetados={produtosColetadosPorTipo}
+        visitaLocalId={visitaLocalId}
       />
 
       {pontoVendaUuid && (
@@ -1099,29 +1249,107 @@ function ProdutoItem({
       )}
 
       <View style={styles.itemInfo}>
-        <View style={styles.itemNomeLinha}>
-          {produtoChave && <MaterialCommunityIcons name="key-star" size={14} color={cores.acentoTexto} />}
-          <Text style={styles.itemNome} numberOfLines={2}>
-            {descricao}
-          </Text>
+        <Text style={styles.itemNome} numberOfLines={2}>
+          {descricao}
+        </Text>
+        <View style={styles.mixTagsLinha}>
+          {produtoChave && (
+            <View style={styles.badgeChave}>
+              <MaterialCommunityIcons name="key-star" size={11} color={amber[700]} />
+              <Text style={styles.badgeChaveTexto}>Chave</Text>
+            </View>
+          )}
+          {propriedade !== undefined && (
+            <Text style={propriedade === 'CONCORRENTE' ? styles.itemTagConcorrente : styles.itemStatusPendente}>
+              {propriedade === 'CONCORRENTE' ? 'Concorrente' : 'Nosso produto'}
+            </Text>
+          )}
+          {tagPendente && <Text style={styles.badgePendenteAprovacao}>Aguardando aprovação</Text>}
         </View>
-        {propriedade !== undefined ? (
-          <Text style={propriedade === 'CONCORRENTE' ? styles.itemTagConcorrente : styles.itemStatusPendente}>
-            {propriedade === 'CONCORRENTE' ? 'Concorrente' : 'Nosso produto'}
-          </Text>
-        ) : (
-          !conferido && <Text style={styles.itemStatusPendente}>Não conferido</Text>
-        )}
         {temErro && <Text style={styles.itemStatusErro}>Um registro não foi aceito pelo servidor</Text>}
-        {tagPendente && <Text style={styles.badgePendenteAprovacao}>Pendente de aprovação</Text>}
       </View>
 
       {temRuptura && <Text style={styles.badgeRuptura}>Ruptura</Text>}
-      {conferido && <Text style={styles.badgeContagem}>{registros.length}</Text>}
+      {conferido ? (
+        <View style={styles.circuloRegistrado}>
+          <MaterialCommunityIcons name="check" size={14} color={cores.branco} />
+        </View>
+      ) : (
+        <View style={styles.circuloNaoRegistrado} />
+      )}
       {onVerDetalhes && (
         <Pressable onPress={onVerDetalhes} hitSlop={10} style={styles.botaoDetalhes}>
           <Text style={styles.botaoDetalhesTexto}>ⓘ</Text>
         </Pressable>
+      )}
+    </Pressable>
+  );
+}
+
+function AcaoItem({
+  icone,
+  nome,
+  sub,
+  registros,
+  progresso,
+  tracejado,
+  tag,
+  onPress,
+}: {
+  icone: string | null | undefined;
+  nome: string;
+  sub?: string;
+  registros: RegistroLocal[];
+  // Formulário com lista predefinida de produtos — "feita" só com todos coletados; o selo mostra
+  // "2/4" em vez do nº de registros.
+  progresso?: { feitos: number; total: number } | null;
+  // Formulário de Ordem de Serviço/Direcionamento — moldura tracejada, igual ao protótipo
+  // (distingue de uma Ação obrigatória "fixa" do TipoRegistro).
+  tracejado?: boolean;
+  tag?: { label: string; obrigatoria: boolean };
+  onPress: () => void;
+}) {
+  const feita = progresso ? progresso.feitos === progresso.total : registros.length > 0;
+  const temErro = registros.some((r) => r.status === 'ERRO');
+
+  return (
+    <Pressable
+      style={({ pressed }) => [
+        styles.acaoCard,
+        tracejado && styles.acaoCardTracejada,
+        !feita && styles.acaoCardPendente,
+        pressed && styles.itemCardPressionado,
+      ]}
+      onPress={onPress}
+    >
+      <View style={[styles.acaoIconeCirculo, feita ? styles.acaoIconeCirculoFeita : styles.acaoIconeCirculoPendente]}>
+        <IconeTipoRegistro icone={icone} size={20} color={feita ? neutro[600] : cores.primaria} />
+      </View>
+      <View style={styles.itemInfo}>
+        <Text style={styles.itemNome}>{nome}</Text>
+        {!!sub && <Text style={styles.itemStatusPendente}>{sub}</Text>}
+        {!!progresso && !feita && (
+          <Text style={styles.itemStatusPendente}>
+            {progresso.feitos} de {progresso.total} produtos coletados
+          </Text>
+        )}
+        {temErro && <Text style={styles.itemStatusErro}>Um registro não foi aceito pelo servidor</Text>}
+      </View>
+      {feita ? (
+        <View style={styles.acaoSeloFeita}>
+          <MaterialCommunityIcons name="check" size={13} color={cores.sucesso} />
+          <Text style={styles.acaoSeloFeitaTexto}>{progresso ? `${progresso.feitos}/${progresso.total}` : registros.length}</Text>
+        </View>
+      ) : tag ? (
+        <View style={[styles.acaoTag, tag.obrigatoria ? styles.acaoTagObrigatoria : styles.acaoTagOpcional]}>
+          <Text style={[styles.acaoTagTexto, tag.obrigatoria ? styles.acaoTagTextoObrigatoria : styles.acaoTagTextoOpcional]}>
+            {tag.label}
+          </Text>
+        </View>
+      ) : (
+        <View style={styles.acaoBotaoMais}>
+          <MaterialCommunityIcons name="plus" size={16} color={cores.branco} />
+        </View>
       )}
     </Pressable>
   );
@@ -1152,53 +1380,105 @@ function RegistroCard({
 }) {
   const vinculoLabel = registro.produtoDescricao ?? registro.vinculoDescricao;
   const valoresCampos = registro.valoresCampos ? Object.entries(registro.valoresCampos) : [];
+  const hora = new Date(registro.criadoEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const status =
+    registro.status === 'ENVIADO'
+      ? { label: 'Enviado', bg: cores.sucessoFundo, cor: cores.sucesso }
+      : registro.status === 'ERRO'
+        ? { label: 'Erro', bg: cores.erroFundo, cor: cores.erro }
+        : { label: 'Na fila de envio', bg: amber[50], cor: amber[700] };
 
   return (
-    <Pressable
-      style={({ pressed }) => [styles.itemCard, pressed && styles.itemCardPressionado]}
-      onPress={onDetalhar}
-    >
-      {registro.imagensLocais[0] ? (
-        <View style={styles.itemThumbWrap}>
-          <Image source={{ uri: registro.imagensLocais[0] }} style={styles.itemThumb} />
-          {registro.imagensLocais.length > 1 && (
-            <Text style={styles.itemThumbBadge}>+{registro.imagensLocais.length - 1}</Text>
+    <View style={styles.registroCardV2}>
+      <Pressable style={styles.registroCorpo} onPress={onDetalhar}>
+        <View style={styles.registroThumb}>
+          {registro.imagensLocais[0] ? (
+            <>
+              <Image source={{ uri: registro.imagensLocais[0] }} style={styles.registroThumbImagem} />
+              {registro.imagensLocais.length > 1 && (
+                <View style={styles.registroThumbBadge}>
+                  <Text style={styles.registroThumbBadgeTexto}>+{registro.imagensLocais.length - 1}</Text>
+                </View>
+              )}
+            </>
+          ) : (
+            <MaterialCommunityIcons name="image-outline" size={22} color={cores.textoTerciario} />
           )}
         </View>
-      ) : (
-        <View style={[styles.itemThumb, styles.itemThumbVazio]} />
+        <View style={styles.itemInfo}>
+          <View style={styles.registroTituloLinha}>
+            <Text style={styles.itemNome} numberOfLines={1}>
+              {tipoRegistro?.descricao ?? 'Registro'}
+            </Text>
+            <Text style={styles.registroHora}>{hora}</Text>
+          </View>
+          {vinculoLabel && (
+            <Text style={styles.itemVinculo} numberOfLines={1}>
+              {vinculoLabel}
+            </Text>
+          )}
+          {valoresCampos.length > 0 && (
+            <Text style={styles.itemCampoValor} numberOfLines={1}>
+              {valoresCampos.map(([, valor]) => valor).join(' · ')}
+            </Text>
+          )}
+          {registro.status === 'ERRO' && (
+            <Text style={styles.itemStatusErro}>{registro.erro ?? 'Não foi aceito pelo servidor'}</Text>
+          )}
+          <View style={styles.registroTagsLinha}>
+            <View style={[styles.chipStatus, { backgroundColor: status.bg }]}>
+              <View style={[styles.chipStatusPonto, { backgroundColor: status.cor }]} />
+              <Text style={[styles.chipStatusTexto, { color: status.cor }]}>{status.label}</Text>
+            </View>
+            {registro.ruptura && <Text style={styles.badgeRuptura}>Ruptura</Text>}
+          </View>
+        </View>
+      </Pressable>
+      {(podeComentar || podeCancelar) && (
+        <View style={styles.registroRodape}>
+          {podeComentar ? (
+            <Pressable onPress={onFeedback} hitSlop={8} style={styles.linkFeedbackLinha}>
+              <MaterialCommunityIcons name="message-reply-text-outline" size={15} color={cores.primaria} />
+              <Text style={styles.linkFeedback}>Comentários</Text>
+              {naoLido && (
+                <View style={styles.badgeNova}>
+                  <Text style={styles.badgeNovaTexto}>NOVA</Text>
+                </View>
+              )}
+            </Pressable>
+          ) : (
+            <View />
+          )}
+          {podeCancelar && (
+            <Pressable onPress={onCancelar} disabled={cancelando} hitSlop={8}>
+              <Text style={styles.linkCancelar}>{cancelando ? 'Cancelando...' : 'Cancelar registro'}</Text>
+            </Pressable>
+          )}
+        </View>
       )}
-      <View style={styles.itemInfo}>
-        <Text style={styles.itemNome}>{tipoRegistro?.descricao ?? 'Registro'}</Text>
-        {vinculoLabel && <Text style={styles.itemVinculo}>{vinculoLabel}</Text>}
-        {valoresCampos.map(([chave, valor]) => (
-          <Text key={chave} style={styles.itemCampoValor}>
-            {valor}
-          </Text>
-        ))}
-        {registro.status === 'ERRO' && (
-          <Text style={styles.itemStatusErro}>{registro.erro ?? 'Não foi aceito pelo servidor'}</Text>
-        )}
-        {podeComentar && (
-          <Pressable onPress={onFeedback} hitSlop={8}>
-            <Text style={styles.linkFeedback}>Comentários{naoLido ? ' · nova resposta' : ''}</Text>
-          </Pressable>
-        )}
-        {podeCancelar && (
-          <Pressable onPress={onCancelar} disabled={cancelando} hitSlop={8}>
-            <Text style={styles.linkCancelar}>{cancelando ? 'Cancelando...' : 'Cancelar registro'}</Text>
-          </Pressable>
-        )}
-      </View>
-      <View style={styles.badgesColuna}>
-        {registro.status === 'PENDENTE' && <Text style={styles.badgePendenteEnvio}>Aguardando envio</Text>}
-        {registro.ruptura && <Text style={styles.badgeRuptura}>Ruptura</Text>}
-      </View>
-    </Pressable>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  botaoTirarPedido: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: espaco.xs,
+    marginTop: espaco.sm,
+    paddingHorizontal: espaco.md,
+    paddingVertical: 6,
+    borderRadius: raio.pill,
+    borderWidth: 1,
+    borderColor: cores.primariaBorda,
+    backgroundColor: cores.primariaClara,
+  },
+  botaoTirarPedidoTexto: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: cores.primaria,
+  },
   container: {
     flex: 1,
     backgroundColor: cores.fundo,
@@ -1210,7 +1490,7 @@ const styles = StyleSheet.create({
     borderRadius: raio.lg,
     borderWidth: 1,
     borderColor: cores.erroBorda,
-    backgroundColor: cores.erroFundo,
+    backgroundColor: cores.fundoCard,
     gap: espaco.sm,
   },
   zonaRiscoTitulo: { fontSize: 11, fontWeight: '800', letterSpacing: 1, color: cores.erro, textTransform: 'uppercase' },
@@ -1266,11 +1546,74 @@ const styles = StyleSheet.create({
     backgroundColor: cores.fundoCard,
     paddingHorizontal: espaco.xl,
     paddingVertical: espaco.md,
-    gap: 2,
+    gap: 6,
+  },
+  cabecalhoTopo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: espaco.sm,
+  },
+  botaoVoltar: {
+    width: 30,
+    height: 30,
+    marginLeft: -6,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   pdvNome: {
     ...tipografia.titulo,
     color: cores.texto,
+    flex: 1,
+  },
+  cronometroPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    height: 30,
+    paddingHorizontal: espaco.md,
+    borderRadius: raio.pill,
+    backgroundColor: cores.primariaClara,
+    flex: 0,
+  },
+  cronometroPonto: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: cores.acento,
+  },
+  cronometroTexto: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: cores.primariaEscura,
+    fontVariant: ['tabular-nums'],
+  },
+  progressoBox: {
+    marginTop: espaco.xs,
+    gap: 6,
+  },
+  progressoLinha: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  progressoRotulo: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: neutro[700],
+  },
+  progressoValor: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  progressoTrilho: {
+    height: 6,
+    borderRadius: raio.pill,
+    backgroundColor: cores.primariaClara,
+    overflow: 'hidden',
+  },
+  progressoPreenchido: {
+    height: '100%',
+    borderRadius: raio.pill,
   },
   inicioTexto: {
     fontSize: 14,
@@ -1356,7 +1699,15 @@ const styles = StyleSheet.create({
     padding: espaco.lg,
     gap: espaco.xl,
   },
+  // Mais sutil que espaco.sm (8) — o protótipo empilha os itens do Mix bem mais próximos uns
+  // dos outros do que os cards soltos com sombra que a gente usa aqui.
   secao: {
+    gap: 6,
+  },
+  secaoHistoricoLoja: {
+    paddingHorizontal: espaco.lg,
+    paddingTop: espaco.md,
+    paddingBottom: espaco.xl,
     gap: espaco.sm,
   },
   secaoTitulo: {
@@ -1396,23 +1747,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: cores.fundoCard,
-    borderRadius: raio.lg,
-    padding: espaco.md,
+    borderRadius: raio.md,
+    padding: 10,
     borderWidth: 1,
     borderColor: cores.borda,
-    gap: espaco.md,
+    gap: espaco.sm,
     ...sombraCard,
   },
   itemCardPressionado: {
     backgroundColor: neutro[100],
   },
-  itemThumbWrap: {
-    width: 56,
-    height: 56,
-  },
   itemThumb: {
-    width: 56,
-    height: 56,
+    width: 44,
+    height: 44,
     borderRadius: raio.sm,
   },
   itemThumbProduto: {
@@ -1421,28 +1768,8 @@ const styles = StyleSheet.create({
   itemThumbVazio: {
     backgroundColor: cores.borda,
   },
-  itemThumbBadge: {
-    position: 'absolute',
-    right: -4,
-    bottom: -4,
-    backgroundColor: cores.primaria,
-    color: cores.branco,
-    fontSize: 10,
-    fontWeight: '700',
-    borderRadius: raio.sm,
-    minWidth: 18,
-    textAlign: 'center',
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    overflow: 'hidden',
-  },
   itemInfo: {
     flex: 1,
-  },
-  itemNomeLinha: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
   },
   itemNome: {
     flexShrink: 1,
@@ -1482,13 +1809,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: cores.erro,
     fontWeight: '700',
-    marginTop: espaco.xs,
   },
   linkFeedback: {
-    fontSize: 12,
+    fontSize: 13,
     color: cores.primaria,
     fontWeight: '700',
-    marginTop: espaco.xs,
   },
   badgePendenteAprovacao: {
     fontSize: 12,
@@ -1496,36 +1821,12 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontWeight: '600',
   },
-  badgesColuna: {
-    gap: 4,
-    alignItems: 'flex-end',
-  },
-  badgePendenteEnvio: {
-    backgroundColor: cores.primariaClara,
-    color: cores.primariaEscura,
-    fontSize: 11,
-    fontWeight: '700',
-    borderRadius: raio.sm,
-    paddingHorizontal: espaco.sm,
-    paddingVertical: 2,
-  },
   badgeRuptura: {
     backgroundColor: cores.erroFundo,
     color: cores.erro,
     fontSize: 12,
     fontWeight: '700',
     borderRadius: raio.sm,
-    paddingHorizontal: espaco.sm,
-    paddingVertical: 2,
-  },
-  badgeContagem: {
-    backgroundColor: cores.acentoClaro,
-    color: cores.acentoTexto,
-    fontSize: 12,
-    fontWeight: '700',
-    borderRadius: raio.pill,
-    minWidth: 20,
-    textAlign: 'center',
     paddingHorizontal: espaco.sm,
     paddingVertical: 2,
   },
@@ -1585,5 +1886,213 @@ const styles = StyleSheet.create({
   },
   botaoPressionado: {
     opacity: 0.85,
+  },
+  mixTagsLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 2,
+  },
+  badgeChave: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: amber[100],
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
+    paddingVertical: 2,
+  },
+  badgeChaveTexto: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: amber[800],
+  },
+  circuloRegistrado: {
+    width: 26,
+    height: 26,
+    borderRadius: raio.pill,
+    backgroundColor: cores.sucesso,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  circuloNaoRegistrado: {
+    width: 26,
+    height: 26,
+    borderRadius: raio.pill,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: cores.borda,
+  },
+  acaoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    padding: espaco.md,
+    ...sombraCard,
+  },
+  acaoCardTracejada: {
+    borderStyle: 'dashed',
+  },
+  acaoCardPendente: {
+    borderColor: indigo[300],
+  },
+  acaoIconeCirculo: {
+    width: 42,
+    height: 42,
+    borderRadius: raio.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  acaoIconeCirculoPendente: {
+    backgroundColor: cores.primariaClara,
+  },
+  acaoIconeCirculoFeita: {
+    backgroundColor: neutro[100],
+  },
+  acaoSeloFeita: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: cores.sucessoFundo,
+    borderRadius: raio.pill,
+    paddingHorizontal: espaco.sm,
+    paddingVertical: 4,
+  },
+  acaoSeloFeitaTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: cores.sucesso,
+  },
+  acaoTag: {
+    borderRadius: raio.pill,
+    paddingHorizontal: espaco.sm,
+    paddingVertical: 4,
+  },
+  acaoTagObrigatoria: {
+    backgroundColor: amber[100],
+  },
+  acaoTagOpcional: {
+    backgroundColor: neutro[100],
+  },
+  acaoTagTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  acaoTagTextoObrigatoria: {
+    color: amber[800],
+  },
+  acaoTagTextoOpcional: {
+    color: neutro[600],
+  },
+  acaoBotaoMais: {
+    width: 32,
+    height: 32,
+    borderRadius: raio.pill,
+    backgroundColor: cores.primaria,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  registroCardV2: {
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.lg,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    overflow: 'hidden',
+    ...sombraCard,
+  },
+  registroCorpo: {
+    flexDirection: 'row',
+    gap: espaco.md,
+    padding: espaco.md,
+  },
+  registroThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: raio.sm,
+    backgroundColor: cores.fundo,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  registroThumbImagem: {
+    width: '100%',
+    height: '100%',
+  },
+  registroThumbBadge: {
+    position: 'absolute',
+    right: 3,
+    bottom: 3,
+    backgroundColor: 'rgba(17,24,39,0.72)',
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  registroThumbBadgeTexto: {
+    color: cores.branco,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  registroTituloLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.sm,
+  },
+  registroHora: {
+    fontSize: 12,
+    color: cores.textoTerciario,
+  },
+  registroTagsLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  chipStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: raio.sm,
+    paddingHorizontal: espaco.sm,
+    paddingVertical: 2,
+  },
+  chipStatusPonto: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  chipStatusTexto: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  registroRodape: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: espaco.md,
+    height: 40,
+    borderTopWidth: 1,
+    borderTopColor: cores.divisor,
+  },
+  linkFeedbackLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  badgeNova: {
+    backgroundColor: amber[500],
+    borderRadius: raio.pill,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  badgeNovaTexto: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: cores.texto,
   },
 });

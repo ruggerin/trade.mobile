@@ -88,7 +88,9 @@ async function executarSincronizacao(): Promise<ResultadoSincronizacao> {
  */
 const DEFAULT_INTERVALO_HORAS = 4;
 
-export async function sincronizarSeNecessario(): Promise<void> {
+// Devolve true quando sincronizou de fato — quem chama avisa as telas (invalida o React Query),
+// senão o SQLite fica novo e a lista em memória continua a antiga.
+export async function sincronizarSeNecessario(): Promise<boolean> {
   try {
     const ultima = await obterUltimaSincronizacao();
 
@@ -96,13 +98,15 @@ export async function sincronizarSeNecessario(): Promise<void> {
       const intervaloHoras = await buscarIntervaloSincronizacaoHoras();
       const horasDesdeUltimaSync = (Date.now() - new Date(ultima).getTime()) / (1000 * 60 * 60);
       if (horasDesdeUltimaSync < intervaloHoras) {
-        return;
+        return false;
       }
     }
 
     await sincronizarAgora();
+    return true;
   } catch {
     // Silencioso de propósito — ver docstring acima.
+    return false;
   }
 }
 

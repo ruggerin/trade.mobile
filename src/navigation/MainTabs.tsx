@@ -3,10 +3,12 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { NavigatorScreenParams } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
-import { AppState, StyleSheet, type AppStateStatus } from 'react-native';
+import { AppState, StyleSheet, View, type AppStateStatus } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
 import { useAuth } from '../lib/auth/AuthContext';
+import { podeTirarPedido } from '../lib/pedidoVenda';
 import { processarFilaEnvio } from '../lib/filaEnvio';
 import { aoReconectar } from '../lib/network';
 import { useAoServidorMudarPelaFila } from '../lib/useFilaEnvioAtualizada';
@@ -17,6 +19,7 @@ import { cores, neutro } from '../theme';
 import { AgendaStack } from './AgendaStack';
 import { HistoricoStack, type HistoricoStackParamList } from './HistoricoStack';
 import { PlanogramasStack } from './PlanogramasStack';
+import { PedidosStack } from './PedidosStack';
 import { PontosVendaStack } from './PontosVendaStack';
 
 type IconeMdi = keyof typeof MaterialCommunityIcons.glyphMap;
@@ -24,6 +27,7 @@ type IconeMdi = keyof typeof MaterialCommunityIcons.glyphMap;
 const ICONES_TAB: Record<keyof MainTabsParamList, IconeMdi> = {
   Agenda: 'calendar-check-outline',
   PontosVenda: 'storefront-outline',
+  Pedidos: 'cart-outline',
   Planogramas: 'view-grid-outline',
   Historico: 'clock-time-four-outline',
   Perfil: 'account-circle-outline',
@@ -37,6 +41,8 @@ const ICONES_TAB: Record<keyof MainTabsParamList, IconeMdi> = {
 export type MainTabsParamList = {
   Agenda: undefined;
   PontosVenda: undefined;
+  // Só existe no "modo Vendedor" (perfil com pedidos_venda.criar), ver docs/38-PEDIDO-VENDEDOR.md §4.
+  Pedidos: undefined;
   Planogramas: undefined;
   // Aninhado (não `undefined`) desde que o sino de notificações passou a navegar direto pra
   // dentro desta aba de qualquer lugar do app — ver components/BotaoNotificacoes.tsx e
@@ -49,6 +55,10 @@ const Tab = createBottomTabNavigator<MainTabsParamList>();
 
 export function MainTabs() {
   const { usuario } = useAuth();
+  // `height` fixo no tabBarStyle desliga o ajuste automático de safe area que o bottom-tabs faz
+  // sozinho por padrão — sem somar o inset aqui, a barra fica curta e o gesto/home indicator do
+  // aparelho cobre o rótulo da última linha.
+  const insets = useSafeAreaInsets();
   // Rastreamento em tempo real (docs/11-RASTREAMENTO-TEMPO-REAL.md) — só PROMOTOR. Mantém a
   // tarefa em segundo plano viva e mostra a explicação antes de pedir a permissão "Sempre".
   const rastreamento = useRastreamento(usuario?.user_type === 'PROMOTOR');
@@ -70,18 +80,24 @@ export function MainTabs() {
   const appState = useRef(AppState.currentState);
 
   useEffect(() => {
-    void sincronizarSeNecessario();
+    // Sincronizou de verdade → as telas abertas recarregam (lojas, formulários, parâmetros...).
+    const sincronizar = () =>
+      void sincronizarSeNecessario().then((sincronizou) => {
+        if (sincronizou) void queryClient.invalidateQueries();
+      });
+
+    sincronizar();
 
     const listener = (proximoEstado: AppStateStatus) => {
       if (appState.current.match(/inactive|background/) && proximoEstado === 'active') {
-        void sincronizarSeNecessario();
+        sincronizar();
       }
       appState.current = proximoEstado;
     };
 
     const subscription = AppState.addEventListener('change', listener);
     return () => subscription.remove();
-  }, []);
+  }, [queryClient]);
 
   // Fila de ENVIO (check-in/registros/checkout coletados offline, ver lib/filaEnvio.ts e
   // docs/04-APP-MOBILE.md "Fila offline de envio") — dispara em três momentos: ao entrar nas
@@ -130,9 +146,13 @@ export function MainTabs() {
         tabBarActiveTintColor: cores.primaria,
         tabBarInactiveTintColor: neutro[400],
         tabBarLabelStyle: styles.tabLabel,
-        tabBarStyle: styles.tabBar,
-        tabBarIcon: ({ color, size }) => (
-          <MaterialCommunityIcons name={ICONES_TAB[route.name]} size={size} color={color} />
+        tabBarStyle: [styles.tabBar, { height: 56 + insets.bottom, paddingBottom: 8 + insets.bottom }],
+        // Ícone ativo ganha uma "pill" de fundo (índigo claro) atrás — mesmo destaque do
+        // protótipo Claude Design (Home.dc.html), só decorativo, não muda a área de toque.
+        tabBarIcon: ({ color, size, focused }) => (
+          <View style={focused ? styles.tabIconePill : undefined}>
+            <MaterialCommunityIcons name={ICONES_TAB[route.name]} size={size} color={color} />
+          </View>
         ),
         headerTitleStyle: styles.headerTitulo,
       })}
@@ -143,6 +163,11 @@ export function MainTabs() {
         component={PontosVendaStack}
         options={{ title: 'Lojas', headerShown: false }}
       />
+      {/* "Modo Vendedor" (docs/38-PEDIDO-VENDEDOR.md §4) — sem UserType novo, só a permissão
+          pedidos_venda.criar no perfil do promotor. */}
+      {podeTirarPedido(usuario) && (
+        <Tab.Screen name="Pedidos" component={PedidosStack} options={{ title: 'Pedidos', headerShown: false }} />
+      )}
       <Tab.Screen
         name="Planogramas"
         component={PlanogramasStack}
@@ -165,12 +190,18 @@ const styles = StyleSheet.create({
   },
   tabBar: {
     borderTopColor: neutro[100],
-    height: 62,
-    paddingBottom: 8,
     paddingTop: 6,
   },
   tabLabel: {
     fontSize: 11,
     fontWeight: '700',
+  },
+  tabIconePill: {
+    width: 46,
+    height: 28,
+    borderRadius: 999,
+    backgroundColor: cores.primariaClara,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

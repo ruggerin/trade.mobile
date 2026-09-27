@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   FlatList,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
 import { buscarCodigoBarrasObrigatorio } from '../lib/api/parametros';
 import { adicionarSortimentoProprio } from '../lib/api/sortimentoPontoVenda';
@@ -43,6 +45,10 @@ export function AdicionarProdutoSortimentoModal({
   onAdicionado,
 }: AdicionarProdutoSortimentoModalProps) {
   const queryClient = useQueryClient();
+  const insets = useSafeAreaInsets();
+  // pageSheet só é real no iOS — no Android o Modal cobre a tela inteira sem inset automático.
+  const insetTopo = Platform.OS === 'android' ? insets.top : 0;
+  const insetBase = Platform.OS === 'android' ? insets.bottom : 0;
   const [modo, setModo] = useState<'BUSCAR' | 'CADASTRAR'>('BUSCAR');
   const [busca, setBusca] = useState('');
   const [filtrosAbertos, setFiltrosAbertos] = useState(false);
@@ -164,8 +170,8 @@ export function AdicionarProdutoSortimentoModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={styles.container}>
-        <View style={styles.cabecalho}>
+      <View style={[styles.container, { paddingBottom: insetBase }]}>
+        <View style={[styles.cabecalho, { paddingTop: espaco.md + insetTopo }]}>
           {modo === 'CADASTRAR' ? (
             <Pressable onPress={() => setModo('BUSCAR')} hitSlop={12}>
               <Text style={styles.cabecalhoAcao}>‹ Voltar</Text>

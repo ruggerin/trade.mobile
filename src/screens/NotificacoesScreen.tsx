@@ -1,6 +1,6 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, SectionList, StyleSheet, Text, View } from 'react-native';
 import { buscarNaoLidos, type NaoLidos } from '../lib/api/comentarios';
 import type { HistoricoStackParamList } from '../navigation/HistoricoStack';
 import { cores, espaco, raio } from '../theme';
@@ -8,6 +8,37 @@ import { cores, espaco, raio } from '../theme';
 type Props = NativeStackScreenProps<HistoricoStackParamList, 'Notificacoes'>;
 
 type ItemNaoLido = NaoLidos['registros'][number];
+
+// Feed já vem do backend ordenado por comentário mais recente primeiro (ComentarioRegistroController
+// ::naoLidos) — só precisa bucketizar em "Hoje"/"Ontem"/data, preservando a ordem.
+function agruparPorDia(registros: ItemNaoLido[]): { titulo: string; data: ItemNaoLido[] }[] {
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const ontem = new Date(hoje);
+  ontem.setDate(ontem.getDate() - 1);
+
+  const grupos: { titulo: string; data: ItemNaoLido[] }[] = [];
+  for (const item of registros) {
+    const dia = new Date(item.ultimo.em);
+    dia.setHours(0, 0, 0, 0);
+
+    const titulo =
+      dia.getTime() === hoje.getTime()
+        ? 'Hoje'
+        : dia.getTime() === ontem.getTime()
+          ? 'Ontem'
+          : dia.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+
+    const ultimoGrupo = grupos.at(-1);
+    if (ultimoGrupo?.titulo === titulo) {
+      ultimoGrupo.data.push(item);
+    } else {
+      grupos.push({ titulo, data: [item] });
+    }
+  }
+
+  return grupos;
+}
 
 // Feed "estilo Instagram/Facebook" — comentário do gestor em qualquer registro do promotor (ou,
 // pra admin/gestor, de qualquer promotor da empresa). Toque leva direto ao registro com a
@@ -38,15 +69,17 @@ export function NotificacoesScreen({ navigation }: Props) {
   }
 
   return (
-    <FlatList
-      data={query.data?.registros ?? []}
+    <SectionList
+      sections={agruparPorDia(query.data?.registros ?? [])}
       keyExtractor={(item) => item.registro_id}
       contentContainerStyle={styles.lista}
+      stickySectionHeadersEnabled={false}
       ListEmptyComponent={
         <View style={styles.centro}>
           <Text style={styles.vazioTexto}>Nenhuma notificação nova.</Text>
         </View>
       }
+      renderSectionHeader={({ section }) => <Text style={styles.tituloSecao}>{section.titulo}</Text>}
       renderItem={({ item }) => <ItemNotificacao item={item} onPress={() => abrir(item)} />}
     />
   );
@@ -88,6 +121,16 @@ function ItemNotificacao({ item, onPress }: { item: ItemNaoLido; onPress: () => 
 const styles = StyleSheet.create({
   lista: { flexGrow: 1, padding: espaco.md, gap: espaco.xs },
   centro: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: espaco.xl, paddingTop: espaco.xxl },
+  tituloSecao: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: cores.textoSecundario,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+    paddingHorizontal: espaco.md,
+    paddingTop: espaco.sm,
+    paddingBottom: espaco.xs,
+  },
   vazioTexto: { fontSize: 15, color: cores.textoSecundario, textAlign: 'center' },
   item: {
     flexDirection: 'row',

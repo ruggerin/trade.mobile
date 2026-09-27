@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { criarComentario, listarComentarios } from '../lib/api/comentarios';
 import { cores, espaco, neutro, raio } from '../theme';
 
@@ -34,6 +35,12 @@ export function ComentariosRegistroModal({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const insets = useSafeAreaInsets();
+  // `presentationStyle="pageSheet"` só existe de verdade no iOS (o cartão já nasce abaixo do
+  // notch) — no Android o Modal ignora essa prop e cobre a tela inteira sem nenhum inset
+  // automático, por isso só soma o inset manual lá.
+  const insetTopo = Platform.OS === 'android' ? insets.top : 0;
+  const insetBase = Platform.OS === 'android' ? insets.bottom : 0;
   const [texto, setTexto] = useState('');
 
   const query = useQuery({
@@ -57,8 +64,8 @@ export function ComentariosRegistroModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={styles.cabecalho}>
+      <KeyboardAvoidingView style={styles.container} behavior="padding">
+        <View style={[styles.cabecalho, { paddingTop: espaco.md + insetTopo }]}>
           <View style={styles.espaco} />
           <Text style={styles.titulo} numberOfLines={1}>
             Feedback — {titulo}
@@ -91,7 +98,7 @@ export function ComentariosRegistroModal({
         )}
 
         {enviar.isError && <Text style={styles.erro}>Não foi possível enviar. Tente de novo.</Text>}
-        <View style={styles.entrada}>
+        <View style={[styles.entrada, { paddingBottom: espaco.md + insetBase }]}>
           <TextInput
             style={styles.input}
             placeholder="Escreva uma resposta"

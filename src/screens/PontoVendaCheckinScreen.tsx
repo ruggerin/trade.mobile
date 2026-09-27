@@ -1,4 +1,3 @@
-import { AbasLoja, type AbaLoja } from '../components/AbasLoja';
 import { AcoesCompromisso } from '../components/AcoesCompromisso';
 import { DadosCadastraisLoja } from '../components/DadosCadastraisLoja';
 import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
@@ -6,18 +5,21 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useRef, useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../lib/auth/AuthContext';
 import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
 import { buscarRaioCheckinMetros } from '../lib/api/parametros';
 import { calcularDistanciaMetros } from '../lib/location/distancia';
 import { obterLocalizacaoAtual, useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
-import { iniciarVisitaLocal } from '../lib/visitaLocal';
-import { cores, espaco, neutro, raio as raioUI, sombraFlutuante, tipografia, verde } from '../theme';
+import type { OrdemServico } from '../types/api';
+import { buscarVisitaEmAndamento, iniciarVisitaLocal, VisitaEmAndamentoError } from '../lib/visitaLocal';
+import { amber, cores, espaco, indigo, neutro, raio as raioUI, sombraCard, tipografia, verde } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontoVendaCheckin'>;
+type Aba = 'DADOS' | 'HISTORICO';
 
 // docs/05-APP-MOBILE-UX.md §3.4 — mapa com PDV + posição atual + raio, distância sempre em
 // texto (nunca só cor). "Iniciar visita" grava local e navega na hora — não fala com a API
@@ -27,10 +29,19 @@ type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontoVendaChecki
 // check-in acabar recusado (ex.: fora do raio de verdade), a visita inteira vira REJEITADA e
 // aparece pro promotor descartar no Histórico — o indicador de distância abaixo existe
 // justamente pra reduzir a chance disso acontecer.
+//
+// Layout: protótipo Claude Design (Checkin.dc.html) — mapa em destaque, cartão de distância
+// sobrepondo a borda de baixo do mapa, identificação (ícone genérico + nome + endereço),
+// atalhos Rota/Ligar/Histórico, cartão da OS, abas em pill (Dados cadastrais/Histórico da
+// loja). O ícone de "Fachada" aqui é só decorativo (igual ao protótipo, que também não mostra a
+// foto de verdade nesta posição) — a foto real, com upload, mora na aba Dados cadastrais
+// (DadosCadastraisLoja), que já tem toda a lógica de download autenticado/upload e não devia
+// ser duplicada aqui só por uma miniatura. Ver docs/Trade.mobile app review-handoff.
 export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   const { pontoVenda, ordemServico: ordemServicoDaRota } = route.params;
-  const { usuario, token } = useAuth();
+  const { usuario } = useAuth();
   const queryClient = useQueryClient();
+  const insets = useSafeAreaInsets();
 
   // A OS que veio pela rota foi escolhida na lista de lojas com a pendência que estava em cache
   // NAQUELE momento — um Direcionamento criado depois (o gestor gera as OS na hora) não estava
@@ -44,7 +55,20 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   });
   const ordemServico = ordemServicoDaRota ?? escolherOrdemDaLoja((pendenciasQuery.data ?? []).filter((os) => os.ponto_venda.id === pontoVenda.id));
   const [erroCheckin, setErroCheckin] = useState<string | null>(null);
-  const [aba, setAba] = useState<'DADOS' | 'HISTORICO'>('DADOS');
+  const [aba, setAba] = useState<Aba>('DADOS');
+  const [mapaExpandido, setMapaExpandido] = useState(false);
+
+  // Premissa: uma visita em andamento por vez. Nesta loja → o botão vira "Continuar visita" e vai
+  // direto pra ela; em outra loja → o botão leva pra ela em vez de iniciar uma nova.
+  const emAndamentoQuery = useQuery({
+    queryKey: ['visita-em-andamento', usuario?.id],
+    queryFn: () => buscarVisitaEmAndamento(usuario!.id),
+    enabled: Boolean(usuario),
+    refetchOnMount: 'always',
+  });
+  const visitaEmAndamento = emAndamentoQuery.data ?? null;
+  const emAndamentoNestaLoja = visitaEmAndamento?.pontoVenda.id === pontoVenda.id;
+  const emAndamentoEmOutraLoja = visitaEmAndamento !== null && !emAndamentoNestaLoja;
 
   // Contexto de negócio rápido antes de entrar na visita — docs/26-MELHORIAS-PRODUTIVIDADE-PROMOTOR.md
   // §2 itens 2/3, mesmo raciocínio do card da lista (PontosVendaListScreen).
@@ -55,6 +79,7 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const endereco = [pontoVenda.endereco, pontoVenda.bairro].filter(Boolean).join(' — ');
 
   const localizacao = useLocalizacaoAtual();
   // Guarda síncrona contra duplo toque — `checkinMutation.isPending` só vira true depois que o
@@ -80,7 +105,8 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
     );
   }, [localizacao.coords, pontoVenda.latitude, pontoVenda.longitude]);
 
-  const dentroDoRaio = distancia !== null && distancia <= raio;
+  const semLimite = !Number.isFinite(raio);
+  const dentroDoRaio = semLimite || (distancia !== null && distancia <= raio);
 
   const checkinMutation = useMutation({
     mutationFn: async () => {
@@ -113,7 +139,12 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
       setErroCheckin(null);
       navigation.replace('VisitaAndamento', { visitaLocalId: visitaLocal.id });
     },
-    onError: () => {
+    onError: (err) => {
+      if (err instanceof VisitaEmAndamentoError) {
+        void emAndamentoQuery.refetch();
+        setErroCheckin(err.message);
+        return;
+      }
       // Só chega aqui se a própria localização falhar (permissão negada a caminho, GPS
       // indisponível) — gravar a visita local não depende de rede nem pode falhar por conta
       // dela, ver lib/db/filaVisitas.ts::criarVisitaLocal.
@@ -125,9 +156,25 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   });
 
   function iniciarVisita() {
+    if (visitaEmAndamento) {
+      navigation.replace('VisitaAndamento', { visitaLocalId: visitaEmAndamento.id });
+      return;
+    }
     if (iniciandoRef.current) return;
     iniciandoRef.current = true;
     checkinMutation.mutate();
+  }
+
+  function abrirRota() {
+    void Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${pontoVenda.latitude},${pontoVenda.longitude}`);
+  }
+
+  function ligar() {
+    if (!pontoVenda.telefone) {
+      Alert.alert('Sem telefone', 'Esta loja não tem telefone cadastrado.');
+      return;
+    }
+    void Linking.openURL(`tel:${pontoVenda.telefone}`);
   }
 
   if (localizacao.permissaoNegada) {
@@ -148,171 +195,359 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
     );
   }
 
-  const abas: AbaLoja<'DADOS' | 'HISTORICO'>[] = [
-    { chave: 'DADOS', rotulo: 'Dados cadastrais', icone: 'store-outline' },
-    { chave: 'HISTORICO', rotulo: 'Histórico da loja', icone: 'history' },
-  ];
-
-  // Mapa + distância: ficam logo abaixo da foto da fachada, na aba Dados cadastrais.
-  const mapaEDistancia = (
-    <View style={styles.blocoMapa}>
-      <View style={styles.mapaContainer}>
-        {localizacao.coords ? (
-          <MapView
-            style={styles.mapa}
-            initialRegion={{
-              latitude: pontoVenda.latitude,
-              longitude: pontoVenda.longitude,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }}
-          >
-            <Marker
-              coordinate={{ latitude: pontoVenda.latitude, longitude: pontoVenda.longitude }}
-              title={pontoVenda.fantasia}
-              pinColor={cores.primaria}
-            />
-            <Marker coordinate={localizacao.coords} title="Você" pinColor={verde[600]} />
-            {/* raio Infinity (empresa desativou a validação de propósito, ver
-                lib/api/parametros.ts) não tem um círculo geométrico válido pra desenhar. */}
-            {Number.isFinite(raio) && (
-              <Circle
-                center={{ latitude: pontoVenda.latitude, longitude: pontoVenda.longitude }}
-                radius={raio}
-                strokeColor="rgba(79, 70, 229, 0.5)"
-                fillColor="rgba(79, 70, 229, 0.12)"
-              />
-            )}
-          </MapView>
-        ) : (
-          <View style={styles.mapaCarregando}>
-            <Text style={styles.mapaCarregandoTexto}>
-              {localizacao.erro ?? (localizacao.carregando ? 'Obtendo sua localização...' : '')}
-            </Text>
-          </View>
-        )}
-      </View>
-      {distancia !== null && (
-        <Text style={[styles.distancia, dentroDoRaio ? styles.distanciaDentro : styles.distanciaFora]}>
-          {!Number.isFinite(raio)
-            ? `Você está a ${Math.round(distancia)}m do PDV — sem limite de distância configurado para este check-in.`
-            : dentroDoRaio
-              ? `Você está a ${Math.round(distancia)}m do PDV — dentro do raio de check-in (${Math.round(raio)}m).`
-              : `Você está a ${Math.round(distancia)}m do PDV — fora do raio de check-in (${Math.round(raio)}m).`}
-        </Text>
+  const marcadoresMapa = localizacao.coords && (
+    <>
+      <Marker
+        coordinate={{ latitude: pontoVenda.latitude, longitude: pontoVenda.longitude }}
+        title={pontoVenda.fantasia}
+        anchor={{ x: 0.5, y: 1 }}
+      >
+        <View style={styles.pinLoja}>
+          <MaterialCommunityIcons name="storefront" size={17} color={cores.branco} style={styles.pinLojaIcone} />
+        </View>
+      </Marker>
+      <Marker coordinate={localizacao.coords} title="Você" anchor={{ x: 0.5, y: 0.5 }}>
+        <View style={styles.pontoUsuario} />
+      </Marker>
+      {/* raio Infinity (empresa desativou a validação de propósito, ver lib/api/parametros.ts)
+          não tem um círculo geométrico válido pra desenhar. */}
+      {!semLimite && (
+        <Circle
+          center={{ latitude: pontoVenda.latitude, longitude: pontoVenda.longitude }}
+          radius={raio}
+          strokeColor="rgba(79, 70, 229, 0.5)"
+          fillColor="rgba(79, 70, 229, 0.12)"
+        />
       )}
-    </View>
+    </>
   );
 
   return (
     <View style={styles.container}>
-      <View style={styles.cabecalhoLoja}>
-        <Text style={styles.fantasia}>{pontoVenda.fantasia}</Text>
-        {!!contexto && <Text style={styles.contexto}>{contexto}</Text>}
-        {ordemServico && (
-          <View style={styles.badgeContrato}>
-            <MaterialCommunityIcons name="clipboard-text-outline" size={12} color={cores.primaria} />
-            <Text style={styles.badgeContratoTexto}>
-              Pendência: {ordemServico.direcionamento?.descricao ?? ordemServico.tipo_visita?.descricao ?? 'ordem de serviço'}
-            </Text>
+      <ScrollView style={styles.corpo}>
+        <Pressable
+          style={styles.mapaHero}
+          onPress={() => localizacao.coords && setMapaExpandido(true)}
+          disabled={!localizacao.coords}
+        >
+          {localizacao.coords ? (
+            <MapView
+              style={styles.mapa}
+              initialRegion={{
+                latitude: pontoVenda.latitude,
+                longitude: pontoVenda.longitude,
+                latitudeDelta: 0.01,
+                longitudeDelta: 0.01,
+              }}
+              // Só uma prévia — sem gesto nenhum aqui dentro de uma ScrollView (arrastar/beliscar
+              // brigava com a rolagem da tela inteira). Pra mexer de verdade (zoom, arrastar, ver
+              // mais contexto da região) é só tocar: abre em tela cheia (ver mapaExpandido abaixo).
+              scrollEnabled={false}
+              zoomEnabled={false}
+              rotateEnabled={false}
+              pitchEnabled={false}
+              toolbarEnabled={false}
+              showsCompass={false}
+              showsMyLocationButton={false}
+              showsUserLocation={false}
+              showsPointsOfInterests={false}
+              showsBuildings={false}
+            >
+              {marcadoresMapa}
+            </MapView>
+          ) : (
+            <View style={styles.mapaCarregando}>
+              <Text style={styles.mapaCarregandoTexto}>
+                {localizacao.erro ?? (localizacao.carregando ? 'Obtendo sua localização...' : '')}
+              </Text>
+            </View>
+          )}
+          <View style={styles.chipsOverlay}>
+            <View style={styles.chip}>
+              <View style={[styles.chipPonto, { backgroundColor: verde[600] }]} />
+              <Text style={styles.chipTexto}>Você</Text>
+            </View>
+            {!semLimite && (
+              <View style={styles.chip}>
+                <View style={[styles.chipQuadrado, { backgroundColor: cores.primaria }]} />
+                <Text style={styles.chipTexto}>Raio {Math.round(raio)}m</Text>
+              </View>
+            )}
           </View>
-        )}
-      </View>
+          {localizacao.coords && (
+            <View style={styles.botaoExpandir}>
+              <MaterialCommunityIcons name="arrow-expand-all" size={14} color={cores.texto} />
+              <Text style={styles.botaoExpandirTexto}>Ampliar mapa</Text>
+            </View>
+          )}
+        </Pressable>
 
-      <AbasLoja abas={abas} ativa={aba} onChange={setAba} />
+        <View style={styles.distanciaCardWrap}>
+          <View style={[styles.distanciaCard, { borderColor: dentroDoRaio ? '#bbf7d0' : amber[200] }]}>
+            <View style={[styles.distanciaIconeCirculo, { backgroundColor: dentroDoRaio ? cores.sucessoFundo : amber[50] }]}>
+              <MaterialCommunityIcons
+                name={dentroDoRaio ? 'check-circle-outline' : 'map-marker-alert-outline'}
+                size={22}
+                color={dentroDoRaio ? cores.sucesso : amber[700]}
+              />
+            </View>
+            <View style={styles.distanciaTextos}>
+              <Text style={[styles.distanciaTitulo, { color: dentroDoRaio ? cores.sucesso : amber[700] }]}>
+                {dentroDoRaio ? 'Dentro do raio' : 'Fora do raio'}
+              </Text>
+              <Text style={styles.distanciaSubtitulo}>
+                {semLimite
+                  ? 'Sem limite configurado'
+                  : dentroDoRaio
+                    ? 'Check-in liberado'
+                    : distancia !== null
+                      ? `Aproxime-se mais ${Math.round(distancia - raio)}m da loja`
+                      : 'Obtendo sua localização...'}
+              </Text>
+            </View>
+            {distancia !== null && (
+              <Text style={styles.distanciaNumero}>
+                {distancia >= 1000 ? `${(distancia / 1000).toFixed(1).replace('.', ',')} km` : `${Math.round(distancia)} m`}
+              </Text>
+            )}
+          </View>
+        </View>
 
-      <ScrollView style={styles.corpoAbas}>
-        {aba === 'DADOS' ? (
-          <>
-            {ordemServico && (
-              <View style={[styles.osBox, styles.osBoxNaAba]}>
-                <View style={styles.osTopo}>
-                  <Text style={styles.osTitulo}>Ordem de serviço</Text>
-                  {ordemServico.tipo_visita && (
-                    <View style={[styles.osTag, { backgroundColor: ordemServico.tipo_visita.cor }]}>
-                      <Text style={styles.osTagTexto}>{ordemServico.tipo_visita.descricao}</Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.osTexto}>
-                  Prazo até {new Date(ordemServico.prazo_fim).toLocaleDateString('pt-BR')}
-                  {ordemServico.horario_previsto ? ` às ${ordemServico.horario_previsto}` : ''}
-                  {!ordemServico.obrigatoria ? ' — sugestão, não bloqueante' : ''}
-                </Text>
-                {ordemServico.prioridade === 'ALTA' && <Text style={styles.osPrioridade}>Alta prioridade</Text>}
-                {!!ordemServico.objetivo_visita && (
-                  <Text style={styles.osTexto}>Objetivo: {ordemServico.objetivo_visita.descricao}</Text>
-                )}
-                {!!ordemServico.observacao && <Text style={styles.osTexto}>{ordemServico.observacao}</Text>}
-              </View>
+        <View style={styles.identificacaoRow}>
+         
+          <View style={styles.identificacaoTextos}>
+            <Text style={styles.fantasia} numberOfLines={2}>
+              {pontoVenda.fantasia}
+            </Text>
+            {!!endereco && (
+              <Text style={styles.endereco} numberOfLines={1}>
+                {endereco}
+              </Text>
             )}
-            <DadosCadastraisLoja pontoVenda={pontoVenda} depoisDaFachada={mapaEDistancia} />
-            {ordemServico && (
-              <View style={styles.acoesCompromissoNaAba}>
-                <AcoesCompromisso
-                  ordemServico={ordemServico}
-                  onReagendar={() => navigation.navigate('ReagendarCompromisso', { ordemServico })}
-                  onCancelado={() => navigation.goBack()}
-                />
-              </View>
+            {!!contexto && (
+              <Text style={styles.contexto} numberOfLines={1}>
+                {contexto}
+              </Text>
             )}
-          </>
-        ) : (
-          <HistoricoLojaPanel pontoVendaUuid={pontoVenda.id} />
+          </View>
+        </View>
+
+        <View style={styles.atalhosRow}>
+          <Pressable style={({ pressed }) => [styles.atalhoBotao, pressed && styles.itemPressionado]} onPress={abrirRota}>
+            <MaterialCommunityIcons name="navigation-variant-outline" size={16} color={cores.primaria} />
+            <Text style={styles.atalhoTexto}>Rota</Text>
+          </Pressable>
+          <Pressable style={({ pressed }) => [styles.atalhoBotao, pressed && styles.itemPressionado]} onPress={ligar}>
+            <MaterialCommunityIcons name="phone-outline" size={16} color={cores.primaria} />
+            <Text style={styles.atalhoTexto}>Ligar</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.atalhoBotao, pressed && styles.itemPressionado]}
+            onPress={() => setAba('HISTORICO')}
+          >
+            <MaterialCommunityIcons name="history" size={16} color={cores.primaria} />
+            <Text style={styles.atalhoTexto}>Histórico</Text>
+          </Pressable>
+        </View>
+
+        {ordemServico && <OrdemServicoCard ordemServico={ordemServico} />}
+
+        <View style={styles.segmentadoWrap}>
+          <View style={styles.segmentado}>
+            <Pressable
+              style={[styles.segmento, aba === 'DADOS' && styles.segmentoAtivo]}
+              onPress={() => setAba('DADOS')}
+            >
+              <Text style={[styles.segmentoTexto, aba === 'DADOS' && styles.segmentoTextoAtivo]}>Dados cadastrais</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.segmento, aba === 'HISTORICO' && styles.segmentoAtivo]}
+              onPress={() => setAba('HISTORICO')}
+            >
+              <Text style={[styles.segmentoTexto, aba === 'HISTORICO' && styles.segmentoTextoAtivo]}>
+                Histórico da loja
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+
+        {aba === 'DADOS' ? <DadosCadastraisLoja pontoVenda={pontoVenda} /> : <HistoricoLojaPanel pontoVendaUuid={pontoVenda.id} />}
+
+        {/* Reagendar/Cancelar só faz sentido pra um compromisso que nasceu na agenda do
+            promotor — uma OS de Direcionamento/campanha "encontrada" ao abrir a loja pela aba
+            Lojas não é um compromisso da agenda dele pra reagendar/cancelar. */}
+        {ordemServico?.origem === 'AGENDA' && (
+          <View style={styles.acoesCompromissoWrap}>
+            <AcoesCompromisso
+              ordemServico={ordemServico}
+              onReagendar={() => navigation.navigate('ReagendarCompromisso', { ordemServico })}
+              onCancelado={() => navigation.goBack()}
+            />
+          </View>
         )}
       </ScrollView>
 
-      <View style={styles.rodapeCheckin}>
+      <View style={[styles.rodapeCheckin, { paddingBottom: espaco.lg + insets.bottom }]}>
         {erroCheckin && (
           <View style={styles.erroBox}>
             <Text style={styles.erroTexto}>{erroCheckin}</Text>
           </View>
         )}
+        {emAndamentoEmOutraLoja && !erroCheckin && (
+          <View style={styles.avisoForaRaio}>
+            <MaterialCommunityIcons name="alert-outline" size={16} color={amber[700]} />
+            <Text style={styles.avisoForaRaioTexto}>
+              Você já está em uma visita em {visitaEmAndamento.pontoVenda.fantasia}. Finalize-a antes de iniciar outra.
+            </Text>
+          </View>
+        )}
+        {!visitaEmAndamento && !dentroDoRaio && !erroCheckin && (
+          <View style={styles.avisoForaRaio}>
+            <MaterialCommunityIcons name="alert-outline" size={16} color={amber[700]} />
+            <Text style={styles.avisoForaRaioTexto}>
+              Você ainda está fora do raio. Dá pra iniciar, mas o servidor pode recusar o check-in.
+            </Text>
+          </View>
+        )}
 
         <Pressable
-          style={({ pressed }) => [styles.botaoPrimario, pressed && styles.botaoPressionado]}
+          style={({ pressed }) => [
+            styles.botaoPrimario,
+            !visitaEmAndamento && !dentroDoRaio && !checkinMutation.isPending && styles.botaoPrimarioFora,
+            pressed && styles.botaoPressionado,
+          ]}
           onPress={iniciarVisita}
-          disabled={checkinMutation.isPending}
+          disabled={checkinMutation.isPending || emAndamentoQuery.isPending}
         >
           {!checkinMutation.isPending && (
-            <MaterialCommunityIcons name="play-circle-outline" size={20} color={cores.onPrimaria} />
+            <MaterialCommunityIcons
+              name={visitaEmAndamento ? 'arrow-right-circle-outline' : 'play-circle-outline'}
+              size={20}
+              color={!visitaEmAndamento && !dentroDoRaio ? cores.primariaEscura : cores.onPrimaria}
+            />
           )}
-          <Text style={styles.botaoPrimarioTexto}>
-            {checkinMutation.isPending ? 'Iniciando...' : 'Iniciar visita'}
+          <Text
+            style={[
+              styles.botaoPrimarioTexto,
+              !visitaEmAndamento && !dentroDoRaio && !checkinMutation.isPending && { color: cores.primariaEscura },
+            ]}
+          >
+            {checkinMutation.isPending
+              ? 'Confirmando localização...'
+              : emAndamentoNestaLoja
+                ? 'Continuar visita'
+                : emAndamentoEmOutraLoja
+                  ? 'Ir para a visita em andamento'
+                  : 'Iniciar visita'}
           </Text>
         </Pressable>
+      </View>
+
+      {/* Mapa de verdade, em tela cheia — aqui sim com zoom/arrastar/bússola/localização, sem
+          nenhuma ScrollView por perto brigando pelo gesto. */}
+      <Modal visible={mapaExpandido} animationType="slide" onRequestClose={() => setMapaExpandido(false)}>
+        <View style={styles.mapaExpandidoContainer}>
+          {localizacao.coords && (
+            <MapView
+              style={styles.mapa}
+              initialRegion={{
+                latitude: pontoVenda.latitude,
+                longitude: pontoVenda.longitude,
+                latitudeDelta: 0.006,
+                longitudeDelta: 0.006,
+              }}
+              showsCompass
+              showsMyLocationButton
+              showsUserLocation
+            >
+              {marcadoresMapa}
+            </MapView>
+          )}
+          <Pressable
+            style={[styles.mapaExpandidoFechar, { top: insets.top + espaco.sm }]}
+            onPress={() => setMapaExpandido(false)}
+            hitSlop={12}
+          >
+            <MaterialCommunityIcons name="close" size={20} color={cores.texto} />
+          </Pressable>
+          <View style={[styles.mapaExpandidoRodape, { paddingBottom: espaco.lg + insets.bottom }]}>
+            <Text style={styles.mapaExpandidoNome} numberOfLines={1}>
+              {pontoVenda.fantasia}
+            </Text>
+            {distancia !== null && (
+              <Text style={styles.mapaExpandidoDistancia}>
+                {dentroDoRaio ? 'Dentro do raio' : 'Fora do raio'} ·{' '}
+                {distancia >= 1000 ? `${(distancia / 1000).toFixed(1).replace('.', ',')} km` : `${Math.round(distancia)} m`}
+              </Text>
+            )}
+            <Pressable
+              style={({ pressed }) => [styles.mapaExpandidoBotaoRota, pressed && styles.itemPressionado]}
+              onPress={abrirRota}
+            >
+              <MaterialCommunityIcons name="navigation-variant-outline" size={16} color={cores.onPrimaria} />
+              <Text style={styles.mapaExpandidoBotaoRotaTexto}>Traçar rota</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function OrdemServicoCard({ ordemServico }: { ordemServico: OrdemServico }) {
+  return (
+    <View style={styles.osCardWrap}>
+      <View style={styles.osCard}>
+        <View style={styles.osTopo}>
+          <Text style={styles.osRotulo}>Ordem de serviço</Text>
+          <View style={styles.osTagsLinha}>
+            {ordemServico.prioridade === 'ALTA' && (
+              <View style={styles.osTagAlta}>
+                <Text style={styles.osTagAltaTexto}>Alta prioridade</Text>
+              </View>
+            )}
+            {!!ordemServico.tipo_visita && (
+              <View style={[styles.osTag, { backgroundColor: ordemServico.tipo_visita.cor }]}>
+                <Text style={styles.osTagTexto}>{ordemServico.tipo_visita.descricao}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+        <Text style={styles.osTitulo}>
+          {ordemServico.direcionamento?.descricao ?? ordemServico.objetivo_visita?.descricao ?? 'Visita agendada'}
+        </Text>
+        <View style={styles.osGrade}>
+          <View style={styles.osGradeCelula}>
+            <Text style={styles.osGradeRotulo}>Prazo</Text>
+            <Text style={styles.osGradeValor}>
+              {new Date(ordemServico.prazo_fim).toLocaleDateString('pt-BR')}
+              {ordemServico.horario_previsto ? ` às ${ordemServico.horario_previsto}` : ''}
+            </Text>
+          </View>
+          {!!ordemServico.objetivo_visita && (
+            <View style={styles.osGradeCelula}>
+              <Text style={styles.osGradeRotulo}>Objetivo</Text>
+              <Text style={styles.osGradeValor}>{ordemServico.objetivo_visita.descricao}</Text>
+            </View>
+          )}
+        </View>
+        {!ordemServico.obrigatoria && <Text style={styles.osTexto}>Sugestão — não bloqueante.</Text>}
+        {!!ordemServico.observacao && <Text style={styles.osTexto}>{ordemServico.observacao}</Text>}
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  cabecalhoLoja: {
-    backgroundColor: cores.fundoCard,
-    paddingHorizontal: espaco.xl,
-    paddingTop: espaco.md,
-    paddingBottom: espaco.md,
-    gap: 4,
-  },
-  corpoAbas: { flex: 1, backgroundColor: cores.fundo },
-  blocoMapa: { marginBottom: espaco.md, gap: espaco.sm },
-  acoesCompromissoNaAba: { paddingHorizontal: espaco.lg, paddingBottom: espaco.xl },
-  osBoxNaAba: { margin: espaco.lg, marginBottom: 0 },
-  rodapeCheckin: {
-    backgroundColor: cores.fundoCard,
-    borderTopWidth: 1,
-    borderTopColor: cores.divisor,
-    padding: espaco.lg,
-    gap: espaco.sm,
-  },
   container: {
     flex: 1,
-    backgroundColor: cores.fundoCard,
+    backgroundColor: cores.fundo,
   },
-  mapaContainer: {
-    height: 200,
-    borderRadius: raioUI.lg,
-    overflow: 'hidden',
+  corpo: {
+    flex: 1,
+  },
+  mapaHero: {
+    height: 220,
     backgroundColor: neutro[200],
   },
   mapa: {
@@ -329,17 +564,243 @@ const styles = StyleSheet.create({
     color: cores.textoSecundario,
     textAlign: 'center',
   },
-  info: {
-    padding: espaco.xl,
+  pinLoja: {
+    width: 34,
+    height: 34,
+    borderRadius: raioUI.md,
+    backgroundColor: cores.primaria,
+    borderWidth: 3,
+    borderColor: cores.branco,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  osBox: {
+  pinLojaIcone: {
+    marginTop: -1,
+  },
+  pontoUsuario: {
+    width: 16,
+    height: 16,
+    borderRadius: raioUI.pill,
+    backgroundColor: verde[600],
+    borderWidth: 3,
+    borderColor: cores.branco,
+  },
+  chipsOverlay: {
+    position: 'absolute',
+    left: espaco.md,
+    top: espaco.md,
+    flexDirection: 'row',
+    gap: espaco.sm,
+  },
+  botaoExpandir: {
+    position: 'absolute',
+    right: espaco.md,
+    top: espaco.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    height: 30,
+    paddingHorizontal: espaco.sm + 2,
+    borderRadius: raioUI.pill,
+    backgroundColor: cores.fundoCard,
+    ...sombraCard,
+  },
+  botaoExpandirTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: cores.texto,
+  },
+  mapaExpandidoContainer: {
+    flex: 1,
+    backgroundColor: neutro[200],
+  },
+  mapaExpandidoFechar: {
+    position: 'absolute',
+    right: espaco.lg,
+    width: 40,
+    height: 40,
+    borderRadius: raioUI.pill,
+    backgroundColor: cores.fundoCard,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...sombraCard,
+  },
+  mapaExpandidoRodape: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: cores.fundoCard,
+    borderTopLeftRadius: raioUI.xl,
+    borderTopRightRadius: raioUI.xl,
+    padding: espaco.lg,
+    gap: 2,
+    ...sombraCard,
+  },
+  mapaExpandidoNome: {
+    ...tipografia.destaque,
+    fontSize: 17,
+    color: cores.texto,
+  },
+  mapaExpandidoDistancia: {
+    fontSize: 13,
+    color: cores.textoSecundario,
+    marginBottom: espaco.sm,
+  },
+  mapaExpandidoBotaoRota: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: espaco.sm,
+    minHeight: 48,
+    borderRadius: raioUI.md,
+    backgroundColor: cores.primaria,
+  },
+  mapaExpandidoBotaoRotaTexto: {
+    color: cores.onPrimaria,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 26,
+    paddingHorizontal: espaco.sm + 2,
+    borderRadius: raioUI.pill,
+    backgroundColor: cores.fundoCard,
+    ...sombraCard,
+  },
+  chipPonto: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+  },
+  chipQuadrado: {
+    width: 7,
+    height: 7,
+    borderRadius: 2,
+  },
+  chipTexto: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: neutro[700],
+  },
+  distanciaCardWrap: {
+    paddingHorizontal: espaco.lg,
+    marginTop: -26,
+  },
+  distanciaCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    backgroundColor: cores.fundoCard,
+    borderWidth: 1,
+    borderRadius: raioUI.lg,
+    padding: espaco.md,
+    ...sombraCard,
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+  },
+  distanciaIconeCirculo: {
+    width: 44,
+    height: 44,
+    borderRadius: raioUI.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  distanciaTextos: {
+    flex: 1,
+    minWidth: 0,
+  },
+  distanciaTitulo: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  distanciaSubtitulo: {
+    fontSize: 12,
+    color: cores.textoSecundario,
+    marginTop: 1,
+  },
+  distanciaNumero: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: cores.texto,
+    fontVariant: ['tabular-nums'],
+  },
+  identificacaoRow: {
+    flexDirection: 'row',
+    gap: espaco.md,
+    padding: espaco.lg,
+    alignItems: 'flex-start',
+  },
+  fachadaPlaceholder: {
+    width: 64,
+    height: 64,
+    borderRadius: raioUI.md,
+    backgroundColor: neutro[200],
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 1,
+  },
+  fachadaPlaceholderTexto: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: cores.textoTerciario,
+  },
+  identificacaoTextos: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  fantasia: {
+    ...tipografia.tituloGrande,
+    color: cores.texto,
+  },
+  endereco: {
+    fontSize: 13,
+    color: cores.textoSecundario,
+  },
+  contexto: {
+    fontSize: 12,
+    color: cores.textoTerciario,
+  },
+  atalhosRow: {
+    flexDirection: 'row',
+    gap: espaco.sm,
+    paddingHorizontal: espaco.lg,
+  },
+  atalhoBotao: {
+    flex: 1,
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    borderRadius: raioUI.md,
+    backgroundColor: cores.fundoCard,
+  },
+  itemPressionado: {
+    backgroundColor: neutro[100],
+  },
+  atalhoTexto: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: neutro[700],
+  },
+  osCardWrap: {
+    paddingHorizontal: espaco.lg,
+    paddingTop: espaco.lg,
+  },
+  osCard: {
+    borderRadius: raioUI.lg,
     backgroundColor: cores.primariaClara,
     borderWidth: 1,
     borderColor: cores.primariaBorda,
-    borderRadius: raioUI.md,
     padding: espaco.md,
-    marginBottom: espaco.lg,
-    gap: 2,
+    gap: espaco.sm,
   },
   osTopo: {
     flexDirection: 'row',
@@ -347,82 +808,118 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: espaco.sm,
   },
-  osTitulo: {
-    ...tipografia.rotulo,
+  osRotulo: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
     color: cores.primariaEscura,
+  },
+  osTagsLinha: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  osTagAlta: {
+    backgroundColor: cores.erroFundo,
+    borderRadius: raioUI.sm,
+    paddingHorizontal: espaco.sm,
+    paddingVertical: 2,
+  },
+  osTagAltaTexto: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: cores.erro,
   },
   osTag: {
     borderRadius: raioUI.sm,
     paddingHorizontal: espaco.sm,
-    paddingVertical: 3,
+    paddingVertical: 2,
   },
   osTagTexto: {
     color: cores.onPrimaria,
     fontSize: 11,
     fontWeight: '700',
   },
-  osTexto: {
-    fontSize: 13,
-    color: cores.primariaEscura,
-  },
-  osPrioridade: {
-    fontSize: 12,
+  osTitulo: {
+    fontSize: 16,
     fontWeight: '700',
-    color: cores.erro,
+    color: indigo[900],
   },
-  identificacaoRow: {
+  osGrade: {
     flexDirection: 'row',
-    gap: espaco.md,
+    gap: espaco.sm,
   },
-  fachadaThumb: {
-    width: 72,
-    height: 72,
-    borderRadius: raioUI.md,
-    backgroundColor: neutro[200],
-  },
-  identificacaoTexto: {
+  osGradeCelula: {
     flex: 1,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raioUI.sm,
+    padding: espaco.sm,
+    gap: 1,
   },
-  fantasia: {
-    ...tipografia.titulo,
+  osGradeRotulo: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: cores.textoSecundario,
+  },
+  osGradeValor: {
+    fontSize: 13,
+    fontWeight: '700',
     color: cores.texto,
   },
-  endereco: {
-    fontSize: 14,
-    color: cores.textoSecundario,
-    marginTop: 4,
+  osTexto: {
+    fontSize: 13,
+    color: indigo[700],
   },
-  contexto: {
-    fontSize: 12,
-    color: cores.textoTerciario,
-    marginTop: 4,
+  segmentadoWrap: {
+    padding: espaco.lg,
+    paddingBottom: espaco.md,
   },
-  badgeContrato: {
+  segmentado: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    alignSelf: 'flex-start',
-    backgroundColor: cores.primariaClara,
+    backgroundColor: neutro[100],
+    borderRadius: raioUI.md,
+    padding: 3,
+  },
+  segmento: {
+    flex: 1,
+    height: 38,
     borderRadius: raioUI.sm,
-    paddingHorizontal: espaco.sm,
-    paddingVertical: 2,
-    marginTop: espaco.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  badgeContratoTexto: {
-    color: cores.primariaEscura,
-    fontSize: 11,
+  segmentoAtivo: {
+    backgroundColor: cores.fundoCard,
+    ...sombraCard,
+  },
+  segmentoTexto: {
+    fontSize: 14,
     fontWeight: '700',
+    color: cores.textoSecundario,
   },
-  distancia: {
-    fontSize: 15,
-    fontWeight: '600',
-    marginTop: espaco.lg,
+  segmentoTextoAtivo: {
+    color: cores.texto,
   },
-  distanciaDentro: {
-    color: cores.sucesso,
+  acoesCompromissoWrap: {
+    paddingHorizontal: espaco.lg,
+    paddingBottom: espaco.xl,
   },
-  distanciaFora: {
-    color: cores.acentoTexto,
+  rodapeCheckin: {
+    backgroundColor: cores.fundoCard,
+    borderTopWidth: 1,
+    borderTopColor: cores.divisor,
+    padding: espaco.lg,
+    gap: espaco.sm,
+  },
+  avisoForaRaio: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: espaco.sm,
+  },
+  avisoForaRaioTexto: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+    color: amber[700],
   },
   erroBox: {
     backgroundColor: cores.erroFundo,
@@ -430,7 +927,6 @@ const styles = StyleSheet.create({
     borderColor: cores.erroBorda,
     borderRadius: raioUI.md,
     padding: espaco.md,
-    marginTop: espaco.lg,
   },
   erroTexto: {
     color: cores.erro,
@@ -441,13 +937,19 @@ const styles = StyleSheet.create({
     gap: espaco.sm,
     backgroundColor: cores.primaria,
     borderRadius: raioUI.md,
-    minHeight: 52,
+    minHeight: 56,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: espaco.xl,
-    ...sombraFlutuante,
+    ...sombraCard,
     shadowColor: cores.primaria,
     shadowOpacity: 0.3,
+  },
+  botaoPrimarioFora: {
+    backgroundColor: cores.fundoCard,
+    borderWidth: 1.5,
+    borderColor: cores.primariaBorda,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   botaoPressionado: {
     opacity: 0.85,

@@ -79,6 +79,16 @@ export async function buscarCancelamentoVisitaPermitido(): Promise<boolean> {
   return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
 }
 
+// Se o vendedor pode tirar Pedido de Venda fora de uma visita — ver
+// App\Support\PedidoVendaSemVisita. Ausente/inativo = false: pedido só dentro da visita em
+// andamento. Só controla o que o app oferece; quem barra de verdade é o backend.
+export async function buscarPedidoSemVisitaPermitido(): Promise<boolean> {
+  const parametros = await buscarParametros();
+  const parametro = parametros.find((p) => p.chave === 'PEDIDO_VENDA_SEM_VISITA_PERMITIDO');
+  if (!parametro || !parametro.ativo) return false;
+  return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
+}
+
 async function lerAutonomia(chave: string, valorPadrao: AutonomiaPromotor): Promise<AutonomiaPromotor> {
   const parametros = await buscarParametros();
   const parametro = parametros.find((p) => p.chave === chave);

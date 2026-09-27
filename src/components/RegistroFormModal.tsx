@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -5,6 +6,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Pressable,
@@ -14,12 +16,15 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconeTipoRegistro } from './IconeTipoRegistro';
 import { buscarSortimentoCampo, type ProdutoSortimento } from '../lib/api/campoSortimento';
 import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
 import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } from '../lib/db/filaRegistros';
+import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type RascunhosColeta } from '../lib/db/rascunhosColeta';
+import { mascararMoeda, moedaParaApi } from '../lib/mascaraMoeda';
 import type { CampoTipoRegistro, CatalogoItem, ProdutoDisponivel, TipoRegistro, TipoVinculoRegistro } from '../types/api';
-import { cores, espaco, indigo, neutro, raio, sombraCard, sombraFlutuante } from '../theme';
+import { cores, espaco, indigo, neutro, raio, sombraCard, tipografia } from '../theme';
 
 /** Valor de um campo SORTIMENTO em valores_campos — sempre um JSON deste shape, ver decisão 3 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. */
 export interface EstadoSortimento {
@@ -50,6 +55,12 @@ export interface RegistroFormResultado {
   // pra abrir a tela de confirmação de ruptura DEPOIS que este registro for salvo. Vazio/ausente
   // quando não há nenhum campo assim neste tipo, ou nenhum produto ficou marcado ausente.
   produtosAusentesConfirmaveis?: { produtoUuid: string; descricao: string }[];
+  // Nome do produto vinculado — pro registro na fila local mostrar o nome mesmo offline (produto
+  // da lista predefinida pode nem estar no mix da loja, então não dá pra achar por lá).
+  produtoDescricao?: string;
+  // Coleta guiada por lista de produtos: depois de salvar, o modal volta pra lista em vez de
+  // fechar — o pai não deve fechar o modal no sucesso.
+  permanecerAberto?: boolean;
 }
 
 interface RegistroFormModalProps {
@@ -69,7 +80,14 @@ interface RegistroFormModalProps {
   enviando: boolean;
   erro: string | null;
   onClose: () => void;
-  onSubmit: (payload: RegistroFormResultado) => void;
+  // Pode devolver uma Promise — a coleta guiada (lista de produtos) espera o registro salvar pra
+  // só então voltar pra lista, sem perder o que foi digitado se der erro.
+  onSubmit: (payload: RegistroFormResultado) => void | Promise<unknown>;
+  // Produtos já coletados NESTA visita pra um tipo de registro — alimenta o check verde da
+  // coleta guiada. Sem isso, todos aparecem como pendentes.
+  produtosColetados?: (tipoRegistroUuid: string) => ReadonlySet<string>;
+  // Visita local — chave do rascunho da coleta guiada (lib/db/rascunhosColeta.ts).
+  visitaLocalId?: string;
 }
 
 type Categoria = Extract<TipoVinculoRegistro, 'PRODUTO' | 'SECAO' | 'DEPARTAMENTO' | 'MARCA'>;
@@ -95,7 +113,10 @@ export function RegistroFormModal({
   erro,
   onClose,
   onSubmit,
+  produtosColetados,
+  visitaLocalId,
 }: RegistroFormModalProps) {
+  const insets = useSafeAreaInsets();
   const [tipo, setTipo] = useState<TipoRegistro | null>(null);
   const [valoresCampos, setValoresCampos] = useState<Record<string, string>>({});
   // Descrição de cada produto resolvido pelos campos SORTIMENTO deste formulário (chaveado por
@@ -107,6 +128,15 @@ export function RegistroFormModal({
   const [vinculo, setVinculo] = useState<{ categoria: Categoria; uuid: string; label: string } | null>(null);
   const [categoriaAberta, setCategoriaAberta] = useState<Categoria | null>(null);
   const [erroLocal, setErroLocal] = useState<string | null>(null);
+  // Coleta guiada: produto da lista predefinida que está sendo respondido agora (null = na lista).
+  const [produtoLista, setProdutoLista] = useState<{ uuid: string; descricao: string } | null>(null);
+  // Rascunho da coleta guiada — produto por produto, só vira registro no "Salvar" final da lista.
+  const [rascunhos, setRascunhos] = useState<RascunhosColeta>({});
+  const [salvandoColeta, setSalvandoColeta] = useState(false);
+  const [erroColeta, setErroColeta] = useState<string | null>(null);
+  // Fotos que já pertencem ao rascunho do produto aberto — nunca apagar o arquivo delas por causa
+  // de uma edição abandonada (voltar/fechar sem salvar), só quando o rascunho deixar de usá-las.
+  const imagensDoRascunhoRef = useRef<string[]>([]);
   // Acompanha o valor mais recente de imagensUri e se o registro chegou a ser de fato submetido
   // — usados só pelo efeito de limpeza abaixo (não dá pra ler estado direto de dentro dele sem
   // recriar o efeito a cada tecla).
@@ -129,13 +159,14 @@ export function RegistroFormModal({
       setVinculo(null);
       setCategoriaAberta(null);
       setErroLocal(null);
-    } else if (!submetidoRef.current && imagensUriRef.current.length > 0) {
+      setProdutoLista(null);
+    } else if (!submetidoRef.current && imagensUriRef.current.some((uri) => !imagensDoRascunhoRef.current.includes(uri))) {
       // Modal fechado sem confirmar (botão Fechar, back do Android, ou o pai desmontou por
       // outro motivo) com fotos já copiadas pro armazenamento persistente (ver capturarFoto) —
       // sem essa limpeza, os arquivos ficavam no disco pra sempre, sem nenhum registro apontando
       // pra eles.
       for (const uri of imagensUriRef.current) {
-        void apagarImagemPersistente(uri);
+        if (!imagensDoRascunhoRef.current.includes(uri)) void apagarImagemPersistente(uri);
       }
     }
   }, [visible, tipoFixo]);
@@ -177,30 +208,21 @@ export function RegistroFormModal({
     setValoresCampos((atual) => ({ ...atual, [chave]: valor }));
   }
 
-  async function capturarFoto(origem: 'camera' | 'galeria') {
-    const permissao =
-      origem === 'camera'
-        ? await ImagePicker.requestCameraPermissionsAsync()
-        : await ImagePicker.requestMediaLibraryPermissionsAsync();
+  // Foto de registro é evidência de campo: só câmera, na hora — nunca da galeria (uma foto
+  // antiga/de outra loja passaria como coleta de agora). A foto de perfil (PerfilScreen) é outra
+  // coisa e continua aceitando galeria.
+  async function capturarFoto() {
+    const permissao = await ImagePicker.requestCameraPermissionsAsync();
 
     if (permissao.status !== 'granted') {
-      Alert.alert(
-        'Permissão necessária',
-        origem === 'camera'
-          ? 'Ative a permissão de câmera nas configurações do sistema pra tirar fotos.'
-          : 'Ative a permissão de fotos nas configurações do sistema pra escolher da galeria.',
-        [
-          { text: 'Agora não', style: 'cancel' },
-          { text: 'Abrir configurações', onPress: () => void Linking.openSettings() },
-        ],
-      );
+      Alert.alert('Permissão necessária', 'Ative a permissão de câmera nas configurações do sistema pra tirar fotos.', [
+        { text: 'Agora não', style: 'cancel' },
+        { text: 'Abrir configurações', onPress: () => void Linking.openSettings() },
+      ]);
       return;
     }
 
-    const resultado =
-      origem === 'camera'
-        ? await ImagePicker.launchCameraAsync({ quality: 0.7 })
-        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: 'images', quality: 0.7 });
+    const resultado = await ImagePicker.launchCameraAsync({ quality: 0.7 });
 
     if (resultado.canceled) return;
     const asset = resultado.assets[0];
@@ -221,18 +243,10 @@ export function RegistroFormModal({
 
   function removerFoto(indice: number) {
     const uri = imagensUri[indice];
-    if (uri) {
+    if (uri && !imagensDoRascunhoRef.current.includes(uri)) {
       void apagarImagemPersistente(uri);
     }
     setImagensUri((atual) => atual.filter((_, i) => i !== indice));
-  }
-
-  function escolherOrigemFoto() {
-    Alert.alert('Foto do registro', 'Como você quer registrar?', [
-      { text: 'Cancelar', style: 'cancel' },
-      { text: 'Tirar foto', onPress: () => void capturarFoto('camera') },
-      { text: 'Escolher da galeria', onPress: () => void capturarFoto('galeria') },
-    ]);
   }
 
   // Ver App\Support\GranularidadeChecklist no backend e
@@ -242,7 +256,27 @@ export function RegistroFormModal({
   // isso sozinho (já é um produto específico). O backend é a autoridade final — isto aqui só
   // evita o promotor escolher um caminho que já sabe que vai ser rejeitado; exceções por seção
   // só são checadas no servidor.
-  const exigeProduto = !produtoContexto && tipo?.granularidade_padrao === 'PRODUTO';
+  // Formulário com lista predefinida de produtos (admin) → coleta guiada: o modal abre numa lista
+  // com o status de cada produto (coletado nesta visita ou não), e cada toque abre as perguntas
+  // já amarradas àquele produto. Ver docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md.
+  const modoLista =
+    !!tipo && !produtoContexto && tipo.granularidade_padrao === 'PRODUTO' && (tipo.produtos_predefinidos?.length ?? 0) > 0;
+  const produtoEfetivo = produtoContexto ?? produtoLista;
+
+  useEffect(() => {
+    if (!visible || !modoLista || !tipo || !visitaLocalId) return;
+    let cancelado = false;
+    setErroColeta(null);
+    void lerRascunhosColeta(visitaLocalId, tipo.id)
+      .then((r) => {
+        if (!cancelado) setRascunhos(r);
+      })
+      .catch(() => {});
+    return () => {
+      cancelado = true;
+    };
+  }, [visible, modoLista, tipo, visitaLocalId]);
+  const exigeProduto = !produtoEfetivo && tipo?.granularidade_padrao === 'PRODUTO';
   const categoriasDisponiveis = exigeProduto ? CATEGORIAS.filter((c) => c.valor === 'PRODUTO') : CATEGORIAS;
 
   function validar(): string | null {
@@ -251,16 +285,139 @@ export function RegistroFormModal({
     if (exigeProduto && vinculo?.categoria !== 'PRODUTO') {
       return `O tipo "${tipo.descricao}" exige vincular um produto específico.`;
     }
-    for (const campo of camposVisiveis) {
+    // Produto em ruptura: não tem o que coletar — as perguntas somem e não são exigidas (o backend
+    // aplica a mesma regra, ver StoreVisitaRegistroRequest). Foto obrigatória continua valendo.
+    for (const campo of ruptura ? [] : camposVisiveis) {
       const valor = valoresCampos[campo.chave];
       if (campo.obrigatorio && (!valor || valor.trim() === '')) {
         return `O campo "${campo.rotulo}" é obrigatório.`;
       }
-      if (campo.tipo_campo === 'DATA' && valor && !/^\d{2}\/\d{2}\/\d{4}$/.test(valor)) {
-        return `O campo "${campo.rotulo}" precisa de uma data completa (dd/mm/aaaa).`;
+      if (campo.tipo_campo === 'DATA' && valor) {
+        if (!dataValida(valor)) {
+          return `O campo "${campo.rotulo}" precisa de uma data válida (dd/mm/aaaa).`;
+        }
+        if (campo.limite_dias_retroativos !== null && !dentroDoLimiteRetroativo(valor, campo.limite_dias_retroativos)) {
+          return `O campo "${campo.rotulo}" não aceita uma data anterior a ${campo.limite_dias_retroativos} dia(s) atrás.`;
+        }
       }
     }
     return null;
+  }
+
+  // Limpa o formulário (sem fechar o modal) — ao trocar de produto na coleta guiada.
+  function limparFormulario() {
+    submetidoRef.current = false;
+    setValoresCampos({});
+    setProdutosSortimentoPorUuid({});
+    setImagensUri([]);
+    setRuptura(false);
+    setVinculo(null);
+    setCategoriaAberta(null);
+    setErroLocal(null);
+  }
+
+  function abrirProdutoDaLista(produto: { uuid: string; descricao: string }) {
+    if (tipo && produtosColetados?.(tipo.id).has(produto.uuid)) {
+      Alert.alert('Já enviado', `"${produto.descricao}" já foi salvo e enviado nesta visita.`);
+      return;
+    }
+    limparFormulario();
+    // Já preenchido antes → abre com o que foi digitado; salvar de novo só atualiza o rascunho.
+    const r = rascunhos[produto.uuid];
+    if (r) {
+      setValoresCampos(r.valoresCampos);
+      setImagensUri(r.imagensUri);
+      setRuptura(r.ruptura);
+      imagensDoRascunhoRef.current = r.imagensUri;
+    }
+    setProdutoLista(produto);
+  }
+
+  // Voltar pra lista sem salvar descarta as fotos já copiadas (mesmo raciocínio da limpeza ao
+  // fechar o modal sem confirmar).
+  function voltarParaLista() {
+    for (const uri of imagensUri) {
+      if (!imagensDoRascunhoRef.current.includes(uri)) void apagarImagemPersistente(uri);
+    }
+    imagensDoRascunhoRef.current = [];
+    limparFormulario();
+    setProdutoLista(null);
+  }
+
+  // NUMERO/MOEDA → formato da API; só as perguntas VISÍVEIS pra esses valores (condicionais).
+  function normalizarValores(valores: Record<string, string>): Record<string, string> {
+    const normalizados: Record<string, string> = {};
+    for (const campo of camposOrdenados) {
+      if (campo.depende_de_chave && valores[campo.depende_de_chave] !== campo.depende_de_valor) continue;
+      const valor = valores[campo.chave];
+      if (valor === undefined || valor === '') continue;
+      normalizados[campo.chave] =
+        campo.tipo_campo === 'MOEDA' ? moedaParaApi(valor) : campo.tipo_campo === 'NUMERO' ? valor.replace(',', '.') : valor;
+    }
+    return normalizados;
+  }
+
+  // Coleta guiada: "Salvar produto" só guarda o rascunho (SQLite) e volta pra lista.
+  async function salvarRascunhoProduto() {
+    if (!tipo || !produtoLista || !visitaLocalId) return;
+    const anterior = rascunhos[produtoLista.uuid];
+    const novo: RascunhoProduto = { descricao: produtoLista.descricao, valoresCampos, imagensUri, ruptura };
+    const atualizados = { ...rascunhos, [produtoLista.uuid]: novo };
+    try {
+      await salvarRascunhosColeta(visitaLocalId, tipo.id, atualizados);
+    } catch {
+      setErroLocal('Não foi possível guardar neste aparelho. Tente de novo.');
+      return;
+    }
+    // Foto que estava no rascunho e foi tirada nesta edição: agora sim o arquivo pode ir embora.
+    for (const uri of anterior?.imagensUri ?? []) {
+      if (!imagensUri.includes(uri)) void apagarImagemPersistente(uri);
+    }
+    setRascunhos(atualizados);
+    imagensDoRascunhoRef.current = [];
+    limparFormulario();
+    setProdutoLista(null);
+  }
+
+  // "Salvar" do fim da lista: cada produto preenchido vira um registro na fila (que envia pro
+  // servidor). Um por vez, tirando do rascunho a cada sucesso — se algo falhar no meio, o que já
+  // foi continua enviado e o resto fica no rascunho pra tentar de novo, sem duplicar nada.
+  async function salvarColeta() {
+    if (!tipo || !visitaLocalId) return;
+    const lista = tipo.produtos_predefinidos ?? [];
+    const jaEnviados = produtosColetados?.(tipo.id) ?? new Set<string>();
+    const pendentes = lista.filter((p) => !jaEnviados.has(p.id) && rascunhos[p.id]);
+
+    setSalvandoColeta(true);
+    setErroColeta(null);
+    let restantes = { ...rascunhos };
+    try {
+      for (const produto of pendentes) {
+        const r = restantes[produto.id];
+        const valores = r.ruptura ? {} : normalizarValores(r.valoresCampos);
+        await Promise.resolve(
+          onSubmit({
+            tipoRegistroUuid: tipo.id,
+            imagensUri: r.imagensUri.length > 0 ? r.imagensUri : undefined,
+            produtoAuditoriaUuid: produto.id,
+            tipoVinculo: 'PRODUTO',
+            produtoDescricao: r.descricao,
+            permanecerAberto: true,
+            valoresCampos: Object.keys(valores).length > 0 ? valores : undefined,
+            ruptura: r.ruptura || undefined,
+          }),
+        );
+        const { [produto.id]: _enviado, ...resto } = restantes;
+        restantes = resto;
+        await salvarRascunhosColeta(visitaLocalId, tipo.id, restantes);
+        setRascunhos(restantes);
+      }
+      onClose();
+    } catch {
+      setErroColeta('Não foi possível salvar tudo. O que faltou continua guardado — toque em Salvar de novo.');
+    } finally {
+      setSalvandoColeta(false);
+    }
   }
 
   function confirmar() {
@@ -272,23 +429,29 @@ export function RegistroFormModal({
     setErroLocal(null);
     if (!tipo) return;
 
+    if (modoLista && produtoLista) {
+      void salvarRascunhoProduto();
+      return;
+    }
+
     // NUMERO/MOEDA vêm de teclado decimal — normaliza vírgula pra ponto antes de enviar
     // (a API valida com is_numeric, que não aceita "1,5"). Só os campos VISÍVEIS agora — uma
     // resposta escondida por uma condição não satisfeita nunca deveria ter sido dada (o backend
     // descartaria mesmo assim, ver StoreVisitaRegistroRequest, mas nem faz sentido mandar).
     const valoresNormalizados: Record<string, string> = {};
-    for (const campo of camposVisiveis) {
+    for (const campo of ruptura ? [] : camposVisiveis) {
       const valor = valoresCampos[campo.chave];
       if (valor === undefined || valor === '') continue;
+      // MOEDA vem mascarado ("1.234,56") — tira o milhar antes de trocar a vírgula.
       valoresNormalizados[campo.chave] =
-        campo.tipo_campo === 'NUMERO' || campo.tipo_campo === 'MOEDA' ? valor.replace(',', '.') : valor;
+        campo.tipo_campo === 'MOEDA' ? moedaParaApi(valor) : campo.tipo_campo === 'NUMERO' ? valor.replace(',', '.') : valor;
     }
 
     // Produtos marcados ausentes em campos SORTIMENTO com confirmar_ruptura_ausentes=true —
     // decisão 4 do doc 20. O pai decide o que fazer com isso (abrir a tela de confirmação) só
     // DEPOIS que este registro salvar com sucesso.
     const produtosAusentesConfirmaveis: { produtoUuid: string; descricao: string }[] = [];
-    for (const campo of camposVisiveis) {
+    for (const campo of ruptura ? [] : camposVisiveis) {
       if (campo.tipo_campo !== 'SORTIMENTO' || !campo.confirmar_ruptura_ausentes) continue;
       const valor = valoresCampos[campo.chave];
       if (!valor) continue;
@@ -303,11 +466,13 @@ export function RegistroFormModal({
     // verdade, mesmo que o mutation ainda esteja pendente quando o modal for fechado.
     submetidoRef.current = true;
 
-    onSubmit({
+    const resultado = onSubmit({
       tipoRegistroUuid: tipo.id,
       imagensUri: imagensUri.length > 0 ? imagensUri : undefined,
-      produtoAuditoriaUuid: produtoContexto?.uuid ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.uuid : undefined),
-      tipoVinculo: !produtoContexto && vinculo ? vinculo.categoria : undefined,
+      produtoAuditoriaUuid: produtoEfetivo?.uuid ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.uuid : undefined),
+      tipoVinculo: produtoLista ? 'PRODUTO' : !produtoContexto && vinculo ? vinculo.categoria : undefined,
+      produtoDescricao: produtoEfetivo?.descricao ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.label : undefined),
+      permanecerAberto: modoLista || undefined,
       secaoUuid: vinculo?.categoria === 'SECAO' ? vinculo.uuid : undefined,
       departamentoUuid: vinculo?.categoria === 'DEPARTAMENTO' ? vinculo.uuid : undefined,
       marcaUuid: vinculo?.categoria === 'MARCA' ? vinculo.uuid : undefined,
@@ -316,10 +481,30 @@ export function RegistroFormModal({
       ruptura: ruptura || undefined,
       produtosAusentesConfirmaveis: produtosAusentesConfirmaveis.length > 0 ? produtosAusentesConfirmaveis : undefined,
     });
+
+    // Sempre trata a promise (o pai pode passar mutateAsync, que rejeita no erro — promise
+    // rejeitada sem handler derruba o app em produção). Coleta guiada: salvou → volta pra lista (o
+    // check verde vem de produtosColetados). Deu erro → fica no formulário com o que foi digitado;
+    // o pai mostra a mensagem em `erro`, e a foto volta a ser "não enviada" pra limpeza ao fechar.
+    void Promise.resolve(resultado).then(
+      () => {
+        if (!modoLista) return;
+        limparFormulario();
+        setProdutoLista(null);
+      },
+      () => {
+        submetidoRef.current = false;
+      },
+    );
   }
 
   function itensDaCategoria(categoria: Categoria): { uuid: string; label: string }[] {
     if (categoria === 'PRODUTO') {
+      // Formulário com lista predefinida (admin) — só esses produtos, em qualquer loja, estejam no
+      // mix dela ou não (ex.: pesquisa de preço de concorrente). Sem lista: mix/campanha da visita.
+      if (exigeProduto && tipo?.produtos_predefinidos?.length) {
+        return tipo.produtos_predefinidos.map((p) => ({ uuid: p.id, label: p.descricao }));
+      }
       return produtosDisponiveis.map((p) => ({ uuid: p.produto_uuid, label: p.descricao }));
     }
     if (categoria === 'SECAO') return (secoesQuery.data ?? []).map(mapCatalogoItem);
@@ -332,84 +517,116 @@ export function RegistroFormModal({
     (categoriaAberta === 'DEPARTAMENTO' && departamentosQuery.isLoading) ||
     (categoriaAberta === 'MARCA' && marcasQuery.isLoading);
 
+  const fotoObrigatoriaFaltando = !!tipo?.exige_foto && imagensUri.length === 0;
+
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={styles.container}>
-        <View style={styles.cabecalho}>
-          {tipo && !tipoFixo ? (
-            <Pressable onPress={() => setTipo(null)} hitSlop={12}>
-              <Text style={styles.cabecalhoAcao}>‹ Voltar</Text>
-            </Pressable>
-          ) : (
-            <View style={styles.cabecalhoAcaoEspaco} />
-          )}
-          <View style={styles.cabecalhoTituloLinha}>
-            {tipo?.icone && <IconeTipoRegistro icone={tipo.icone} size={18} />}
-            <Text style={styles.cabecalhoTitulo} numberOfLines={1}>
-              {tipo ? tipo.descricao : 'Tipo de registro'}
-            </Text>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.backdropContainer} behavior="padding">
+        <Pressable style={styles.backdrop} onPress={onClose} />
+        <View style={styles.sheet}>
+          <View style={styles.alcaWrap}>
+            <View style={styles.alca} />
           </View>
-          <Pressable onPress={onClose} hitSlop={12}>
-            <Text style={styles.cabecalhoAcao}>Fechar</Text>
-          </Pressable>
-        </View>
-
-        {!tipo && (
-          <ScrollView contentContainerStyle={styles.lista}>
-            {produtoContexto && <Text style={styles.contextoTexto}>Registro para: {produtoContexto.descricao}</Text>}
-            {tiposRegistro.length === 0 && (
-              <Text style={styles.vazioTexto}>Nenhum tipo de registro disponível.</Text>
-            )}
-            {tiposRegistro.map((t) => (
-              <Pressable
-                key={t.id}
-                style={({ pressed }) => [styles.tipoCard, pressed && styles.itemPressionado]}
-                onPress={() => setTipo(t)}
-              >
-                <View style={styles.tipoCardConteudo}>
-                  <IconeTipoRegistro icone={t.icone} />
-                  <View style={styles.tipoTextos}>
-                    <Text style={styles.tipoNome}>{t.descricao}</Text>
-                    {t.exige_foto && <Text style={styles.tipoDetalhe}>Exige foto</Text>}
-                  </View>
-                </View>
+          <View style={styles.cabecalho}>
+            {produtoLista ? (
+              <Pressable onPress={voltarParaLista} hitSlop={12} style={styles.cabecalhoIconeBotao}>
+                <MaterialCommunityIcons name="chevron-left" size={24} color={cores.primaria} />
               </Pressable>
-            ))}
-          </ScrollView>
-        )}
-
-        {tipo && (
-          <>
-            <ScrollView contentContainerStyle={styles.lista}>
-              {produtoContexto && <Text style={styles.contextoTexto}>Registro para: {produtoContexto.descricao}</Text>}
-
-              <View style={styles.secaoForm}>
-                <Text style={styles.secaoLabel}>
-                  Fotos {tipo.exige_foto ? '(pelo menos 1)' : '(opcional)'}
+            ) : tipo && !tipoFixo ? (
+              <Pressable onPress={() => setTipo(null)} hitSlop={12} style={styles.cabecalhoIconeBotao}>
+                <MaterialCommunityIcons name="chevron-left" size={24} color={cores.primaria} />
+              </Pressable>
+            ) : (
+              <View style={styles.cabecalhoIconeCirculo}>
+                {tipo?.icone ? (
+                  <IconeTipoRegistro icone={tipo.icone} size={18} color={cores.primaria} />
+                ) : (
+                  <MaterialCommunityIcons name="plus" size={18} color={cores.primaria} />
+                )}
+              </View>
+            )}
+            <View style={styles.cabecalhoTextos}>
+              <Text style={styles.cabecalhoTitulo} numberOfLines={1}>
+                {tipo ? tipo.descricao : 'Tipo de registro'}
+              </Text>
+              {!!produtoEfetivo && (
+                <Text style={styles.cabecalhoSubtitulo} numberOfLines={1}>
+                  {produtoEfetivo.descricao}
                 </Text>
-                {imagensUri.length > 0 && (
-                  <ScrollView horizontal contentContainerStyle={styles.fotosLinha} showsHorizontalScrollIndicator={false}>
+              )}
+            </View>
+            <Pressable onPress={onClose} hitSlop={12} style={styles.cabecalhoFecharBotao}>
+              <MaterialCommunityIcons name="close" size={16} color={neutro[700]} />
+            </Pressable>
+          </View>
+
+          {!tipo && (
+            <ScrollView contentContainerStyle={[styles.lista, { paddingBottom: espaco.lg + insets.bottom }]}>
+              {produtoContexto && <Text style={styles.contextoTexto}>Registro para: {produtoContexto.descricao}</Text>}
+              {tiposRegistro.length === 0 && (
+                <Text style={styles.vazioTexto}>Nenhum tipo de registro disponível.</Text>
+              )}
+              {tiposRegistro.map((t) => (
+                <Pressable
+                  key={t.id}
+                  style={({ pressed }) => [styles.tipoCard, pressed && styles.itemPressionado]}
+                  onPress={() => setTipo(t)}
+                >
+                  <View style={styles.tipoCardConteudo}>
+                    <IconeTipoRegistro icone={t.icone} />
+                    <View style={styles.tipoTextos}>
+                      <Text style={styles.tipoNome}>{t.descricao}</Text>
+                      {t.exige_foto && <Text style={styles.tipoDetalhe}>Exige foto</Text>}
+                    </View>
+                  </View>
+                </Pressable>
+              ))}
+            </ScrollView>
+          )}
+
+          {tipo && modoLista && !produtoLista && (
+            <ListaProdutosColeta
+              produtos={tipo.produtos_predefinidos ?? []}
+              enviados={produtosColetados?.(tipo.id) ?? new Set<string>()}
+              preenchidos={new Set(Object.keys(rascunhos))}
+              paddingInferior={espaco.lg + insets.bottom}
+              salvando={salvandoColeta}
+              erro={erroColeta}
+              onAbrir={abrirProdutoDaLista}
+              onSalvar={() => void salvarColeta()}
+            />
+          )}
+
+          {tipo && !(modoLista && !produtoLista) && (
+            <>
+              <ScrollView contentContainerStyle={styles.lista}>
+                <View style={styles.secaoForm}>
+                  <Text style={styles.secaoLabel}>
+                    Fotos <Text style={styles.secaoLabelFraco}>· {imagensUri.length > 0 ? `${imagensUri.length} adicionada${imagensUri.length > 1 ? 's' : ''}` : tipo.exige_foto ? 'obrigatória' : 'opcional'}</Text>
+                  </Text>
+                  <View style={styles.fotosGrade}>
+                    <Pressable
+                      style={({ pressed }) => [styles.fotoTileCamera, pressed && { backgroundColor: indigo[100] }]}
+                      onPress={() => void capturarFoto()}
+                    >
+                      <MaterialCommunityIcons name="camera-plus-outline" size={22} color={cores.primaria} />
+                      <Text style={styles.fotoTileCameraTexto}>Câmera</Text>
+                    </Pressable>
                     {imagensUri.map((uri, indice) => (
-                      <View key={uri} style={styles.fotoPreviewBox}>
-                        <Image source={{ uri }} style={styles.fotoPreview} />
-                        <Pressable onPress={() => removerFoto(indice)}>
-                          <Text style={styles.linkRemover}>Remover</Text>
+                      <View key={uri} style={styles.fotoTile}>
+                        <Image source={{ uri }} style={styles.fotoTileImagem} />
+                        <Pressable onPress={() => removerFoto(indice)} hitSlop={8} style={styles.fotoTileRemover}>
+                          <MaterialCommunityIcons name="close" size={11} color={cores.branco} />
                         </Pressable>
                       </View>
                     ))}
-                  </ScrollView>
-                )}
-                <Pressable
-                  style={({ pressed }) => [styles.botaoSecundario, pressed && styles.itemPressionado]}
-                  onPress={escolherOrigemFoto}
-                >
-                  <Text style={styles.botaoSecundarioTexto}>
-                    {imagensUri.length > 0 ? 'Adicionar mais uma foto' : 'Adicionar foto'}
-                  </Text>
-                </Pressable>
-              </View>
+                  </View>
+                </View>
 
-              {camposVisiveis.map((campo) => (
+                {ruptura && camposVisiveis.length > 0 && (
+                  <Text style={styles.contextoTexto}>Produto em ruptura — não precisa responder as perguntas.</Text>
+                )}
+                {!ruptura && camposVisiveis.map((campo) => (
                 <View key={campo.id} style={campo.depende_de_chave ? styles.campoCondicional : undefined}>
                   <CampoInput
                     campo={campo}
@@ -426,16 +643,20 @@ export function RegistroFormModal({
                 </View>
               ))}
 
-              <View style={styles.secaoForm}>
-                <Pressable style={styles.checkboxLinha} onPress={() => setRuptura((r) => !r)}>
-                  <View style={[styles.checkbox, ruptura && styles.checkboxMarcado]}>
-                    {ruptura && <Text style={styles.checkboxMarca}>✓</Text>}
-                  </View>
-                  <Text style={styles.secaoLabel}>Marcar como ruptura</Text>
-                </Pressable>
-              </View>
+              <Pressable
+                style={[styles.rupturaLinha, ruptura && styles.rupturaLinhaMarcada]}
+                onPress={() => setRuptura((r) => !r)}
+              >
+                <View style={styles.rupturaTextos}>
+                  <Text style={[styles.rupturaTitulo, ruptura && styles.rupturaTituloMarcado]}>Produto em ruptura</Text>
+                  <Text style={styles.rupturaSubtitulo}>Não encontrado na gôndola nem no depósito</Text>
+                </View>
+                <View style={[styles.toggleTrilho, ruptura && styles.toggleTrilhoLigado]}>
+                  <View style={[styles.toggleBola, ruptura && styles.toggleBolaLigada]} />
+                </View>
+              </Pressable>
 
-              {!produtoContexto && (tipo.permite_vincular_catalogo || exigeProduto) && (
+              {!produtoEfetivo && (tipo.permite_vincular_catalogo || exigeProduto) && (
                 <View style={styles.secaoForm}>
                   <Text style={styles.secaoLabel}>Vincular a {exigeProduto ? '(obrigatório)' : '(opcional)'}</Text>
                   <View style={styles.chipsLinha}>
@@ -487,23 +708,30 @@ export function RegistroFormModal({
               )}
             </ScrollView>
 
-            <View style={styles.rodape}>
+            <View style={[styles.rodape, { paddingBottom: espaco.lg + insets.bottom }]}>
               {(erroLocal ?? erro) && <Text style={styles.erroTexto}>{erroLocal ?? erro}</Text>}
               <Pressable
-                style={({ pressed }) => [styles.botaoPrimario, pressed && styles.itemPressionado]}
+                style={({ pressed }) => [
+                  styles.botaoPrimario,
+                  fotoObrigatoriaFaltando && styles.botaoPrimarioFraco,
+                  pressed && styles.itemPressionado,
+                ]}
                 onPress={confirmar}
                 disabled={enviando}
               >
                 {enviando ? (
                   <ActivityIndicator color={cores.branco} />
                 ) : (
-                  <Text style={styles.botaoPrimarioTexto}>Salvar registro</Text>
+                  <Text style={styles.botaoPrimarioTexto}>
+                    {fotoObrigatoriaFaltando ? 'Adicione uma foto' : produtoLista ? 'Salvar produto' : 'Salvar registro'}
+                  </Text>
                 )}
               </Pressable>
             </View>
           </>
         )}
-      </View>
+        </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -574,14 +802,7 @@ function CampoInput({
         </View>
       ) : campo.tipo_campo === 'DATA' ? (
         <>
-          <TextInput
-            style={[styles.input, situacao && styles.inputDataAlerta]}
-            value={valor}
-            onChangeText={(texto) => onChange(formatarDataDigitada(texto))}
-            keyboardType="number-pad"
-            placeholder="dd/mm/aaaa"
-            maxLength={10}
-          />
+          <CampoDataInput valor={valor} onChange={onChange} alerta={situacao !== null} />
           {situacao === 'vencida' && <Text style={styles.textoDataVencida}>Data já vencida.</Text>}
           {situacao === 'proxima' && <Text style={styles.textoDataProxima}>Vencimento próximo.</Text>}
         </>
@@ -589,8 +810,10 @@ function CampoInput({
         <TextInput
           style={styles.input}
           value={valor}
-          onChangeText={onChange}
-          keyboardType={campo.tipo_campo === 'NUMERO' || campo.tipo_campo === 'MOEDA' ? 'decimal-pad' : 'default'}
+          // Valor em R$: máscara de caixa registradora (só dígitos, a vírgula anda sozinha) — ver
+          // lib/mascaraMoeda.ts. Número segue livre (quantidade pode ser inteira ou quebrada).
+          onChangeText={campo.tipo_campo === 'MOEDA' ? (texto) => onChange(mascararMoeda(texto)) : onChange}
+          keyboardType={campo.tipo_campo === 'MOEDA' ? 'number-pad' : campo.tipo_campo === 'NUMERO' ? 'decimal-pad' : 'default'}
           placeholder={campo.tipo_campo === 'MOEDA' ? '0,00' : undefined}
         />
       )}
@@ -688,11 +911,80 @@ function CampoSortimentoInput({
 }
 
 /** Insere as barras automaticamente conforme o promotor digita — nunca um calendário nativo, ver docs/20-FORMULARIO-DINAMICO-CAMPANHA.md decisão 2. */
-function formatarDataDigitada(texto: string): string {
-  const digitos = texto.replace(/\D/g, '').slice(0, 8);
+const MASCARA_DATA = '__/__/____';
+// Posição de cada dígito dentro da máscara (pula as barras).
+const POSICOES_DIGITO_DATA = [0, 1, 3, 4, 6, 7, 8, 9];
+
+function formatarDataDigitada(digitos: string): string {
   if (digitos.length <= 2) return digitos;
   if (digitos.length <= 4) return `${digitos.slice(0, 2)}/${digitos.slice(2)}`;
   return `${digitos.slice(0, 2)}/${digitos.slice(2, 4)}/${digitos.slice(4)}`;
+}
+
+/** "120" → "12/0_/____" — o promotor vê o formato inteiro enquanto digita. */
+function aplicarMascaraData(digitos: string): string {
+  const chars = MASCARA_DATA.split('');
+  digitos.split('').forEach((d, i) => {
+    chars[POSICOES_DIGITO_DATA[i]] = d;
+  });
+  return chars.join('');
+}
+
+/**
+ * Campo DATA com máscara visível __/__/____ (dd/mm/aaaa). O valor guardado continua sendo só o
+ * que foi digitado ("12/0", "12/03/2026") — os "_" são apenas exibição, então validar/situacaoData
+ * não mudam. O cursor fica preso logo depois do último dígito: backspace apaga dígito, nunca "_".
+ */
+function CampoDataInput({ valor, onChange, alerta }: { valor: string; onChange: (valor: string) => void; alerta: boolean }) {
+  const [focado, setFocado] = useState(false);
+  const digitos = valor.replace(/\D/g, '').slice(0, 8);
+  const exibido = focado || digitos ? aplicarMascaraData(digitos) : '';
+  const cursor = digitos.length === 0 ? 0 : POSICOES_DIGITO_DATA[digitos.length - 1] + 1;
+
+  function aoDigitar(texto: string) {
+    let novos = texto.replace(/\D/g, '').slice(0, 8);
+    // Backspace em cima de uma "/" não remove dígito nenhum — trata como apagar o último.
+    if (texto.length < exibido.length && novos === digitos) novos = novos.slice(0, -1);
+    onChange(formatarDataDigitada(novos));
+  }
+
+  return (
+    <TextInput
+      style={[styles.input, alerta && styles.inputDataAlerta]}
+      value={exibido}
+      onChangeText={aoDigitar}
+      selection={focado ? { start: cursor, end: cursor } : undefined}
+      onFocus={() => setFocado(true)}
+      onBlur={() => setFocado(false)}
+      keyboardType="number-pad"
+      placeholder={MASCARA_DATA}
+      placeholderTextColor={cores.textoTerciario}
+      maxLength={MASCARA_DATA.length + 1}
+    />
+  );
+}
+
+function dataValida(valor: string): boolean {
+  const match = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(valor);
+  if (!match) return false;
+  const [dia, mes, ano] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const data = new Date(ano, mes - 1, dia);
+  return data.getDate() === dia && data.getMonth() === mes - 1 && data.getFullYear() === ano;
+}
+
+/**
+ * `valor` já passou por dataValida() antes de chegar aqui — ver docs/35-LIMITE-RETROATIVO-
+ * CAMPO-DATA.md (mesma regra do backend, StoreVisitaRegistroRequest::dentroDoLimiteRetroativo).
+ * Data futura nunca é rejeitada por este limite, só controla o quanto pro passado é aceito.
+ */
+function dentroDoLimiteRetroativo(valor: string, limiteDias: number): boolean {
+  const [dia, mes, ano] = valor.split('/').map(Number);
+  const data = new Date(ano, mes - 1, dia);
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const maisAntigaAceita = new Date(hoje);
+  maisAntigaAceita.setDate(maisAntigaAceita.getDate() - limiteDias);
+  return data.getTime() >= maisAntigaAceita.getTime();
 }
 
 /**
@@ -722,40 +1014,207 @@ function mapCatalogoItem(item: CatalogoItem): { uuid: string; label: string } {
   return { uuid: item.id, label: item.descricao };
 }
 
+// Coleta guiada (lista predefinida de produtos do formulário): um card por produto — verde quando
+// já preenchido (rascunho) ou enviado, cinza quando falta — selo PENDENTE/CONCLUÍDO no topo e o
+// "Salvar" no fim, que só libera com todos preenchidos e aí sim manda tudo pra fila de envio.
+function ListaProdutosColeta({
+  produtos,
+  enviados,
+  preenchidos,
+  paddingInferior,
+  salvando,
+  erro,
+  onAbrir,
+  onSalvar,
+}: {
+  produtos: { id: string; descricao: string; codigo_externo: string | null; codigo_barras: string | null }[];
+  enviados: ReadonlySet<string>;
+  preenchidos: ReadonlySet<string>;
+  paddingInferior: number;
+  salvando: boolean;
+  erro: string | null;
+  onAbrir: (produto: { uuid: string; descricao: string }) => void;
+  onSalvar: () => void;
+}) {
+  const feitos = produtos.filter((p) => enviados.has(p.id) || preenchidos.has(p.id)).length;
+  const faltam = produtos.length - feitos;
+  const paraEnviar = produtos.filter((p) => !enviados.has(p.id) && preenchidos.has(p.id)).length;
+  const tudoEnviado = produtos.every((p) => enviados.has(p.id));
+
+  return (
+    <>
+      <ScrollView contentContainerStyle={styles.lista}>
+        <View style={styles.coletaTopo}>
+          <Text style={styles.coletaProgresso}>
+            {feitos} de {produtos.length} produto{produtos.length === 1 ? '' : 's'} preenchido{feitos === 1 ? '' : 's'}
+          </Text>
+          <View style={[styles.coletaSelo, tudoEnviado ? styles.coletaSeloConcluido : styles.coletaSeloPendente]}>
+            <Text style={[styles.coletaSeloTexto, tudoEnviado ? styles.coletaSeloTextoConcluido : styles.coletaSeloTextoPendente]}>
+              {tudoEnviado ? 'CONCLUÍDO' : 'PENDENTE'}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.coletaInstrucao}>Preencha cada produto e toque em Salvar no fim da lista.</Text>
+        {produtos.map((p) => {
+          const enviado = enviados.has(p.id);
+          const feito = enviado || preenchidos.has(p.id);
+          return (
+            <Pressable
+              key={p.id}
+              style={({ pressed }) => [styles.coletaCard, feito && styles.coletaCardFeito, pressed && styles.itemPressionado]}
+              onPress={() => onAbrir({ uuid: p.id, descricao: p.descricao })}
+            >
+              <View style={styles.coletaCardTextos}>
+                <Text style={styles.coletaCardNome} numberOfLines={1}>
+                  {p.descricao}
+                </Text>
+                {enviado ? (
+                  <Text style={styles.coletaCardCodigo}>Enviado</Text>
+                ) : (
+                  !!(p.codigo_externo ?? p.codigo_barras) && (
+                    <Text style={styles.coletaCardCodigo}>{p.codigo_externo ?? p.codigo_barras}</Text>
+                  )
+                )}
+              </View>
+              <View style={[styles.coletaStatus, feito ? styles.coletaStatusFeito : styles.coletaStatusPendente]}>
+                {feito && <MaterialCommunityIcons name="check" size={14} color={cores.branco} />}
+              </View>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      {!tudoEnviado && (
+        <View style={[styles.rodape, { paddingBottom: paddingInferior }]}>
+          {erro && <Text style={styles.erroTexto}>{erro}</Text>}
+          <Pressable
+            style={({ pressed }) => [
+              styles.botaoPrimario,
+              (faltam > 0 || paraEnviar === 0) && styles.botaoPrimarioFraco,
+              pressed && styles.itemPressionado,
+            ]}
+            onPress={onSalvar}
+            disabled={faltam > 0 || paraEnviar === 0 || salvando}
+          >
+            {salvando ? (
+              <ActivityIndicator color={cores.branco} />
+            ) : (
+              <Text style={styles.botaoPrimarioTexto}>
+                {faltam > 0 ? `Salvar (falta${faltam === 1 ? '' : 'm'} ${faltam})` : 'Salvar'}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+      )}
+    </>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: {
+  coletaTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: espaco.xs },
+  coletaProgresso: { ...tipografia.destaque, color: cores.texto },
+  coletaSelo: { borderRadius: raio.pill, paddingHorizontal: 10, paddingVertical: 3 },
+  coletaSeloPendente: { backgroundColor: neutro[900] },
+  coletaSeloConcluido: { backgroundColor: cores.sucessoFundo },
+  coletaSeloTexto: { ...tipografia.legenda },
+  coletaSeloTextoPendente: { color: cores.branco },
+  coletaSeloTextoConcluido: { color: cores.sucesso },
+  coletaInstrucao: { ...tipografia.corpoSecundario, color: cores.textoSecundario, marginBottom: 0},
+  coletaCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.xs,
+    backgroundColor: cores.fundoCard,
+    borderRadius: raio.sm,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.md,
+    marginBottom: 0,
+  },
+  coletaCardFeito: { borderColor: cores.sucesso },
+  coletaCardTextos: { flex: 1 },
+  coletaCardNome: { fontSize: 14, fontWeight: '600', color: cores.texto },
+  coletaCardCodigo: { fontSize: 11, color: cores.textoSecundario },
+  coletaStatus: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  coletaStatusFeito: { backgroundColor: cores.sucesso },
+  coletaStatusPendente: { backgroundColor: indigo[100] },
+  backdropContainer: {
     flex: 1,
-    backgroundColor: cores.fundo,
+    justifyContent: 'flex-end',
+  },
+  backdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(17,24,39,0.45)',
+  },
+  sheet: {
+    maxHeight: '92%',
+    backgroundColor: cores.fundoCard,
+    borderTopLeftRadius: raio.xl,
+    borderTopRightRadius: raio.xl,
+    overflow: 'hidden',
+  },
+  alcaWrap: {
+    alignItems: 'center',
+    paddingTop: espaco.sm,
+  },
+  alca: {
+    width: 40,
+    height: 5,
+    borderRadius: raio.pill,
+    backgroundColor: neutro[300],
   },
   cabecalho: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: cores.fundoCard,
+    gap: espaco.md,
     paddingHorizontal: espaco.lg,
-    paddingVertical: espaco.md,
+    paddingTop: espaco.sm,
+    paddingBottom: espaco.md,
     borderBottomWidth: 1,
     borderBottomColor: cores.divisor,
-    gap: espaco.sm,
   },
-  cabecalhoAcao: {
-    color: cores.primaria,
-    fontSize: 15,
-    fontWeight: '600',
+  cabecalhoIconeBotao: {
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  cabecalhoAcaoEspaco: {
-    width: 60,
+  cabecalhoIconeCirculo: {
+    width: 40,
+    height: 40,
+    borderRadius: raio.md,
+    backgroundColor: cores.primariaClara,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cabecalhoTextos: {
+    flex: 1,
+    minWidth: 0,
   },
   cabecalhoTitulo: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '700',
     color: cores.texto,
   },
+  cabecalhoSubtitulo: {
+    fontSize: 13,
+    color: cores.textoSecundario,
+  },
+  cabecalhoFecharBotao: {
+    width: 36,
+    height: 36,
+    borderRadius: raio.pill,
+    backgroundColor: neutro[100],
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   lista: {
     padding: espaco.lg,
-    gap: espaco.md,
+    gap: espaco.sm,
   },
   contextoTexto: {
     fontSize: 13,
@@ -837,6 +1296,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: neutro[700],
   },
+  secaoLabelFraco: {
+    fontWeight: '500',
+    color: cores.textoTerciario,
+  },
   input: {
     borderWidth: 1,
     borderColor: cores.borda,
@@ -846,40 +1309,100 @@ const styles = StyleSheet.create({
     fontSize: 15,
     backgroundColor: cores.fundoCard,
   },
-  fotosLinha: {
+  fotosGrade: {
     flexDirection: 'row',
-    gap: espaco.md,
-  },
-  fotoPreviewBox: {
+    flexWrap: 'wrap',
     gap: espaco.sm,
-    alignItems: 'center',
   },
-  fotoPreview: {
-    width: 120,
-    height: 120,
+  fotoTileCamera: {
+    width: 72,
+    height: 72,
     borderRadius: raio.md,
-  },
-  linkRemover: {
-    color: cores.erro,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  botaoSecundario: {
-    flexDirection: 'row',
-    gap: espaco.sm,
-    minHeight: 48,
-    borderRadius: raio.md,
-    borderWidth: 1,
-    borderColor: cores.primaria,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: indigo[300],
+    backgroundColor: cores.primariaClara,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: espaco.lg,
-    alignSelf: 'flex-start',
+    gap: 2,
   },
-  botaoSecundarioTexto: {
-    color: cores.primaria,
-    fontSize: 14,
+  fotoTileCameraTexto: {
+    fontSize: 11,
     fontWeight: '700',
+    color: cores.primariaEscura,
+  },
+  fotoTile: {
+    width: 72,
+    height: 72,
+    borderRadius: raio.md,
+    overflow: 'visible',
+  },
+  fotoTileImagem: {
+    width: '100%',
+    height: '100%',
+    borderRadius: raio.md,
+  },
+  fotoTileRemover: {
+    position: 'absolute',
+    top: -6,
+    right: -6,
+    width: 22,
+    height: 22,
+    borderRadius: raio.pill,
+    borderWidth: 2,
+    borderColor: cores.branco,
+    backgroundColor: neutro[900],
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rupturaLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    padding: espaco.md,
+    borderRadius: raio.lg,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    backgroundColor: cores.fundoCard,
+  },
+  rupturaLinhaMarcada: {
+    borderColor: cores.erroBorda,
+    backgroundColor: cores.erroFundo,
+  },
+  rupturaTextos: {
+    flex: 1,
+  },
+  rupturaTitulo: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: cores.texto,
+  },
+  rupturaTituloMarcado: {
+    color: cores.erro,
+  },
+  rupturaSubtitulo: {
+    fontSize: 12,
+    color: cores.textoSecundario,
+    marginTop: 1,
+  },
+  toggleTrilho: {
+    width: 46,
+    height: 28,
+    borderRadius: raio.pill,
+    backgroundColor: neutro[300],
+    padding: 3,
+  },
+  toggleTrilhoLigado: {
+    backgroundColor: cores.erro,
+  },
+  toggleBola: {
+    width: 22,
+    height: 22,
+    borderRadius: raio.pill,
+    backgroundColor: cores.branco,
+  },
+  toggleBolaLigada: {
+    transform: [{ translateX: 18 }],
   },
   checkboxLinha: {
     flexDirection: 'row',
@@ -985,9 +1508,9 @@ const styles = StyleSheet.create({
     backgroundColor: cores.primaria,
     alignItems: 'center',
     justifyContent: 'center',
-    ...sombraFlutuante,
-    shadowColor: cores.primaria,
-    shadowOpacity: 0.3,
+  },
+  botaoPrimarioFraco: {
+    backgroundColor: indigo[300],
   },
   botaoPrimarioTexto: {
     color: cores.branco,

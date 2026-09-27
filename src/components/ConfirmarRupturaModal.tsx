@@ -1,6 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cores, espaco, neutro, raio, sombraCard } from '../theme';
 
 /**
@@ -18,6 +19,11 @@ interface ConfirmarRupturaModalProps {
 }
 
 export function ConfirmarRupturaModal({ visible, produtos, enviando, onCancelar, onConfirmar }: ConfirmarRupturaModalProps) {
+  const insets = useSafeAreaInsets();
+  // pageSheet só é real no iOS (cartão já nasce abaixo do notch) — no Android o Modal cobre a
+  // tela inteira sem nenhum inset automático.
+  const insetTopo = Platform.OS === 'android' ? insets.top : 0;
+  const insetBase = Platform.OS === 'android' ? insets.bottom : 0;
   const [marcados, setMarcados] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -40,7 +46,7 @@ export function ConfirmarRupturaModal({ visible, produtos, enviando, onCancelar,
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onCancelar}>
       <View style={styles.container}>
-        <View style={styles.cabecalho}>
+        <View style={[styles.cabecalho, { paddingTop: espaco.md + insetTopo }]}>
           <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={cores.erro} />
           <Text style={styles.cabecalhoTitulo}>Confirmar ruptura</Text>
         </View>
@@ -65,7 +71,7 @@ export function ConfirmarRupturaModal({ visible, produtos, enviando, onCancelar,
             );
           })}
         </ScrollView>
-        <View style={styles.rodape}>
+        <View style={[styles.rodape, { paddingBottom: espaco.lg + insetBase }]}>
           <Pressable style={({ pressed }) => [styles.botaoSecundario, pressed && styles.itemPressionado]} onPress={onCancelar}>
             <Text style={styles.botaoSecundarioTexto}>Nenhuma é ruptura</Text>
           </Pressable>

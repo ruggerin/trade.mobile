@@ -8,16 +8,40 @@ export interface PontosVendaListResponse {
   meta: PaginatedMeta;
 }
 
+// A API pagina (15 por página se ninguém pedir outro tamanho) e o app precisa da carteira
+// INTEIRA — a Agenda monta o mapa de PDVs a partir daqui, e só com a 1ª página qualquer loja
+// depois da 15ª (em ordem alfabética) dava "PDV não encontrado". Pede no tamanho máximo que a
+// API aceita (`por_pagina` até 200, ver PontoVendaController::index) e segue as páginas até o
+// fim.
+const POR_PAGINA = 200;
+
+async function buscarTodasAsPaginas(busca?: string): Promise<PontosVendaListResponse> {
+  const pontosVenda: PontoVenda[] = [];
+  let pagina = 1;
+  let meta: PaginatedMeta;
+  do {
+    const { data } = await apiClient.get<PontosVendaListResponse>('/pontos-venda', {
+      params: { ativo: 1, busca: busca || undefined, por_pagina: POR_PAGINA, page: pagina },
+    });
+    pontosVenda.push(...data.pontos_venda);
+    meta = data.meta;
+    pagina++;
+  } while (pagina <= meta.last_page);
+
+  return {
+    pontos_venda: pontosVenda,
+    meta: { current_page: 1, last_page: 1, per_page: pontosVenda.length, total: pontosVenda.length },
+  };
+}
+
 // Cache local (SQLite): sem rede, cai pra última lista sincronizada da carteira do promotor —
-// filtra localmente por `busca` pra manter o mesmo comportamento da tela. A paginação da API
-// não é usada aqui (o app sempre pede a lista inteira do promotor de uma vez), então o cache
-// espelha isso: guarda tudo, sem página.
+// filtra localmente por `busca` pra manter o mesmo comportamento da tela. Guarda tudo, sem página.
 export async function listarPontosVenda(busca?: string): Promise<PontosVendaListResponse> {
   try {
-    const { data } = await apiClient.get<PontosVendaListResponse>('/pontos-venda', {
-      params: { ativo: 1, busca: busca || undefined },
-    });
-    void salvarPontosVendaCache(data.pontos_venda).catch(() => {});
+    const data = await buscarTodasAsPaginas(busca);
+    // Só a lista sem filtro é a carteira inteira — salvar o resultado de uma busca sobrescreveria
+    // o cache offline com um recorte dele.
+    if (!busca) void salvarPontosVendaCache(data.pontos_venda).catch(() => {});
     return data;
   } catch (err) {
     if (!ehErroDeRede(err)) throw err;

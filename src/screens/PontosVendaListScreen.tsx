@@ -6,23 +6,65 @@ import {
   ActivityIndicator,
   FlatList,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
 import { listarPontosVenda } from '../lib/api/pontosVenda';
+import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { useAuth } from '../lib/auth/AuthContext';
+import { calcularDistanciaMetros } from '../lib/location/distancia';
+import { useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { listarVisitasLocaisAbertas } from '../lib/visitaLocal';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
+import { useRecarregarAoFocar } from '../lib/useRecarregarAoFocar';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import type { OrdemServico, PontoVenda } from '../types/api';
-import { cores, espaco, neutro, raio, sombraCard, tipografia } from '../theme';
+import { cores, espaco, indigo, neutro, raio, tipografia } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontosVendaLista'>;
 type ModoExibicao = 'lista' | 'mapa';
+type Filtro = 'todas' | 'pendencia' | 'perto';
+
+const RAIO_PERTO_METROS = 1500;
+
+function formatarDistancia(metros: number): string {
+  return `${(metros / 1000).toFixed(1).replace('.', ',')} km`;
+}
+
+// "32 min" / "1h 12min" — mesmo formato do cronômetro da Visita em Andamento, só calculado uma
+// vez (aqui é lista, não precisa recalcular por segundo).
+function duracaoDesde(inicioISO: string): string {
+  const seg = Math.max(0, Math.floor((Date.now() - new Date(inicioISO).getTime()) / 1000));
+  const h = Math.floor(seg / 3600);
+  const min = Math.floor(seg / 60) % 60;
+  return h > 0 ? `${h}h ${String(min).padStart(2, '0')}min` : `${min} min`;
+}
+
+interface DefinicaoFiltro {
+  chave: Filtro;
+  label: string;
+  aplica: (p: PontoVenda, temPendencia: boolean, distanciaMetros: number | null) => boolean;
+}
+
+const FILTRO_TODAS: DefinicaoFiltro = { chave: 'todas', label: 'Todas', aplica: () => true };
+const FILTRO_PENDENCIA: DefinicaoFiltro = {
+  chave: 'pendencia',
+  label: 'Com pendência',
+  aplica: (_p, temPendencia) => temPendencia,
+};
+// Só entra na lista de chips quando há localização — ver FILTROS no componente.
+const FILTRO_PERTO: DefinicaoFiltro = {
+  chave: 'perto',
+  label: 'Até 1,5 km',
+  aplica: (_p, _temPendencia, distanciaMetros) => distanciaMetros !== null && distanciaMetros <= RAIO_PERTO_METROS,
+};
+const FILTROS_BASE: DefinicaoFiltro[] = [FILTRO_TODAS, FILTRO_PENDENCIA];
 
 // docs/05-APP-MOBILE-UX.md §3.3 — card com fantasia/razão social/bairro, busca, estados
 // carregando/vazio/busca-sem-resultado/erro-com-retry, banner de visita em aberto, alternância
@@ -32,8 +74,12 @@ type ModoExibicao = 'lista' | 'mapa';
 export function PontosVendaListScreen({ navigation }: Props) {
   const { usuario } = useAuth();
   const queryClient = useQueryClient();
+  // Header nativo desligado nesta tela (ver PontosVendaStack.tsx) — o cabeçalho próprio precisa
+  // do inset do topo manualmente, sem ele o texto entra embaixo da barra de status/notch.
+  const insets = useSafeAreaInsets();
   const [busca, setBusca] = useState('');
   const [modo, setModo] = useState<ModoExibicao>('lista');
+  const [filtro, setFiltro] = useState<Filtro>('todas');
 
   const query = useQuery({
     queryKey: ['pontos-venda', busca],
@@ -53,6 +99,23 @@ export function PontosVendaListScreen({ navigation }: Props) {
   const visitaAberta = visitaAbertaQuery.data?.[0] ?? null;
   const pontosVenda = query.data?.pontos_venda ?? [];
 
+  // Distância só aparece quando a localização está disponível — a lista funciona igual sem ela
+  // (offline-first), nunca trava esperando o GPS nem mostra permissão negada aqui (diferente do
+  // check-in, onde a localização é obrigatória pra confirmar presença na loja).
+  const localizacao = useLocalizacaoAtual();
+  const distanciaPorPdv = useMemo(() => {
+    const mapa = new Map<string, number>();
+    if (!localizacao.coords) return mapa;
+    for (const p of pontosVenda) {
+      mapa.set(p.id, calcularDistanciaMetros(localizacao.coords.latitude, localizacao.coords.longitude, p.latitude, p.longitude));
+    }
+    return mapa;
+  }, [pontosVenda, localizacao.coords]);
+  const FILTROS = useMemo(
+    () => (localizacao.coords ? [FILTRO_TODAS, FILTRO_PENDENCIA, FILTRO_PERTO] : FILTROS_BASE),
+    [localizacao.coords],
+  );
+
   // Badge "Pendência" no card do PDV (docs/07-ORDEM-DE-SERVICO.md §4) — quando existe mais de
   // uma OS pendente pro mesmo PDV, usa a primeira só pra decidir qual vincular automaticamente
   // no check-in (raro na prática, mas evita a tela travar esperando o promotor escolher).
@@ -60,6 +123,10 @@ export function PontosVendaListScreen({ navigation }: Props) {
     queryKey: ['ordens-servico', 'pendentes'],
     queryFn: listarOrdensServicoPendentes,
   });
+
+  // Voltar pra aba recarrega lojas + badge de pendência (loja/OS alterada no admin só aparecia
+  // reabrindo o app) — ver lib/useRecarregarAoFocar.ts.
+  const { atualizando: puxandoParaAtualizar, puxarParaAtualizar } = useRecarregarAoFocar(query.refetch, pendenciasQuery.refetch);
   const pendenciaPorPdv = useMemo(() => {
     const porLoja = new Map<string, OrdemServico[]>();
     for (const os of pendenciasQuery.data ?? []) {
@@ -77,18 +144,56 @@ export function PontosVendaListScreen({ navigation }: Props) {
     navigation.navigate('PontoVendaCheckin', { pontoVenda, ordemServico: pendenciaPorPdv.get(pontoVenda.id) });
   }
 
+  // Contagem de cada filtro sobre a busca atual — mostrada ao lado do rótulo do chip, mesmo
+  // padrão do protótipo ("Com pendência 2"), pra dar uma prévia sem precisar tocar.
+  const contagemFiltro = (chave: Filtro) => {
+    const def = FILTROS.find((f) => f.chave === chave)!;
+    return pontosVenda.filter((p) => def.aplica(p, pendenciaPorPdv.has(p.id), distanciaPorPdv.get(p.id) ?? null)).length;
+  };
+  // Se o filtro "Até 1,5 km" estava ativo e a localização some depois (GPS desligado, permissão
+  // revogada), esse chip deixa de existir em FILTROS — cai pra "Todas" em vez de quebrar o find.
+  const filtroAtivo = FILTROS.find((f) => f.chave === filtro) ?? FILTROS_BASE[0];
+  const pontosVendaFiltrados = pontosVenda
+    .filter((p) => filtroAtivo.aplica(p, pendenciaPorPdv.has(p.id), distanciaPorPdv.get(p.id) ?? null))
+    // Mais perto primeiro, quando a localização está disponível — sem ela, mantém a ordem que a
+    // API já devolveu (mesmo comportamento de antes desta mudança).
+    .sort((a, b) =>
+      localizacao.coords ? (distanciaPorPdv.get(a.id) ?? Infinity) - (distanciaPorPdv.get(b.id) ?? Infinity) : 0,
+    );
+  const nComPendencia = pontosVenda.filter((p) => pendenciaPorPdv.has(p.id)).length;
+
   return (
     <View style={styles.container}>
+      <View style={[styles.cabecalho, { paddingTop: insets.top + espaco.sm }]}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.tituloTela}>Lojas</Text>
+          <Text style={styles.resumoTexto}>
+            {pontosVenda.length} loja(s) na sua carteira
+            {nComPendencia > 0 ? ` · ${nComPendencia} com pendência` : ''}
+          </Text>
+        </View>
+        <BotaoNotificacoes />
+      </View>
+
       {visitaAberta && (
         <Pressable
           style={({ pressed }) => [styles.banner, pressed && styles.bannerPressionado]}
           onPress={() => navigation.navigate('VisitaAndamento', { visitaLocalId: visitaAberta.id })}
         >
-          <Text style={styles.bannerTexto}>
-            {visitaAberta.status === 'FINALIZADA_LOCAL'
-              ? `Visita em ${visitaAberta.pontoVenda.fantasia} finalizada, aguardando envio — toque para ver`
-              : `Visita em andamento em ${visitaAberta.pontoVenda.fantasia} — toque para continuar`}
-          </Text>
+          <View style={styles.bannerIconeCirculo}>
+            <MaterialCommunityIcons name="clock-outline" size={18} color={cores.branco} />
+          </View>
+          <View style={styles.bannerTextos}>
+            <Text style={styles.bannerRotulo}>
+              {visitaAberta.status === 'FINALIZADA_LOCAL'
+                ? 'Finalizada · aguardando envio'
+                : `Em andamento · ${duracaoDesde(visitaAberta.inicioEm)}`}
+            </Text>
+            <Text style={styles.bannerNome} numberOfLines={1}>
+              {visitaAberta.pontoVenda.fantasia}
+            </Text>
+          </View>
+          <Text style={styles.bannerLink}>{visitaAberta.status === 'FINALIZADA_LOCAL' ? 'Ver' : 'Continuar'}</Text>
         </Pressable>
       )}
 
@@ -129,6 +234,25 @@ export function PontosVendaListScreen({ navigation }: Props) {
         </Pressable>
       </View>
 
+      {/* Fileira que QUEBRA linha em vez de rolar de lado — com "Até 1,5 km" entrando às vezes
+          (4 chips), uma lista horizontal cortava o último chip na borda da tela; sem rolagem,
+          nada fica escondido/cortado, só ocupa uma segunda linha quando não cabe numa só. */}
+      <View style={styles.filtrosLinha}>
+        {FILTROS.map((f) => {
+          const ativo = filtro === f.chave;
+          return (
+            <Pressable
+              key={f.chave}
+              style={[styles.filtroChip, ativo && styles.filtroChipAtivo]}
+              onPress={() => setFiltro(f.chave)}
+            >
+              <Text style={[styles.filtroChipTexto, ativo && styles.filtroChipTextoAtivo]}>{f.label}</Text>
+              <Text style={[styles.filtroChipContagem, ativo && styles.filtroChipTextoAtivo]}>{contagemFiltro(f.chave)}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
       {query.isLoading && (
         <View style={styles.centro}>
           <ActivityIndicator size="large" color={cores.primaria} />
@@ -152,23 +276,33 @@ export function PontosVendaListScreen({ navigation }: Props) {
         </View>
       )}
 
-      {query.isSuccess && pontosVenda.length > 0 && modo === 'lista' && (
+      {query.isSuccess && pontosVenda.length > 0 && pontosVendaFiltrados.length === 0 && (
+        <View style={styles.centro}>
+          <Text style={styles.vazioTexto}>Nenhuma loja nesse filtro.</Text>
+        </View>
+      )}
+
+      {query.isSuccess && pontosVendaFiltrados.length > 0 && modo === 'lista' && (
         <FlatList
-          data={pontosVenda}
+          data={pontosVendaFiltrados}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.lista}
+          refreshControl={
+            <RefreshControl refreshing={puxandoParaAtualizar} onRefresh={puxarParaAtualizar} colors={[cores.primaria]} />
+          }
           renderItem={({ item }) => (
             <PontoVendaCard
               pontoVenda={item}
               pendencia={pendenciaPorPdv.get(item.id) ?? null}
+              distanciaMetros={distanciaPorPdv.get(item.id) ?? null}
               onPress={() => irParaCheckin(item)}
             />
           )}
         />
       )}
 
-      {query.isSuccess && pontosVenda.length > 0 && modo === 'mapa' && (
-        <MapaPontosVenda pontosVenda={pontosVenda} onSelecionar={irParaCheckin} />
+      {query.isSuccess && pontosVendaFiltrados.length > 0 && modo === 'mapa' && (
+        <MapaPontosVenda pontosVenda={pontosVendaFiltrados} onSelecionar={irParaCheckin} />
       )}
     </View>
   );
@@ -219,13 +353,22 @@ function calcularRegiao(pontosVenda: PontoVenda[]) {
 function PontoVendaCard({
   pontoVenda,
   pendencia,
+  distanciaMetros,
   onPress,
 }: {
   pontoVenda: PontoVenda;
   pendencia: OrdemServico | null;
+  distanciaMetros: number | null;
   onPress: () => void;
 }) {
   const endereco = [pontoVenda.bairro, pontoVenda.cidade].filter(Boolean).join(' · ');
+  const iniciais = pontoVenda.fantasia
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0])
+    .join('')
+    .toUpperCase();
   // Contexto de negócio rápido, sem precisar abrir o PDV — docs/26-MELHORIAS-PRODUTIVIDADE-PROMOTOR.md
   // §2 itens 2/3: rede/ramo já vinham no endpoint, só não apareciam na lista; checkouts é sinal
   // indireto de porte da loja (quanto tempo a visita deve levar).
@@ -243,27 +386,45 @@ function PontoVendaCard({
   return (
     <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressionado]} onPress={onPress}>
       <View style={styles.cardIcone}>
-        <MaterialCommunityIcons name="storefront-outline" size={22} color={cores.primaria} />
+        <Text style={styles.cardIconeTexto}>{iniciais}</Text>
       </View>
       <View style={styles.cardConteudo}>
         <View style={styles.cardTopo}>
-          <Text style={styles.cardFantasia}>{pontoVenda.fantasia}</Text>
-          {pendencia && (
-            <View style={[styles.badgePendencia, corBadge ? { backgroundColor: corBadge } : null]}>
-              <Text style={[styles.badgePendenciaTexto, corBadge ? { color: cores.branco } : null]}>
-                {pendencia.tipo_visita?.descricao ?? 'Pendência'}
-              </Text>
-            </View>
-          )}
+          <Text style={styles.cardFantasia} numberOfLines={1}>
+            {pontoVenda.fantasia}
+          </Text>
+          {distanciaMetros !== null && <Text style={styles.cardDistancia}>{formatarDistancia(distanciaMetros)}</Text>}
         </View>
-        <Text style={styles.cardRazaoSocial}>{pontoVenda.razao_social}</Text>
-        {!!endereco && <Text style={styles.cardEndereco}>{endereco}</Text>}
-        {!!contexto && <Text style={styles.cardContexto}>{contexto}</Text>}
-        {pontoVenda.tem_contrato_ativo && (
-          <View style={styles.badgeContrato}>
-            <MaterialCommunityIcons name="handshake-outline" size={12} color={cores.primaria} />
-            <Text style={styles.badgeContratoTexto}>Comodato ativo</Text>
+        <Text style={styles.cardRazaoSocial} numberOfLines={1}>
+          {pontoVenda.razao_social}
+        </Text>
+        {!!endereco && (
+          <Text style={styles.cardEndereco} numberOfLines={1}>
+            {endereco}
+          </Text>
+        )}
+        {(pendencia || pontoVenda.tem_contrato_ativo) && (
+          <View style={styles.tagsLinha}>
+            {pendencia && (
+              <View style={[styles.badgePendencia, corBadge ? { backgroundColor: corBadge } : null]}>
+                <View style={[styles.badgePendenciaPonto, corBadge ? { backgroundColor: cores.branco } : null]} />
+                <Text style={[styles.badgePendenciaTexto, corBadge ? { color: cores.branco } : null]}>
+                  {pendencia.tipo_visita?.descricao ?? 'Pendência'}
+                </Text>
+              </View>
+            )}
+            {pontoVenda.tem_contrato_ativo && (
+              <View style={styles.badgeContrato}>
+                <MaterialCommunityIcons name="handshake-outline" size={12} color={cores.primaria} />
+                <Text style={styles.badgeContratoTexto}>Comodato ativo</Text>
+              </View>
+            )}
           </View>
+        )}
+        {!!contexto && (
+          <Text style={styles.cardContexto} numberOfLines={1}>
+            {contexto}
+          </Text>
         )}
       </View>
       <MaterialCommunityIcons name="chevron-right" size={22} color={cores.textoTerciario} />
@@ -276,22 +437,103 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: cores.fundo,
   },
-  banner: {
-    backgroundColor: cores.primariaClara,
-    borderBottomWidth: 1,
-    borderBottomColor: cores.primariaBorda,
+  cabecalho: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
     paddingHorizontal: espaco.lg,
-    paddingVertical: espaco.md,
-    minHeight: 48,
-    justifyContent: 'center',
+    paddingTop: espaco.md,
+    paddingBottom: 2,
+    backgroundColor: cores.fundo,
+  },
+  tituloTela: {
+    ...tipografia.tituloGrande,
+    color: cores.texto,
+  },
+  resumoTexto: {
+    fontSize: 13,
+    color: cores.textoSecundario,
+    marginTop: 2,
+  },
+  filtrosLinha: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: espaco.sm,
+    paddingHorizontal: espaco.lg,
+    marginTop: espaco.md,
+  },
+  filtroChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 34,
+    paddingHorizontal: espaco.md,
+    borderRadius: raio.pill,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    backgroundColor: cores.fundoCard,
+  },
+  filtroChipAtivo: {
+    backgroundColor: cores.primaria,
+    borderColor: cores.primaria,
+  },
+  filtroChipTexto: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: neutro[700],
+  },
+  filtroChipContagem: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: neutro[500],
+  },
+  filtroChipTextoAtivo: {
+    color: cores.onPrimaria,
+  },
+  banner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    backgroundColor: cores.primaria,
+    borderRadius: raio.lg,
+    marginHorizontal: espaco.lg,
+    marginTop: espaco.md,
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.sm + 2,
+    minHeight: 60,
   },
   bannerPressionado: {
-    backgroundColor: cores.primariaMedia,
+    opacity: 0.9,
   },
-  bannerTexto: {
-    color: cores.primariaEscura,
+  bannerIconeCirculo: {
+    width: 38,
+    height: 38,
+    borderRadius: raio.md,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bannerTextos: {
+    flex: 1,
+    minWidth: 0,
+  },
+  bannerRotulo: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    color: indigo[200],
+  },
+  bannerNome: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: cores.branco,
+    marginTop: 1,
+  },
+  bannerLink: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
+    color: cores.branco,
   },
   buscaContainer: {
     flexDirection: 'row',
@@ -351,39 +593,45 @@ const styles = StyleSheet.create({
   },
   lista: {
     paddingHorizontal: espaco.lg,
-    paddingTop: espaco.lg,
+    paddingTop: espaco.md,
     paddingBottom: espaco.xl,
-    gap: espaco.md,
+    gap: espaco.sm,
   },
+  // Sem sombra de propósito — só borda 1px. Card "flat", normalizado com o mesmo padding/raio/gap
+  // do card da lista de Histórico (HistoricoScreen.tsx).
   card: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: espaco.md,
+    gap: espaco.sm,
     backgroundColor: cores.fundoCard,
-    borderRadius: raio.lg,
-    padding: espaco.md,
+    borderRadius: raio.md,
+    padding: 10,
     borderWidth: 1,
     borderColor: cores.borda,
     minHeight: 48,
-    ...sombraCard,
   },
   cardPressionado: {
     backgroundColor: neutro[100],
   },
   cardIcone: {
-    width: 44,
-    height: 44,
+    width: 40,
+    height: 40,
     borderRadius: raio.md,
     backgroundColor: cores.primariaClara,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  cardIconeTexto: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: cores.primariaEscura,
   },
   cardConteudo: {
     flex: 1,
   },
   cardTopo: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: espaco.sm,
   },
@@ -393,7 +641,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: cores.texto,
   },
+  cardDistancia: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: cores.textoSecundario,
+  },
   badgePendencia: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     backgroundColor: cores.acentoMedio,
     borderRadius: raio.sm,
     paddingHorizontal: espaco.sm,
@@ -419,6 +675,19 @@ const styles = StyleSheet.create({
     color: cores.textoTerciario,
     marginTop: espaco.xs,
   },
+  tagsLinha: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: espaco.xs,
+    marginTop: espaco.xs,
+  },
+  badgePendenciaPonto: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: cores.acentoTexto,
+  },
   badgeContrato: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -428,7 +697,6 @@ const styles = StyleSheet.create({
     borderRadius: raio.sm,
     paddingHorizontal: espaco.sm,
     paddingVertical: 2,
-    marginTop: espaco.xs,
   },
   badgeContratoTexto: {
     color: cores.primariaEscura,

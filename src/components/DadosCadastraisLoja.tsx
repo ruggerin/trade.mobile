@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { useState, type ReactNode } from 'react';
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { buscarPontoVenda, enviarFachadaPromotor } from '../lib/api/pontosVenda';
 import { useAuth } from '../lib/auth/AuthContext';
 import type { ContratoAtivo, PontoVenda } from '../types/api';
@@ -37,8 +38,10 @@ function Linha({ rotulo, valor }: { rotulo: string; valor: string | number | nul
 export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVenda: PontoVenda; depoisDaFachada?: ReactNode }) {
   const { token } = useAuth();
   const queryClient = useQueryClient();
+  const insets = useSafeAreaInsets();
   const [erroFoto, setErroFoto] = useState<string | null>(null);
   const [versaoFoto, setVersaoFoto] = useState(0);
+  const [fotoExpandida, setFotoExpandida] = useState(false);
 
   const detalheQuery = useQuery({
     queryKey: ['ponto-venda-detalhe', pontoVenda.id],
@@ -101,7 +104,11 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
   return (
     <View style={styles.container}>
       {loja.fachada_url ? (
-        <View style={styles.fachadaBox}>
+        <Pressable
+          style={styles.fachadaBox}
+          onPress={() => (fotoQuery.isError ? void fotoQuery.refetch() : setFotoExpandida(true))}
+          disabled={!fotoQuery.data && !fotoQuery.isError}
+        >
           {fotoQuery.data ? (
             <Image
               source={{ uri: fotoQuery.data }}
@@ -118,39 +125,57 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
             </View>
           )}
           {fotoQuery.isError ? (
-            <Pressable style={styles.fachadaFalha} onPress={() => void fotoQuery.refetch()}>
+            <View style={styles.fachadaFalha}>
               <Text style={styles.fachadaFalhaTexto}>
                 Não foi possível carregar a foto ({fotoQuery.error instanceof Error ? fotoQuery.error.message : 'erro'}).
                 Toque para tentar de novo.
               </Text>
-            </Pressable>
+            </View>
           ) : (
             <View style={styles.fachadaLegenda}>
-              <Text style={styles.fachadaLegendaTexto}>Foto da fachada</Text>
+              <MaterialCommunityIcons name="arrow-expand" size={12} color={cores.texto} />
+              <Text style={styles.fachadaLegendaTexto}>Toque para ampliar</Text>
             </View>
           )}
-        </View>
+        </Pressable>
       ) : (
-        <View style={styles.semFoto}>
-          <MaterialCommunityIcons name="camera-outline" size={34} color={cores.primaria} />
-          <Text style={styles.semFotoTitulo}>Esta loja ainda não tem foto da fachada</Text>
-          <Text style={styles.semFotoTexto}>
-            Tire uma foto da frente da loja — ela ajuda os próximos promotores a reconhecer o lugar.
-          </Text>
+        <>
           <Pressable
-            style={({ pressed }) => [styles.botaoFoto, pressed && { opacity: 0.85 }]}
+            style={({ pressed }) => [styles.semFoto, pressed && { opacity: 0.85 }]}
             onPress={() => enviarMutation.mutate()}
             disabled={enviarMutation.isPending}
           >
-            {enviarMutation.isPending ? (
-              <ActivityIndicator color={cores.onPrimaria} />
-            ) : (
-              <Text style={styles.botaoFotoTexto}>Tirar foto da fachada</Text>
-            )}
+            <View style={styles.semFotoIconeCirculo}>
+              {enviarMutation.isPending ? (
+                <ActivityIndicator color={cores.primaria} />
+              ) : (
+                <MaterialCommunityIcons name="camera-plus-outline" size={22} color={cores.primaria} />
+              )}
+            </View>
+            <View style={styles.semFotoTextos}>
+              <Text style={styles.semFotoTitulo}>Sem foto da fachada</Text>
+              <Text style={styles.semFotoTexto}>Toque pra tirar uma foto da frente da loja</Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={18} color={cores.primaria} />
           </Pressable>
           {!!erroFoto && <Text style={styles.erro}>{erroFoto}</Text>}
-        </View>
+        </>
       )}
+
+      <Modal visible={fotoExpandida} transparent animationType="fade" onRequestClose={() => setFotoExpandida(false)}>
+        <Pressable style={styles.lightboxFundo} onPress={() => setFotoExpandida(false)}>
+          {fotoQuery.data && (
+            <Image source={{ uri: fotoQuery.data }} style={styles.lightboxImagem} resizeMode="contain" />
+          )}
+          <Pressable
+            style={[styles.lightboxFechar, { top: insets.top + espaco.md }]}
+            onPress={() => setFotoExpandida(false)}
+            hitSlop={12}
+          >
+            <MaterialCommunityIcons name="close" size={20} color={cores.branco} />
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {depoisDaFachada}
 
@@ -212,8 +237,10 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
 
 const styles = StyleSheet.create({
   container: { padding: espaco.lg, gap: espaco.xs },
-  fachadaBox: { borderRadius: raio.lg, overflow: 'hidden', marginBottom: espaco.md, backgroundColor: neutro[200] },
-  fachada: { width: '100%', height: 170 },
+  fachadaBox: { borderRadius: raio.lg, overflow: 'hidden', marginBottom: espaco.md, backgroundColor: neutro[200] } ,
+  // Menor que antes (170) — a foto de verdade agora se vê inteira no lightbox (toque pra
+  // ampliar); aqui só precisa dar pra reconhecer, sem ocupar tanta rolagem da aba.
+  fachada: { width: '100%', height: 220 },
   fachadaFalha: {
     ...StyleSheet.absoluteFill,
     alignItems: 'center',
@@ -226,35 +253,62 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: espaco.md,
     bottom: espaco.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     backgroundColor: cores.fundoCard,
     borderRadius: 99,
     paddingHorizontal: 10,
     paddingVertical: 3,
   },
   fachadaLegendaTexto: { fontSize: 11, fontWeight: '700', color: cores.texto },
-  semFoto: {
-    borderWidth: 1.5,
-    borderStyle: 'dashed',
-    borderColor: cores.primaria,
-    backgroundColor: cores.primariaClara,
-    borderRadius: raio.lg,
-    padding: espaco.lg,
-    alignItems: 'center',
-    gap: 4,
-    marginBottom: espaco.md,
-  },
-  semFotoTitulo: { fontSize: 14, fontWeight: '700', color: cores.texto, textAlign: 'center' },
-  semFotoTexto: { fontSize: 12, color: cores.textoSecundario, textAlign: 'center', marginBottom: espaco.sm },
-  botaoFoto: {
-    minHeight: 44,
-    borderRadius: raio.md,
-    backgroundColor: cores.primaria,
-    paddingHorizontal: espaco.xl,
+  lightboxFundo: {
+    flex: 1,
+    backgroundColor: 'rgba(17,24,39,0.92)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  botaoFotoTexto: { color: cores.onPrimaria, fontWeight: '700', fontSize: 14 },
-  erro: { color: cores.erro, fontSize: 12, textAlign: 'center', marginTop: espaco.sm },
+  lightboxImagem: {
+    width: '100%',
+    height: '80%',
+  },
+  lightboxFechar: {
+    position: 'absolute',
+    top: 56,
+    right: espaco.lg,
+    width: 40,
+    height: 40,
+    borderRadius: raio.pill,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // Cartão compacto (uma linha), não mais o bloco grande de antes — o upload é uma ação
+  // secundária nesta tela, não devia disputar espaço com os dados cadastrais de verdade.
+  semFoto: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.md,
+    borderWidth: 1.5,
+    borderStyle: 'dashed',
+    borderColor: cores.primariaBorda,
+    backgroundColor: cores.primariaClara,
+    borderRadius: raio.lg,
+    padding: espaco.md,
+    marginBottom: espaco.md,
+  },
+  semFotoIconeCirculo: {
+    width: 40,
+    height: 40,
+    borderRadius: raio.md,
+    backgroundColor: cores.fundoCard,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  semFotoTextos: { flex: 1, minWidth: 0, gap: 1 },
+  semFotoTitulo: { fontSize: 14, fontWeight: '700', color: cores.texto },
+  semFotoTexto: { fontSize: 12, color: cores.textoSecundario },
+  erro: { color: cores.erro, fontSize: 12, marginTop: -espaco.sm, marginBottom: espaco.md },
   secao: {
     fontSize: 11,
     fontWeight: '800',

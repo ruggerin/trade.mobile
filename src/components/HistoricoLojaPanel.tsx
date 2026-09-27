@@ -1,7 +1,15 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { type NavigationProp, useNavigation } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { buscarHistoricoLoja, buscarPedidosLoja, type EventoHistorico, type PedidoLoja } from '../lib/api/historicoLoja';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { buscarHistoricoLoja, buscarPedidosLoja, type EventoHistorico, type PedidoLoja, type VisitaHistorico } from '../lib/api/historicoLoja';
 import { cores, espaco, neutro, raio } from '../theme';
+
+// Tela mínima que qualquer uma das três stacks que usam este painel (PontosVendaStack,
+// AgendaStack, e indiretamente HistoricoStack) precisa ter — navegar assim, DENTRO da stack
+// atual, em vez de pular pra aba Histórico, faz o "voltar" da tela de detalhe voltar pra loja/
+// visita que o promotor estava vendo, não pro índice do Histórico. Ver docs/29-NOTIFICACOES-MOBILE.md.
+type NavegacaoComVisitaDetalhe = NavigationProp<{ VisitaDetalhe: { visitaId: string } }>;
 
 const MAX_ITENS_POR_PEDIDO = 4;
 
@@ -9,11 +17,19 @@ function dataCurta(iso: string): string {
   return new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
+const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+
+function duracaoMin(inicioISO: string, fimISO: string): string {
+  const min = Math.max(0, Math.round((new Date(fimISO).getTime() - new Date(inicioISO).getTime()) / 60_000));
+  return min >= 60 ? `${Math.floor(min / 60)}h ${min % 60}min` : `${min} min`;
+}
+
 /**
  * Aba "Histórico da loja" (docs/28 §4): pedidos do ERP, últimas rupturas/alertas e as últimas
  * visitas — só consulta. Online-only: sem rede mostra um aviso em vez de quebrar o fluxo de visita.
  */
 export function HistoricoLojaPanel({ pontoVendaUuid }: { pontoVendaUuid: string }) {
+  const navigation = useNavigation<NavegacaoComVisitaDetalhe>();
   const historicoQuery = useQuery({
     queryKey: ['historico-loja', pontoVendaUuid],
     queryFn: () => buscarHistoricoLoja(pontoVendaUuid),
@@ -82,10 +98,11 @@ export function HistoricoLojaPanel({ pontoVendaUuid }: { pontoVendaUuid: string 
       {visitas.length > 0 && (
         <Secao titulo="Últimas visitas">
           {visitas.map((v) => (
-            <Text key={v.id} style={styles.linha}>
-              {dataCurta(v.inicio_data)}
-              {v.promotor ? ` · ${v.promotor}` : ''}
-            </Text>
+            <VisitaLinha
+              key={v.id}
+              visita={v}
+              onAbrir={() => navigation.navigate('VisitaDetalhe', { visitaId: v.id })}
+            />
           ))}
         </Secao>
       )}
@@ -93,11 +110,31 @@ export function HistoricoLojaPanel({ pontoVendaUuid }: { pontoVendaUuid: string 
   );
 }
 
+// Cartão com data em coluna (dia grande + mês abreviado) — mesmo desenho do protótipo Claude
+// Design (Checkin.dc.html, "Histórico da loja") e das outras listas de "últimas visitas" já
+// refeitas nesta rodada (VisitaAndamentoScreen "Loja", VisitaDetalheScreen).
+function VisitaLinha({ visita, onAbrir }: { visita: VisitaHistorico; onAbrir: () => void }) {
+  const data = new Date(visita.inicio_data);
+  return (
+    <Pressable style={({ pressed }) => [styles.cartaoData, pressed && styles.cartaoPressionado]} onPress={onAbrir}>
+      <View style={styles.dataColuna}>
+        <Text style={styles.dataDia}>{String(data.getDate()).padStart(2, '0')}</Text>
+        <Text style={styles.dataMes}>{MESES[data.getMonth()]}</Text>
+      </View>
+      <View style={styles.cartaoTextos}>
+        <Text style={styles.cartaoTitulo}>{visita.promotor ?? 'Promotor'}</Text>
+        {!!visita.fim_data && <Text style={styles.linhaFraca}>{duracaoMin(visita.inicio_data, visita.fim_data)}</Text>}
+      </View>
+      <MaterialCommunityIcons name="chevron-right" size={18} color={neutro[400]} />
+    </Pressable>
+  );
+}
+
 function Secao({ titulo, children }: { titulo: string; children: React.ReactNode }) {
   return (
     <View style={styles.secao}>
       <Text style={styles.secaoTitulo}>{titulo}</Text>
-      {children}
+      <View style={styles.secaoLista}>{children}</View>
     </View>
   );
 }
@@ -106,9 +143,9 @@ function Pedido({ pedido }: { pedido: PedidoLoja }) {
   const entregue = pedido.status === 'ENTREGUE';
   const extras = pedido.itens.length - MAX_ITENS_POR_PEDIDO;
   return (
-    <View style={styles.pedido}>
+    <View style={styles.cartao}>
       <View style={styles.pedidoTopo}>
-        <Text style={styles.pedidoNumero}>Pedido {pedido.numero_pedido}</Text>
+        <Text style={styles.cartaoTitulo}>Pedido {pedido.numero_pedido}</Text>
         <View style={[styles.selo, entregue ? styles.seloEntregue : styles.seloPendente]}>
           <Text style={[styles.seloTexto, entregue ? styles.seloTextoEntregue : styles.seloTextoPendente]}>
             {entregue && pedido.entregue_em ? `Entregue ${dataCurta(pedido.entregue_em)}` : 'A caminho'}
@@ -128,11 +165,12 @@ function Pedido({ pedido }: { pedido: PedidoLoja }) {
 
 function Evento({ evento }: { evento: EventoHistorico }) {
   return (
-    <View style={styles.evento}>
-      <Text style={styles.linha}>
-        {dataCurta(evento.ocorrido_em)} · {evento.produto ?? evento.tipo_registro ?? 'Registro'}
-        {evento.resolvido ? ' (resolvido)' : ''}
-      </Text>
+    <View style={styles.cartao}>
+      <View style={styles.pedidoTopo}>
+        <Text style={styles.cartaoTitulo}>{evento.produto ?? evento.tipo_registro ?? 'Registro'}</Text>
+        <Text style={styles.linhaFraca}>{dataCurta(evento.ocorrido_em)}</Text>
+      </View>
+      {evento.resolvido && <Text style={styles.seloResolvido}>Resolvido</Text>}
       {!!(evento.observacao || evento.promotor) && (
         <Text style={styles.linhaFraca} numberOfLines={2}>
           {[evento.promotor, evento.observacao].filter(Boolean).join(' — ')}
@@ -143,33 +181,54 @@ function Evento({ evento }: { evento: EventoHistorico }) {
 }
 
 const styles = StyleSheet.create({
-  painel: { padding: espaco.lg },
+  painel: { padding: espaco.lg, gap: espaco.lg },
   vazio: { fontSize: 13, color: cores.textoTerciario, textAlign: 'center', marginTop: espaco.xl },
-  card: {
+  secao: { gap: espaco.sm },
+  secaoLista: { gap: 6 },
+  secaoTitulo: { fontSize: 11, fontWeight: '800', color: neutro[500], textTransform: 'uppercase' },
+  linha: { fontSize: 13, color: cores.texto },
+  linhaFraca: { fontSize: 12, color: cores.textoSecundario },
+  cartao: {
+    borderRadius: raio.md,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    backgroundColor: cores.fundoCard,
+    padding: 10,
+    gap: 2,
+  },
+  cartaoPressionado: { backgroundColor: neutro[50] },
+  cartaoTitulo: { fontSize: 14, fontWeight: '700', color: cores.texto },
+  cartaoData: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.sm,
     borderRadius: raio.md,
     borderWidth: 1,
     borderColor: cores.borda,
     backgroundColor: cores.fundoCard,
     paddingHorizontal: espaco.md,
-    paddingVertical: espaco.sm,
+    paddingVertical: 6,
+    minHeight: 48,
   },
-  cabecalho: { flexDirection: 'row', alignItems: 'center', gap: espaco.sm },
-  cabecalhoTexto: { flex: 1 },
-  titulo: { fontSize: 14, fontWeight: '700', color: cores.texto },
-  resumo: { fontSize: 12, color: cores.textoSecundario, marginTop: 1 },
-  corpo: { maxHeight: 240, marginTop: espaco.sm },
-  secao: { marginBottom: espaco.md },
-  secaoTitulo: { fontSize: 11, fontWeight: '800', color: neutro[500], textTransform: 'uppercase', marginBottom: 4 },
-  linha: { fontSize: 13, color: cores.texto },
-  linhaFraca: { fontSize: 12, color: cores.textoSecundario },
-  evento: { marginBottom: 6 },
-  pedido: { marginBottom: espaco.sm, gap: 1 },
-  pedidoTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  pedidoNumero: { fontSize: 13, fontWeight: '700', color: cores.texto },
+  dataColuna: { width: 36, alignItems: 'center' },
+  dataDia: { fontSize: 17, fontWeight: '800', color: cores.texto, lineHeight: 20 },
+  dataMes: { fontSize: 10, fontWeight: '700', color: neutro[500], textTransform: 'uppercase' },
+  cartaoTextos: { flex: 1, minWidth: 0 },
+  pedidoTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: espaco.sm },
   selo: { borderRadius: raio.pill, paddingHorizontal: 8, paddingVertical: 2 },
   seloPendente: { backgroundColor: cores.acentoClaro },
   seloEntregue: { backgroundColor: neutro[100] },
   seloTexto: { fontSize: 11, fontWeight: '700' },
   seloTextoPendente: { color: cores.acentoTexto },
   seloTextoEntregue: { color: neutro[700] },
+  seloResolvido: {
+    alignSelf: 'flex-start',
+    backgroundColor: cores.sucessoFundo,
+    color: cores.sucesso,
+    fontSize: 11,
+    fontWeight: '700',
+    borderRadius: raio.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
 });

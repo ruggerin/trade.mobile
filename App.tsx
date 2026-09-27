@@ -1,6 +1,8 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import NetInfo from '@react-native-community/netinfo';
+import { focusManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
+import { AppState, Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
@@ -11,6 +13,23 @@ import { instalarTratadorGlobalDeErros } from './src/lib/crashHandler';
 import './src/lib/rastreamento';
 import { AuthProvider } from './src/lib/auth/AuthContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
+
+// No React Native o React Query não sabe sozinho quando o app volta pro primeiro plano nem quando
+// a rede volta (na web ele usa o foco da janela/eventos do navegador) — sem isso, uma lista (ex.:
+// Lojas) era buscada uma vez e ficava velha até fechar e abrir o app. Com isso, voltar do
+// background ou reconectar refaz as consultas ativas que estão "velhas" (staleTime padrão 0).
+// Padrão da própria documentação do TanStack Query pra React Native.
+focusManager.setEventListener((definirFoco) => {
+  const subscription = AppState.addEventListener('change', (estado) => {
+    if (Platform.OS !== 'web') definirFoco(estado === 'active');
+  });
+  return () => subscription.remove();
+});
+onlineManager.setEventListener((definirOnline) =>
+  NetInfo.addEventListener((estado) => {
+    definirOnline(Boolean(estado.isConnected && estado.isInternetReachable !== false));
+  }),
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {

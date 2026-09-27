@@ -1,4 +1,5 @@
-import { Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cores, espaco, raio } from '../theme';
 
 export interface RegistroDetalhe {
@@ -20,10 +21,13 @@ interface RegistroDetalheModalProps {
 // Ficha de consulta do registro já feito — fotos em tamanho grande + todos os valores, sem editar
 // nada aqui. "Cancelar registro" continua no card da lista (ação separada, não duplicada aqui).
 export function RegistroDetalheModal({ registro, onClose }: RegistroDetalheModalProps) {
+  const insets = useSafeAreaInsets();
+  // pageSheet só é real no iOS — no Android o Modal cobre a tela inteira sem inset automático.
+  const insetTopo = Platform.OS === 'android' ? insets.top : 0;
   return (
     <Modal visible={registro !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View style={styles.container}>
-        <View style={styles.cabecalho}>
+        <View style={[styles.cabecalho, { paddingTop: espaco.md + insetTopo }]}>
           <View style={styles.cabecalhoAcaoEspaco} />
           <Text style={styles.cabecalhoTitulo} numberOfLines={1}>
             Detalhes do registro

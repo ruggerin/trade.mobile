@@ -1,4 +1,5 @@
-import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { cores, espaco, raio } from '../theme';
 
 export interface ProdutoDetalhe {
@@ -18,10 +19,12 @@ interface ProdutoDetalheModalProps {
 // Ficha rápida de consulta — o promotor abre pra conferir código de barras/seção sem precisar
 // tocar no item (que já é o atalho pra registrar). Só leitura, nada aqui grava nada.
 export function ProdutoDetalheModal({ produto, onClose }: ProdutoDetalheModalProps) {
+  const insets = useSafeAreaInsets();
+  const insetTopo = Platform.OS === 'android' ? insets.top : 0;
   return (
     <Modal visible={produto !== null} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View style={styles.container}>
-        <View style={styles.cabecalho}>
+        <View style={[styles.cabecalho, { paddingTop: espaco.md + insetTopo }]}>
           <View style={styles.cabecalhoAcaoEspaco} />
           <Text style={styles.cabecalhoTitulo} numberOfLines={1}>
             Detalhes do produto

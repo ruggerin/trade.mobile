@@ -1,9 +1,10 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { listarPlanogramas } from '../lib/api/planogramas';
 import { useAuth } from '../lib/auth/AuthContext';
+import { useRecarregarAoFocar } from '../lib/useRecarregarAoFocar';
 import type { PlanogramasStackParamList } from '../navigation/PlanogramasStack';
 import type { Planograma } from '../types/api';
 import { cores, espaco, raio, sombraCard } from '../theme';
@@ -15,6 +16,7 @@ type Props = NativeStackScreenProps<PlanogramasStackParamList, 'PlanogramasLista
 export function PlanogramasListScreen({ navigation }: Props) {
   const query = useQuery({ queryKey: ['planogramas'], queryFn: listarPlanogramas });
   const planogramas = query.data ?? [];
+  const { atualizando, puxarParaAtualizar } = useRecarregarAoFocar(query.refetch);
 
   return (
     <View style={styles.container}>
@@ -45,6 +47,7 @@ export function PlanogramasListScreen({ navigation }: Props) {
           data={planogramas}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.lista}
+          refreshControl={<RefreshControl refreshing={atualizando} onRefresh={puxarParaAtualizar} colors={[cores.primaria]} />}
           renderItem={({ item }) => (
             <PlanogramaCard planograma={item} onPress={() => navigation.navigate('PlanogramaDetalhe', { planogramaId: item.id })} />
           )}
