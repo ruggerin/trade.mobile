@@ -1,6 +1,7 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { HistoricoScreen } from '../screens/HistoricoScreen';
 import { NotificacoesScreen } from '../screens/NotificacoesScreen';
+import { PedidoDetalheScreen, type PedidoDetalheParams } from '../screens/PedidoDetalheScreen';
 import { VisitaDetalheScreen, type VisitaDetalheParams } from '../screens/VisitaDetalheScreen';
 
 export type HistoricoStackParamList = {
@@ -11,6 +12,8 @@ export type HistoricoStackParamList = {
   // assim que a visita carrega. Ver docs/29-NOTIFICACOES-MOBILE.md §4. Mesma tela também
   // registrada em PontosVendaStack/AgendaStack — ver comentário lá sobre o porquê.
   VisitaDetalhe: VisitaDetalheParams;
+  // Detalhe do pedido do ERP (docs/54) — aberto pelo cartão da loja ou pelo sino.
+  PedidoDetalhe: PedidoDetalheParams;
   Notificacoes: undefined;
 };
 
@@ -23,6 +26,7 @@ export function HistoricoStack() {
           já tem cabeçalho (título + busca + sino), ver HistoricoScreen.tsx. */}
       <Stack.Screen name="HistoricoLista" component={HistoricoScreen} options={{ headerShown: false }} />
       <Stack.Screen name="VisitaDetalhe" component={VisitaDetalheScreen} options={{ title: 'Detalhe da visita' }} />
+      <Stack.Screen name="PedidoDetalhe" component={PedidoDetalheScreen} options={{ title: 'Pedido' }} />
       <Stack.Screen name="Notificacoes" component={NotificacoesScreen} options={{ title: 'Notificações' }} />
     </Stack.Navigator>
   );

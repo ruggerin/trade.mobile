@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "PDV App",
+    "name": "Horus",
     "slug": "pdv-app-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -8,6 +8,7 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.prossigatec.horus",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "Usamos sua localização pra confirmar que você está no ponto de venda na hora do check-in.",
         "NSCameraUsageDescription": "Usamos a câmera pra registrar fotos dos produtos durante a visita.",
@@ -15,12 +16,15 @@
         "UIBackgroundModes": [
           "location"
         ]
+      },
+      "entitlements": {
+        "com.apple.developer.devicecheck.appattest-environment": "production"
       }
     },
     "android": {
-      "package": "com.stoneup.pdvapp",
+      "package": "com.prossigatec.horus",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#f4ebe3",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -62,7 +66,24 @@
         }
       ],
       "expo-status-bar",
-      "expo-sqlite"
+      "expo-sqlite",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableProguardInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          }
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Usamos o Face ID para desbloquear o Horus sem digitar a senha."
+        }
+      ],
+      "./plugins/withExpoSourcesJarFix",
+      "expo-web-browser"
     ],
     "extra": {
       "eas": {

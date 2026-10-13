@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ActivityIndicator, Image, StyleSheet, View, type ImageStyle, type StyleProp } from 'react-native';
 import { useAuth } from '../lib/auth/AuthContext';
+import { headersAutenticados } from '../lib/seguranca/chaveAparelho';
 import { cores } from '../theme';
 
 /**
@@ -34,7 +35,8 @@ export function ImagemAutenticada({
       const destino = `${FileSystem.cacheDirectory}img-${nomeArquivo}`;
       const existente = await FileSystem.getInfoAsync(destino);
       if (existente.exists && existente.size > 0) return destino;
-      const r = await FileSystem.downloadAsync(uri, destino, { headers: { Authorization: `Bearer ${token}` } });
+      // Authorization + assinatura do aparelho (docs/67 Fase 3) — fora do apiClient.
+      const r = await FileSystem.downloadAsync(uri, destino, { headers: await headersAutenticados(uri, token!) });
       if (r.status !== 200) {
         await FileSystem.deleteAsync(destino, { idempotent: true }).catch(() => {});
         throw new Error(`HTTP ${r.status}`);

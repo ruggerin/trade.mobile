@@ -42,6 +42,8 @@ export interface IniciarVisitaLocalParams {
   usuarioId: string;
   pontoVenda: PontoVenda;
   ordemServicoId?: string | null;
+  // Escolhida pelo promotor no card da Agenda (a API vincula exatamente ela). Ver docs/07.
+  ordemServicoEscolhida?: boolean;
   latitude: number;
   longitude: number;
 }
@@ -80,6 +82,7 @@ export async function iniciarVisitaLocal(params: IniciarVisitaLocalParams): Prom
     usuarioId: params.usuarioId,
     pontoVenda: params.pontoVenda,
     ordemServicoId: params.ordemServicoId,
+    ordemServicoEscolhida: params.ordemServicoEscolhida,
     latitude: params.latitude,
     longitude: params.longitude,
   });

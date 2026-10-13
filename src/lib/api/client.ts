@@ -1,12 +1,24 @@
 import Constants from 'expo-constants';
 import axios from 'axios';
 import { tokenStorage } from '../auth/tokenStorage';
+import { assinarRequisicao, caminhoDaRequisicao, registrarHorarioServidor } from '../seguranca/chaveAparelho';
 
 // Disparado quando a API responde 401 — o AuthContext escuta isso pra limpar a sessão e
 // voltar pro Login. Mesmo padrão do admin (admin/src/lib/api/client.ts), só que aqui não tem
 // window/DOM: usamos um EventTarget simples em vez de window.dispatchEvent.
 export const authEvents = new EventTarget();
 export const UNAUTHORIZED_EVENT = 'auth:unauthorized';
+// 426 da API (docs/67 Fase 2): versão abaixo da mínima — o app mostra "Atualize o Horus".
+export const APP_DESATUALIZADO_EVENT = 'app:desatualizado';
+
+/** Evento de sessão encerrada com o texto que a API mandou ("Sua conta entrou em outro aparelho..."). */
+export class SessaoEncerradaEvent extends Event {
+  constructor(readonly mensagem: string | null) {
+    super(UNAUTHORIZED_EVENT);
+  }
+}
+
+const VERSAO_APP = Constants.expoConfig?.version ?? '0.0.0';
 
 // Prioridade: EXPO_PUBLIC_API_URL (definido em .env.local) > auto-detect via Metro.
 // Precisa disso pra apontar pra um túnel (Cloudflare, ngrok) ou IP fixo quando o celular não
@@ -46,6 +58,10 @@ export const apiClient = axios.create({
   timeout: 8000,
   headers: {
     Accept: 'application/json',
+    // Identifica o cliente pra medição de uso por app (docs/52) — o admin web manda 'admin'.
+    'X-Client': 'mobile',
+    // Versão mínima aceita pela API (docs/67 Fase 2).
+    'X-App-Version': VERSAO_APP,
   },
 });
 
@@ -54,6 +70,14 @@ apiClient.interceptors.request.use(async (config) => {
 
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+    // Prova de posse da chave do aparelho (docs/67 Fase 3) — a API só confere quando o aparelho
+    // vinculado tem chave registrada; mandar sempre não atrapalha.
+    try {
+      const assinatura = await assinarRequisicao(config.method ?? 'get', caminhoDaRequisicao(config.baseURL, config.url), token);
+      Object.entries(assinatura).forEach(([nome, valor]) => config.headers.set(nome, valor));
+    } catch (err) {
+      if (__DEV__) console.log('[api] assinatura falhou', err);
+    }
   }
 
   if (__DEV__) console.log('[api] ->', config.method?.toUpperCase(), (config.baseURL ?? '') + (config.url ?? ''));
@@ -64,6 +88,7 @@ apiClient.interceptors.request.use(async (config) => {
 apiClient.interceptors.response.use(
   (response) => {
     if (__DEV__) console.log('[api] <-', response.status, response.config.url);
+    registrarHorarioServidor(response.headers.date as string | undefined);
     return response;
   },
   async (error) => {
@@ -85,9 +110,17 @@ apiClient.interceptors.response.use(
         );
       }
 
+      registrarHorarioServidor(error.response?.headers?.date as string | undefined);
+
       if (error.response?.status === 401) {
         await tokenStorage.clear();
-        authEvents.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+        // A API diz por que a sessão caiu (docs/67 §4.5) — a tela de login mostra.
+        const dados = error.response.data as { motivo?: string; message?: string } | undefined;
+        authEvents.dispatchEvent(new SessaoEncerradaEvent(dados?.motivo ? (dados.message ?? null) : null));
+      }
+
+      if (error.response?.status === 426) {
+        authEvents.dispatchEvent(new Event(APP_DESATUALIZADO_EVENT));
       }
     }
 

@@ -35,6 +35,16 @@ export interface Usuario {
   // Permissões do perfil — o app decide o que mostrar por elas, ex.: aba "Pedidos" só com
   // pedidos_venda.criar ("modo Vendedor", docs/38-PEDIDO-VENDEDOR.md §4).
   perfil?: { id: string; nome: string; permissoes?: string[] } | null;
+  // Termos/Política com versão vigente ainda não aceita (docs/58 §5.3) — vem no login e no
+  // /auth/me. Não vazio = o app mostra a tela de aceite no lugar das abas.
+  documentos_pendentes?: DocumentoPendente[];
+}
+
+export type TipoDocumentoLegal = 'TERMOS_USO' | 'POLITICA_PRIVACIDADE';
+
+export interface DocumentoPendente {
+  tipo: TipoDocumentoLegal;
+  versao: string;
 }
 
 export interface PontoVenda {

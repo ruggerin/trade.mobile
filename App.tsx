@@ -11,6 +11,13 @@ import { instalarTratadorGlobalDeErros } from './src/lib/crashHandler';
 // Efeito colateral proposital: registra a tarefa de rastreamento em segundo plano (defineTask) já
 // na inicialização do módulo, antes de qualquer tela — o SO pode acordar o app só pra rodá-la.
 import './src/lib/rastreamento';
+import { iniciarPinning } from './src/lib/seguranca/pinning';
+
+// Certificate pinning (docs/67 Fase 3) — no carregamento do módulo, antes da primeira requisição,
+// inclusive quando o SO acorda o app só pra tarefa de rastreamento. Desligado sem hashes no build.
+void iniciarPinning().catch((err) => {
+  if (__DEV__) console.log('[pinning] não iniciou', err);
+});
 import { AuthProvider } from './src/lib/auth/AuthContext';
 import { RootNavigator } from './src/navigation/RootNavigator';
 

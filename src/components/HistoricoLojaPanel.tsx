@@ -3,13 +3,15 @@ import { type NavigationProp, useNavigation } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { buscarHistoricoLoja, buscarPedidosLoja, type EventoHistorico, type PedidoLoja, type VisitaHistorico } from '../lib/api/historicoLoja';
+import { diaMes, statusDoPedido } from '../lib/pedidoLoja';
+import { SeloStatus } from '../screens/PedidoDetalheScreen';
 import { cores, espaco, neutro, raio } from '../theme';
 
 // Tela mínima que qualquer uma das três stacks que usam este painel (PontosVendaStack,
 // AgendaStack, e indiretamente HistoricoStack) precisa ter — navegar assim, DENTRO da stack
 // atual, em vez de pular pra aba Histórico, faz o "voltar" da tela de detalhe voltar pra loja/
 // visita que o promotor estava vendo, não pro índice do Histórico. Ver docs/29-NOTIFICACOES-MOBILE.md.
-type NavegacaoComVisitaDetalhe = NavigationProp<{ VisitaDetalhe: { visitaId: string } }>;
+type NavegacaoComVisitaDetalhe = NavigationProp<{ VisitaDetalhe: { visitaId: string }; PedidoDetalhe: { pedidoId: string } }>;
 
 const MAX_ITENS_POR_PEDIDO = 4;
 
@@ -77,7 +79,7 @@ export function HistoricoLojaPanel({ pontoVendaUuid }: { pontoVendaUuid: string 
       {pedidos.length > 0 && (
         <Secao titulo="Pedidos">
           {pedidos.slice(0, 5).map((pedido) => (
-            <Pedido key={pedido.id} pedido={pedido} />
+            <Pedido key={pedido.id} pedido={pedido} onAbrir={() => navigation.navigate('PedidoDetalhe', { pedidoId: pedido.id })} />
           ))}
         </Secao>
       )}
@@ -139,27 +141,32 @@ function Secao({ titulo, children }: { titulo: string; children: React.ReactNode
   );
 }
 
-function Pedido({ pedido }: { pedido: PedidoLoja }) {
-  const entregue = pedido.status === 'ENTREGUE';
+// Toque abre o detalhe (docs/54 §5 Fase 2) — itens completos e linha do tempo das datas.
+function Pedido({ pedido, onAbrir }: { pedido: PedidoLoja; onAbrir: () => void }) {
   const extras = pedido.itens.length - MAX_ITENS_POR_PEDIDO;
+  const status = statusDoPedido(pedido);
   return (
-    <View style={styles.cartao}>
+    <Pressable style={({ pressed }) => [styles.cartao, pressed && styles.cartaoPressionado]} onPress={onAbrir}>
       <View style={styles.pedidoTopo}>
         <Text style={styles.cartaoTitulo}>Pedido {pedido.numero_pedido}</Text>
-        <View style={[styles.selo, entregue ? styles.seloEntregue : styles.seloPendente]}>
-          <Text style={[styles.seloTexto, entregue ? styles.seloTextoEntregue : styles.seloTextoPendente]}>
-            {entregue && pedido.entregue_em ? `Entregue ${dataCurta(pedido.entregue_em)}` : 'A caminho'}
-          </Text>
-        </View>
+        <SeloStatus pedido={pedido} />
       </View>
-      <Text style={styles.linhaFraca}>Feito em {dataCurta(pedido.data_pedido)}</Text>
+      <Text style={styles.linhaFraca}>
+        Emitido em {diaMes(pedido.data_pedido)}
+        {status !== 'ENTREGUE' && pedido.data_previsao_entrega
+          ? ` · ${status === 'ATRASADO' ? 'previsto pra' : 'previsão'} ${diaMes(pedido.data_previsao_entrega)}`
+          : ''}
+      </Text>
       {pedido.itens.slice(0, MAX_ITENS_POR_PEDIDO).map((item) => (
         <Text key={item.id} style={styles.linha}>
           {Number(item.quantidade).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}× {item.descricao_produto}
         </Text>
       ))}
-      {extras > 0 && <Text style={styles.linhaFraca}>+ {extras} item(ns)</Text>}
-    </View>
+      <View style={styles.pedidoTopo}>
+        <Text style={styles.linhaFraca}>{extras > 0 ? `+ ${extras} item(ns)` : ' '}</Text>
+        <Text style={styles.verDetalhe}>Ver detalhe</Text>
+      </View>
+    </Pressable>
   );
 }
 
@@ -215,12 +222,7 @@ const styles = StyleSheet.create({
   dataMes: { fontSize: 10, fontWeight: '700', color: neutro[500], textTransform: 'uppercase' },
   cartaoTextos: { flex: 1, minWidth: 0 },
   pedidoTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: espaco.sm },
-  selo: { borderRadius: raio.pill, paddingHorizontal: 8, paddingVertical: 2 },
-  seloPendente: { backgroundColor: cores.acentoClaro },
-  seloEntregue: { backgroundColor: neutro[100] },
-  seloTexto: { fontSize: 11, fontWeight: '700' },
-  seloTextoPendente: { color: cores.acentoTexto },
-  seloTextoEntregue: { color: neutro[700] },
+  verDetalhe: { fontSize: 12, fontWeight: '700', color: cores.primaria },
   seloResolvido: {
     alignSelf: 'flex-start',
     backgroundColor: cores.sucessoFundo,

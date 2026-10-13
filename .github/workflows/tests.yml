@@ -1,0 +1,32 @@
+name: Testes do App Mobile
+
+# Checagem de tipos + testes (Jest/jest-expo) a cada push — pega erro antes de gerar APK no EAS.
+# O repositório do mobile tem os arquivos na RAIZ (não numa pasta mobile/), por isso nenhum passo
+# usa working-directory.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Checagem de tipos
+        run: npx tsc --noEmit
+
+      - name: Rodar testes
+        run: npm test -- --ci

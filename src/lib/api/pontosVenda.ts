@@ -72,6 +72,15 @@ export async function buscarPontoVenda(uuid: string): Promise<PontoVenda> {
   return data.ponto_venda;
 }
 
+// Dias da semana com atendimento (0=domingo…6=sábado) — destaque no check-in
+// (docs/45-CHECKIN-ATENDIMENTO-SEMANAL.md). Online-only, sem cache: mesmo raciocínio do
+// HistoricoLojaCard, é um dado secundário que pode simplesmente não aparecer offline, sem
+// atrapalhar o check-in em si.
+export async function buscarAgendaSemanal(uuid: string): Promise<number[]> {
+  const { data } = await apiClient.get<{ dias_atendimento: number[] }>(`/pontos-venda/${uuid}/agenda-semanal`);
+  return data.dias_atendimento;
+}
+
 // O promotor manda a foto da fachada quando a loja ainda não tem uma — o backend recusa (422) se já
 // existir, então nunca sobrescreve a foto do admin.
 export async function enviarFachadaPromotor(uuid: string, imagemUri: string): Promise<PontoVenda> {

@@ -10,17 +10,39 @@ import { apiClient } from './client';
 // `por_pagina` pega tudo de uma vez (capado em 200 no backend) — sem data de corte (diferente da
 // Agenda), então um Direcionamento gerando muitas OS de uma vez facilmente passa dos 15 padrão;
 // sem isso, PDV fora da 1ª página nunca ganhava o badge nem a OS anexada no check-in.
+/** Data local do aparelho (YYYY-MM-DD) de um instante ISO. */
+function diaLocal(data: Date): string {
+  const d2 = (n: number) => String(n).padStart(2, '0');
+  return `${data.getFullYear()}-${d2(data.getMonth() + 1)}-${d2(data.getDate())}`;
+}
+
 /**
- * Uma visita só se vincula a UMA ordem de serviço. Quando a loja tem mais de uma pendente (ex.: a
- * de hoje vinda da Agenda + a de um Direcionamento com formulário), a que carrega formulário por
- * responder vem primeiro — antes valia só o prazo, e a ordem da Agenda (sem formulário nenhum)
- * "roubava" a visita: o formulário do Direcionamento nunca aparecia em Ações. Empate: prazo mais curto.
+ * Uma visita só se vincula a UMA ordem de serviço. Quando a loja tem mais de uma pendente, vale,
+ * olhando o dia da visita (hoje):
+ *   1. a vigente hoje (prazo cobre o dia) — entre elas, formulário por responder primeiro (senão a
+ *      OS da Agenda, sem formulário, "roubava" a visita do Direcionamento), depois o prazo mais curto;
+ *   2. sem nenhuma de hoje, a vencida mais recente (visita atrasada de verdade);
+ *   3. por último, a futura mais próxima.
+ * Antes valia "prazo mais curto" sem olhar o dia: uma OS vencida de dias atrás ganhava da de hoje,
+ * virava concluída e a de hoje ficava pendente (produção, 13/10/2026). A API aplica a mesma regra
+ * (App\Support\OrdemDoCheckin) e corrige versões antigas do app.
  */
-export function escolherOrdemDaLoja(ordens: OrdemServico[]): OrdemServico | undefined {
+export function escolherOrdemDaLoja(ordens: OrdemServico[], agora: Date = new Date()): OrdemServico | undefined {
+  const hoje = diaLocal(agora);
+  const grupo = (os: OrdemServico) => {
+    if (diaLocal(new Date(os.prazo_fim)) < hoje) return 1; // vencida
+    if (diaLocal(new Date(os.prazo_inicio)) > hoje) return 2; // futura
+    return 0; // vigente hoje
+  };
   const comFormularioPendente = (os: OrdemServico) => (os.formularios ?? []).some((f) => !f.respondido_em);
+
   return [...ordens].sort((a, b) => {
+    const porGrupo = grupo(a) - grupo(b);
+    if (porGrupo !== 0) return porGrupo;
     const porFormulario = Number(comFormularioPendente(b)) - Number(comFormularioPendente(a));
-    return porFormulario !== 0 ? porFormulario : a.prazo_fim.localeCompare(b.prazo_fim);
+    if (porFormulario !== 0) return porFormulario;
+    const porPrazo = new Date(a.prazo_fim).getTime() - new Date(b.prazo_fim).getTime();
+    return grupo(a) === 1 ? -porPrazo : porPrazo;
   })[0];
 }
 

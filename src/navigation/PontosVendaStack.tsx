@@ -4,6 +4,7 @@ import { PontosVendaListScreen } from '../screens/PontosVendaListScreen';
 import { ReagendarCompromissoScreen } from '../screens/ReagendarCompromissoScreen';
 import { VisitaAndamentoScreen } from '../screens/VisitaAndamentoScreen';
 import { PedidoVendaScreen, type PedidoVendaParams } from '../screens/PedidoVendaScreen';
+import { PedidoDetalheScreen, type PedidoDetalheParams } from '../screens/PedidoDetalheScreen';
 import { VisitaDetalheScreen, type VisitaDetalheParams } from '../screens/VisitaDetalheScreen';
 import type { OrdemServico, PontoVenda } from '../types/api';
 
@@ -14,7 +15,8 @@ export type PontosVendaStackParamList = {
   // ordemServico presente quando o check-in nasce de uma OS direcionada (badge nesta tela ou
   // vindo da aba Agenda, ver AgendaStack) — ausente pra check-in espontâneo, que continua o
   // fluxo comum. Ver docs/07-ORDEM-DE-SERVICO.md.
-  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico };
+  // ordemServicoEscolhida: veio do card da Agenda — o check-in usa exatamente essa OS (docs/07).
+  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico; ordemServicoEscolhida?: boolean };
   // Aberto a partir das ações do compromisso dentro da tela da loja (AcoesCompromisso).
   ReagendarCompromisso: { ordemServico: OrdemServico };
   // Só o id local (fila_visitas) — a visita nasce e vive na fila de envio até o checkout ser
@@ -26,6 +28,8 @@ export type PontosVendaStackParamList = {
   // visita em andamento, e sem a tela existir NESTA stack o "voltar" pulava pro índice do
   // Histórico em vez de voltar pra loja/visita que o promotor estava vendo.
   VisitaDetalhe: VisitaDetalheParams;
+  // Detalhe do pedido do ERP (docs/54) — aberto pelo cartão da loja ou pelo sino.
+  PedidoDetalhe: PedidoDetalheParams;
   // Pedido de Venda a partir da visita ("Tirar pedido") — mesma tela da aba Pedidos, ver
   // PedidosStack.tsx e docs/38-PEDIDO-VENDEDOR.md §8.
   PedidoVenda: PedidoVendaParams | undefined;
@@ -48,6 +52,7 @@ export function PontosVendaStack() {
       {/* Header nativo escondido: mesmo motivo do AgendaStack.tsx — ver comentário lá. */}
       <Stack.Screen name="VisitaAndamento" component={VisitaAndamentoScreen} options={{ headerShown: false }} />
       <Stack.Screen name="VisitaDetalhe" component={VisitaDetalheScreen} options={{ title: 'Detalhe da visita' }} />
+      <Stack.Screen name="PedidoDetalhe" component={PedidoDetalheScreen} options={{ title: 'Pedido' }} />
       <Stack.Screen name="PedidoVenda" component={PedidoVendaScreen} options={{ title: 'Pedido' }} />
     </Stack.Navigator>
   );

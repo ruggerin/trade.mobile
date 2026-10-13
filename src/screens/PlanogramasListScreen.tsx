@@ -3,7 +3,7 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { listarPlanogramas } from '../lib/api/planogramas';
-import { useAuth } from '../lib/auth/AuthContext';
+import { useHeadersAutenticados } from '../lib/seguranca/useHeadersAutenticados';
 import { useRecarregarAoFocar } from '../lib/useRecarregarAoFocar';
 import type { PlanogramasStackParamList } from '../navigation/PlanogramasStack';
 import type { Planograma } from '../types/api';
@@ -58,14 +58,15 @@ export function PlanogramasListScreen({ navigation }: Props) {
 }
 
 function PlanogramaCard({ planograma, onPress }: { planograma: Planograma; onPress: () => void }) {
-  const { token } = useAuth();
+  // Authorization + assinatura do aparelho (docs/67 Fase 3) — o <Image> não passa pelo apiClient.
+  const headersCapa = useHeadersAutenticados(planograma.foto_capa_url);
 
   return (
     <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressionado]} onPress={onPress}>
       <View style={styles.capa}>
-        {planograma.foto_capa_url ? (
+        {planograma.foto_capa_url && headersCapa ? (
           <Image
-            source={{ uri: planograma.foto_capa_url, headers: { Authorization: `Bearer ${token}` } }}
+            source={{ uri: planograma.foto_capa_url, headers: headersCapa }}
             style={styles.capaImagem}
             resizeMode="cover"
           />

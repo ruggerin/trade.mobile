@@ -1,7 +1,10 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
 import { ActivityIndicator, Pressable, SectionList, StyleSheet, Text, View } from 'react-native';
 import { buscarNaoLidos, type NaoLidos } from '../lib/api/comentarios';
+import { buscarAvisosPedido, type AvisoPedido } from '../lib/api/historicoLoja';
+import { textoAvisoPedido } from '../lib/pedidoLoja';
 import type { HistoricoStackParamList } from '../navigation/HistoricoStack';
 import { cores, espaco, raio } from '../theme';
 
@@ -9,17 +12,20 @@ type Props = NativeStackScreenProps<HistoricoStackParamList, 'Notificacoes'>;
 
 type ItemNaoLido = NaoLidos['registros'][number];
 
-// Feed já vem do backend ordenado por comentário mais recente primeiro (ComentarioRegistroController
-// ::naoLidos) — só precisa bucketizar em "Hoje"/"Ontem"/data, preservando a ordem.
-function agruparPorDia(registros: ItemNaoLido[]): { titulo: string; data: ItemNaoLido[] }[] {
+// Duas fontes no mesmo feed (docs/54 §3): comentário em registro (docs/29) e aviso de pedido do
+// ERP (a caminho / entregue). Cada uma continua com o próprio "lido" — o feed só junta e ordena.
+type ItemFeed = { tipo: 'comentario'; em: string; chave: string; item: ItemNaoLido } | { tipo: 'pedido'; em: string; chave: string; aviso: AvisoPedido };
+
+/** Bucketiza em "Hoje"/"Ontem"/data, com o feed já ordenado do mais recente pro mais antigo. */
+export function agruparPorDia<T extends { em: string }>(itens: T[]): { titulo: string; data: T[] }[] {
   const hoje = new Date();
   hoje.setHours(0, 0, 0, 0);
   const ontem = new Date(hoje);
   ontem.setDate(ontem.getDate() - 1);
 
-  const grupos: { titulo: string; data: ItemNaoLido[] }[] = [];
-  for (const item of registros) {
-    const dia = new Date(item.ultimo.em);
+  const grupos: { titulo: string; data: T[] }[] = [];
+  for (const item of itens) {
+    const dia = new Date(item.em);
     dia.setHours(0, 0, 0, 0);
 
     const titulo =
@@ -40,19 +46,30 @@ function agruparPorDia(registros: ItemNaoLido[]): { titulo: string; data: ItemNa
   return grupos;
 }
 
-// Feed "estilo Instagram/Facebook" — comentário do gestor em qualquer registro do promotor (ou,
-// pra admin/gestor, de qualquer promotor da empresa). Toque leva direto ao registro com a
-// conversa já aberta, sem precisar navegar loja → visita → registro na mão. Ver
-// docs/29-NOTIFICACOES-MOBILE.md. Quem marca como lido é o feed do próprio registro
-// (ComentariosRegistroModal, ao abrir) — esta tela só lista, não mexe no estado de leitura.
-export function NotificacoesScreen({ navigation }: Props) {
-  const query = useQuery({ queryKey: ['comentarios-nao-lidos'], queryFn: buscarNaoLidos, retry: false });
+/** Junta comentários e avisos de pedido, mais recente primeiro. */
+export function montarFeed(comentarios: ItemNaoLido[], avisos: AvisoPedido[]): ItemFeed[] {
+  return [
+    ...comentarios.map((item): ItemFeed => ({ tipo: 'comentario', em: item.ultimo.em, chave: `c-${item.registro_id}`, item })),
+    ...avisos.map((aviso): ItemFeed => ({ tipo: 'pedido', em: aviso.em, chave: `p-${aviso.id}`, aviso })),
+  ].sort((a, b) => new Date(b.em).getTime() - new Date(a.em).getTime());
+}
 
-  function abrir(item: ItemNaoLido) {
-    navigation.navigate('VisitaDetalhe', { visitaId: item.visita_id, abrirRegistroId: item.registro_id });
+// Feed "estilo Instagram/Facebook". Comentário: toque leva direto ao registro com a conversa
+// aberta (docs/29); quem marca como lido é o próprio registro. Pedido: toque abre o detalhe do
+// pedido, que marca o aviso como lido (docs/54).
+export function NotificacoesScreen({ navigation }: Props) {
+  const comentariosQuery = useQuery({ queryKey: ['comentarios-nao-lidos'], queryFn: buscarNaoLidos, retry: false });
+  const pedidosQuery = useQuery({ queryKey: ['avisos-pedido'], queryFn: buscarAvisosPedido, retry: false });
+
+  function abrir(feed: ItemFeed) {
+    if (feed.tipo === 'comentario') {
+      navigation.navigate('VisitaDetalhe', { visitaId: feed.item.visita_id, abrirRegistroId: feed.item.registro_id });
+    } else {
+      navigation.navigate('PedidoDetalhe', { pedidoId: feed.aviso.pedido_id });
+    }
   }
 
-  if (query.isLoading) {
+  if (comentariosQuery.isLoading || pedidosQuery.isLoading) {
     return (
       <View style={styles.centro}>
         <ActivityIndicator color={cores.primaria} />
@@ -60,7 +77,7 @@ export function NotificacoesScreen({ navigation }: Props) {
     );
   }
 
-  if (query.isError) {
+  if (comentariosQuery.isError && pedidosQuery.isError) {
     return (
       <View style={styles.centro}>
         <Text style={styles.vazioTexto}>Não foi possível carregar agora. Verifique a conexão.</Text>
@@ -68,10 +85,12 @@ export function NotificacoesScreen({ navigation }: Props) {
     );
   }
 
+  const feed = montarFeed(comentariosQuery.data?.registros ?? [], pedidosQuery.data?.avisos ?? []);
+
   return (
     <SectionList
-      sections={agruparPorDia(query.data?.registros ?? [])}
-      keyExtractor={(item) => item.registro_id}
+      sections={agruparPorDia(feed)}
+      keyExtractor={(item) => item.chave}
       contentContainerStyle={styles.lista}
       stickySectionHeadersEnabled={false}
       ListEmptyComponent={
@@ -80,24 +99,28 @@ export function NotificacoesScreen({ navigation }: Props) {
         </View>
       }
       renderSectionHeader={({ section }) => <Text style={styles.tituloSecao}>{section.titulo}</Text>}
-      renderItem={({ item }) => <ItemNotificacao item={item} onPress={() => abrir(item)} />}
+      renderItem={({ item }) =>
+        item.tipo === 'comentario' ? (
+          <ItemComentario item={item.item} onPress={() => abrir(item)} />
+        ) : (
+          <ItemPedido aviso={item.aviso} onPress={() => abrir(item)} />
+        )
+      }
     />
   );
 }
 
-function ItemNotificacao({ item, onPress }: { item: ItemNaoLido; onPress: () => void }) {
+function quando(iso: string): string {
+  return new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function ItemComentario({ item, onPress }: { item: ItemNaoLido; onPress: () => void }) {
   const iniciais = item.ultimo.autor
     .split(' ')
     .slice(0, 2)
     .map((p) => p[0])
     .join('')
     .toUpperCase();
-  const quando = new Date(item.ultimo.em).toLocaleString('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 
   return (
     <Pressable style={({ pressed }) => [styles.item, pressed && styles.itemPressionado]} onPress={onPress}>
@@ -110,10 +133,30 @@ function ItemNotificacao({ item, onPress }: { item: ItemNaoLido; onPress: () => 
           <Text style={styles.negrito}>{item.sobre}</Text>
         </Text>
         <Text style={styles.linha2} numberOfLines={2}>
-          "{item.ultimo.texto}"{item.ponto_venda ? ` · ${item.ponto_venda}` : ''} · {quando}
+          "{item.ultimo.texto}"{item.ponto_venda ? ` · ${item.ponto_venda}` : ''} · {quando(item.ultimo.em)}
         </Text>
       </View>
       {item.nao_lidos > 0 && <View style={styles.ponto} />}
+    </Pressable>
+  );
+}
+
+function ItemPedido({ aviso, onPress }: { aviso: AvisoPedido; onPress: () => void }) {
+  const entregue = aviso.tipo === 'ENTREGUE';
+  return (
+    <Pressable style={({ pressed }) => [styles.item, pressed && styles.itemPressionado]} onPress={onPress}>
+      <View style={[styles.avatar, { backgroundColor: entregue ? cores.sucessoFundo : cores.acentoClaro }]}>
+        <MaterialCommunityIcons
+          name={entregue ? 'package-variant-closed-check' : 'truck-delivery-outline'}
+          size={18}
+          color={entregue ? cores.sucesso : cores.acentoTexto}
+        />
+      </View>
+      <View style={styles.conteudo}>
+        <Text style={styles.linha1}>{textoAvisoPedido(aviso)}</Text>
+        <Text style={styles.linha2}>Toque pra ver os itens · {quando(aviso.em)}</Text>
+      </View>
+      <View style={styles.ponto} />
     </Pressable>
   );
 }

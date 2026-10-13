@@ -11,6 +11,7 @@ import { listarOrdensServicoAgenda } from '../lib/api/ordensServico';
 import { buscarPontoVenda, listarPontosVenda } from '../lib/api/pontosVenda';
 import { useAuth } from '../lib/auth/AuthContext';
 import { useEstaOnline } from '../lib/network';
+import { usePendenciasEnvio } from '../lib/useFilaEnvioAtualizada';
 import { buscarVisitaEmAndamento } from '../lib/visitaLocal';
 import type { AgendaStackParamList } from '../navigation/AgendaStack';
 import type { MainTabsParamList } from '../navigation/MainTabs';
@@ -127,6 +128,7 @@ function tempoRelativo(alvo: Date): { label: string; atrasado: boolean } {
 export function AgendaScreen({ navigation }: Props) {
   const { usuario } = useAuth();
   const online = useEstaOnline();
+  const envio = usePendenciasEnvio(usuario?.id);
   // Header nativo desligado nesta tela (ver AgendaStack.tsx) — sem ele, ninguém mais protege o
   // topo do notch/barra de status, então o cabeçalho próprio precisa do inset manualmente.
   const insets = useSafeAreaInsets();
@@ -188,7 +190,8 @@ export function AgendaScreen({ navigation }: Props) {
       );
       return;
     }
-    navigation.navigate('PontoVendaCheckin', { pontoVenda, ordemServico: os });
+    // O promotor tocou NESTE compromisso: o check-in resolve exatamente esta OS, nunca outra da loja.
+    navigation.navigate('PontoVendaCheckin', { pontoVenda, ordemServico: os, ordemServicoEscolhida: true });
   }
 
   const grupos = agrupar(agendaQuery.data ?? [], aba);
@@ -244,7 +247,19 @@ export function AgendaScreen({ navigation }: Props) {
               </View>
 
               <View style={styles.syncLinha}>
-                {online ? (
+                {online && envio.pendentes > 0 ? (
+                  // Ainda tem visita/registro no celular — não deixa o promotor achar que já foi
+                  // (docs/51 Fase 3). A fila tenta de novo sozinha; a linha some quando esvaziar.
+                  <View style={[styles.syncPill, styles.enviandoPill]}>
+                    <ActivityIndicator size="small" color={amber[700]} />
+                    <Text style={styles.enviandoTexto}>
+                      {`Enviando ${envio.pendentes} ${envio.pendentes === 1 ? 'visita' : 'visitas'}`}
+                      {envio.ultimaTentativaEm
+                        ? ` · última tentativa ${new Date(envio.ultimaTentativaEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+                        : ''}
+                    </Text>
+                  </View>
+                ) : online ? (
                   <View style={styles.syncPill}>
                     <View style={styles.syncPonto} />
                     <Text style={styles.syncTexto}>
@@ -258,6 +273,7 @@ export function AgendaScreen({ navigation }: Props) {
                     <MaterialCommunityIcons name="wifi-off" size={16} color={amber[700]} />
                     <Text style={styles.offlineTexto}>
                       Você está offline. O que for coletado fica salvo no aparelho e envia sozinho.
+                      {envio.pendentes > 0 ? ` ${envio.pendentes} aguardando envio.` : ''}
                     </Text>
                   </View>
                 )}
@@ -537,6 +553,14 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: cores.sucessoTexto,
+  },
+  enviandoPill: {
+    backgroundColor: cores.acentoClaro,
+  },
+  enviandoTexto: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: amber[800],
   },
   offlineBox: {
     flexDirection: 'row',

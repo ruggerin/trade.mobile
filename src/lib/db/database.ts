@@ -247,6 +247,13 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     // Coluna já existe — nada a fazer.
   }
 
+  // A OS da visita foi escolhida pelo promotor (card da Agenda) — a API vincula exatamente ela.
+  try {
+    await db.execAsync('ALTER TABLE fila_visitas ADD COLUMN ordem_servico_escolhida INTEGER NOT NULL DEFAULT 0');
+  } catch {
+    // Coluna já existe — nada a fazer.
+  }
+
   return db;
 }
 

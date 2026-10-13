@@ -12,11 +12,14 @@ export function PermissaoRastreamentoModal({
   enviando,
   onPermitir,
   onAgoraNao,
+  podePausar = true,
 }: {
   visible: boolean;
   enviando: boolean;
   onPermitir: () => void;
   onAgoraNao: () => void;
+  /** false quando a empresa exige o rastreamento (docs/47) — não promete o "pausar no Perfil". */
+  podePausar?: boolean;
 }) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onAgoraNao}>
@@ -31,9 +34,9 @@ export function PermissaoRastreamentoModal({
             posição ao seu gestor, inclusive com o app fechado ou a tela apagada.
           </Text>
           <Text style={styles.texto}>
-            Na próxima tela, escolha <Text style={styles.destaque}>“Permitir o tempo todo”</Text>. Você
-            pode pausar quando quiser no seu Perfil, e uma notificação fica visível enquanto o
-            compartilhamento estiver ativo.
+            Na próxima tela, escolha <Text style={styles.destaque}>“Permitir o tempo todo”</Text>.
+            {podePausar ? ' Você pode pausar quando quiser no seu Perfil, e uma' : ' Uma'} notificação fica
+            visível enquanto o compartilhamento estiver ativo.
           </Text>
 
           <Pressable

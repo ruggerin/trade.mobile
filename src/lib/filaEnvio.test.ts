@@ -16,7 +16,16 @@ import {
   marcarVisitaRejeitada,
   type VisitaLocal,
 } from './db/filaVisitas';
-import { FILA_ENVIO_ATUALIZADA_EVENT, FILA_ENVIO_SERVIDOR_MUDOU_EVENT, filaEnvioEvents, processarFilaEnvio } from './filaEnvio';
+import {
+  contarPendenciasEnvio,
+  desligarRetentativaAutomatica,
+  ESPERAS_RETENTATIVA_MS,
+  FILA_ENVIO_ATUALIZADA_EVENT,
+  FILA_ENVIO_SERVIDOR_MUDOU_EVENT,
+  filaEnvioEvents,
+  ligarRetentativaAutomatica,
+  processarFilaEnvio,
+} from './filaEnvio';
 import { estaOnline } from './network';
 import type { PontoVenda } from '../types/api';
 
@@ -84,6 +93,7 @@ function visitaLocal(overrides: Partial<VisitaLocal> = {}): VisitaLocal {
     status: 'RASCUNHO',
     pontoVenda: PDV,
     ordemServicoId: null,
+    ordemServicoEscolhida: false,
     latitudeInicio: -3.1,
     longitudeInicio: -60.0,
     inicioEm: '2026-09-24T10:00:00.000Z',
@@ -317,7 +327,8 @@ describe('processarFilaEnvio', () => {
 
       const resultado = await processarFilaEnvio('usuario-1');
 
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.2, -60.1);
+      // 4º argumento = hora do campo (docs/51); visita sem fimEm local manda null e o servidor usa a chegada.
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.2, -60.1, null);
       expect(mockExcluirVisitaLocalCompleta).toHaveBeenCalledWith('visita-1', 'checkout-confirmado');
       expect(resultado.checkoutsConfirmados).toBe(1);
     });
@@ -337,8 +348,8 @@ describe('processarFilaEnvio', () => {
     });
   });
 
-  describe('proteção contra passada concorrente', () => {
-    it('uma segunda chamada enquanto a primeira ainda está em andamento não faz nada', async () => {
+  describe('proteção contra passada concorrente (docs/51 §3.1)', () => {
+    it('uma segunda chamada no meio não roda junto, mas também não se perde: vira outra passada na sequência', async () => {
       let liberarPrimeira!: () => void;
       const travaPrimeira = new Promise<boolean>((resolve) => {
         liberarPrimeira = () => resolve(true);
@@ -347,19 +358,137 @@ describe('processarFilaEnvio', () => {
       mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([]);
 
       const primeira = processarFilaEnvio('usuario-1');
-      const segunda = await processarFilaEnvio('usuario-1'); // não deve nem chegar a checar estaOnline
+      const segunda = await processarFilaEnvio('usuario-1'); // não roda junto: nem checa a rede
 
-      expect(segunda).toEqual({
-        visitasEnviadas: 0,
-        visitasRejeitadas: 0,
-        registrosEnviados: 0,
-        registrosComErro: 0,
-        checkoutsConfirmados: 0,
-      });
+      expect(segunda.checkoutsConfirmados).toBe(0);
       expect(mockEstaOnline).toHaveBeenCalledTimes(1);
 
       liberarPrimeira();
       await primeira;
+      // A primeira, ao terminar, rodou a passada que tinha sido pedida no meio.
+      expect(mockEstaOnline).toHaveBeenCalledTimes(2);
+    });
+
+    it('checkout tocado enquanto o check-in ainda sobe é enviado na mesma chamada, sem esperar outro gatilho', async () => {
+      let liberarCheckin!: () => void;
+      mockIniciarVisita.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            liberarCheckin = () => resolve({ id: 'servidor-1' } as any);
+          }),
+      );
+      const aberta = visitaLocal();
+      const finalizada = visitaLocal({ servidorId: 'servidor-1', status: 'FINALIZADA_LOCAL', latitudeFim: -3.1, longitudeFim: -60.0, fimEm: '2026-09-24T11:00:00.000Z' });
+      // 1ª passada lê a visita ainda aberta; a passada extra já a lê finalizada.
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValueOnce([aberta]).mockResolvedValue([finalizada]);
+      mockLerVisitaLocal.mockResolvedValue(visitaLocal({ servidorId: 'servidor-1', status: 'CHECKIN_ENVIADO' }));
+      mockFinalizarVisita.mockResolvedValue({} as any);
+
+      const primeira = processarFilaEnvio('usuario-1');
+      await Promise.resolve();
+      await processarFilaEnvio('usuario-1'); // o "Finalizar" do promotor, no meio do envio do check-in
+      liberarCheckin();
+      const resultado = await primeira;
+
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T11:00:00.000Z');
+      expect(resultado.visitasEnviadas).toBe(1);
+      expect(resultado.checkoutsConfirmados).toBe(1);
+    });
+  });
+
+  describe('hora do campo (docs/51 Fase 2)', () => {
+    it('check-in, registro e checkout levam a hora em que o promotor fez, não a do envio', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visitaLocal({ inicioEm: '2026-09-24T10:00:00.000Z' })]);
+      mockIniciarVisita.mockResolvedValue({ id: 'servidor-1' } as any);
+      mockLerVisitaLocal.mockResolvedValue(
+        visitaLocal({ servidorId: 'servidor-1', status: 'FINALIZADA_LOCAL', latitudeFim: -3.1, longitudeFim: -60.0, fimEm: '2026-09-24T10:45:00.000Z' }),
+      );
+      mockListarRegistrosLocais.mockResolvedValue([registroLocal({ criadoEm: '2026-09-24T10:20:00.000Z' })]);
+      mockCriarRegistro.mockResolvedValue({ id: 'r' } as any);
+      mockFinalizarVisita.mockResolvedValue({} as any);
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(mockIniciarVisita).toHaveBeenCalledWith(expect.objectContaining({ inicio_em: '2026-09-24T10:00:00.000Z' }));
+      expect(mockCriarRegistro).toHaveBeenCalledWith(expect.objectContaining({ criadoEm: '2026-09-24T10:20:00.000Z' }));
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T10:45:00.000Z');
+    });
+  });
+
+  describe('o que ainda falta enviar', () => {
+    it('conta check-in não aceito, registro pendente e checkout não confirmado; ignora aberta já enviada e rejeitada', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([
+        visitaLocal({ id: 'a' }), // check-in não aceito
+        visitaLocal({ id: 'b', servidorId: 's-b', status: 'FINALIZADA_LOCAL' }), // checkout pendente
+        visitaLocal({ id: 'c', servidorId: 's-c', status: 'CHECKIN_ENVIADO' }), // registro pendente
+        visitaLocal({ id: 'd', servidorId: 's-d', status: 'CHECKIN_ENVIADO' }), // aberta, tudo enviado
+        visitaLocal({ id: 'e', status: 'REJEITADA' }),
+      ]);
+      mockListarRegistrosLocais.mockImplementation(async (id) =>
+        id === 'c' ? [registroLocal({ visitaLocalId: 'c' })] : [registroLocal({ visitaLocalId: String(id), status: 'ENVIADO' } as any)],
+      );
+
+      expect(await contarPendenciasEnvio('usuario-1')).toBe(3);
+    });
+  });
+
+  describe('retentativa automática (docs/51 §3.2)', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => {
+      desligarRetentativaAutomatica();
+      jest.useRealTimers();
+    });
+
+    async function esperarPassada() {
+      // Deixa as promises da passada (mocks resolvidos) e o agendamento rodarem.
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+    }
+
+    it('com pendência, tenta de novo sozinha com espera crescente (15 s, 30 s...)', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visitaLocal()]);
+      mockIniciarVisita.mockRejectedValue(new Error('rede'));
+      mockEhErroTransitorio.mockReturnValue(true);
+      mockEhErroDeRede.mockReturnValue(true);
+
+      ligarRetentativaAutomatica('usuario-1');
+      await esperarPassada();
+      expect(mockIniciarVisita).toHaveBeenCalledTimes(1);
+
+      jest.advanceTimersByTime(ESPERAS_RETENTATIVA_MS[0] - 1);
+      await esperarPassada();
+      expect(mockIniciarVisita).toHaveBeenCalledTimes(1);
+      jest.advanceTimersByTime(1);
+      await esperarPassada();
+      expect(mockIniciarVisita).toHaveBeenCalledTimes(2);
+
+      // Sem progresso: a próxima espera é a seguinte da escada.
+      jest.advanceTimersByTime(ESPERAS_RETENTATIVA_MS[0]);
+      await esperarPassada();
+      expect(mockIniciarVisita).toHaveBeenCalledTimes(2);
+      jest.advanceTimersByTime(ESPERAS_RETENTATIVA_MS[1] - ESPERAS_RETENTATIVA_MS[0]);
+      await esperarPassada();
+      expect(mockIniciarVisita).toHaveBeenCalledTimes(3);
+    });
+
+    it('fila vazia não agenda nada', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([]);
+
+      ligarRetentativaAutomatica('usuario-1');
+      await esperarPassada();
+      expect(jest.getTimerCount()).toBe(0);
+    });
+
+    it('desligada (app em segundo plano), nenhum timer fica vivo', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visitaLocal()]);
+      mockIniciarVisita.mockRejectedValue(new Error('rede'));
+      mockEhErroTransitorio.mockReturnValue(true);
+
+      ligarRetentativaAutomatica('usuario-1');
+      await esperarPassada();
+      expect(jest.getTimerCount()).toBe(1);
+
+      desligarRetentativaAutomatica();
+      expect(jest.getTimerCount()).toBe(0);
     });
   });
 

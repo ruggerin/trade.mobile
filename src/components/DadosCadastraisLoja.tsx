@@ -7,6 +7,7 @@ import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } fr
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { buscarPontoVenda, enviarFachadaPromotor } from '../lib/api/pontosVenda';
 import { useAuth } from '../lib/auth/AuthContext';
+import { headersAutenticados } from '../lib/seguranca/chaveAparelho';
 import type { ContratoAtivo, PontoVenda } from '../types/api';
 import { cores, espaco, neutro, raio, sombraCard } from '../theme';
 
@@ -68,7 +69,10 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
       const destino = `${FileSystem.cacheDirectory}fachada-${pontoVenda.id}-${versaoFoto}.jpg`;
       const existente = await FileSystem.getInfoAsync(destino);
       if (existente.exists && existente.size > 0) return destino;
-      const r = await FileSystem.downloadAsync(loja.fachada_url!, destino, { headers: { Authorization: `Bearer ${token}` } });
+      // Authorization + assinatura do aparelho (docs/67 Fase 3) — fora do apiClient.
+      const r = await FileSystem.downloadAsync(loja.fachada_url!, destino, {
+        headers: await headersAutenticados(loja.fachada_url!, token!),
+      });
       if (r.status !== 200) {
         await FileSystem.deleteAsync(destino, { idempotent: true }).catch(() => {});
         throw new Error(`HTTP ${r.status}`);

@@ -2,13 +2,15 @@ import NetInfo from '@react-native-community/netinfo';
 import { useEffect, useState } from 'react';
 
 /**
- * Sinal de conectividade "de verdade" (rádio conectado E internet alcançável, não só wifi
- * associado sem internet) — usado pra decidir quando vale tentar `processarFilaEnvio()` e pra
- * mostrar "sem conexão" na UI sem depender de uma chamada de API falhar primeiro.
+ * Vale tentar `processarFilaEnvio()`? Só desiste quando o aparelho diz que está SEM conexão
+ * nenhuma (`isConnected === false`). O "internet alcançável" do NetInfo demora a atualizar depois
+ * de trocar de wifi pra 4G no Android e fazia a passada imediata desistir sem tentar
+ * (docs/51 §3.3) — agora quem decide é a própria chamada: se a rede não responder, o motor já
+ * trata como erro passageiro e tenta de novo.
  */
 export async function estaOnline(): Promise<boolean> {
   const estado = await NetInfo.fetch();
-  return Boolean(estado.isConnected && estado.isInternetReachable !== false);
+  return estado.isConnected !== false;
 }
 
 /** Dispara `callback` toda vez que o aparelho passa de offline pra online. */

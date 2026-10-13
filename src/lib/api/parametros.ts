@@ -116,9 +116,35 @@ async function buscarParametros(): Promise<ParametroApi[]> {
 // piso próprio por cima (ver lib/rastreamento.ts), nunca deixa a empresa pedir algo agressivo
 // demais pra bateria.
 export async function buscarIntervaloRastreamentoSegundos(): Promise<number> {
+  return (await buscarConfigRastreamento()).intervaloSegundos;
+}
+
+export type ExigenciaRastreamento = 'OPCIONAL' | 'AVISO' | 'OBRIGATORIO';
+
+export interface ConfigRastreamento {
+  intervaloSegundos: number;
+  // docs/47-RASTREAMENTO-EXIGENCIA.md — quanto o app exige do promotor.
+  exigencia: ExigenciaRastreamento;
+  // A exigência só vale dentro da jornada (JORNADA_INICIO/FIM)? `jornada` null = o dia inteiro.
+  jornada: { inicio: string; fim: string } | null;
+}
+
+// Mesmos defaults do backend (App\Support\Rastreamento / OperacaoDoDia): OPCIONAL, só na jornada,
+// jornada 07:00–17:00.
+export async function buscarConfigRastreamento(): Promise<ConfigRastreamento> {
   const parametros = await buscarParametros();
-  const parametro = parametros.find((p) => p.chave === 'RASTREAMENTO_INTERVALO_SEGUNDOS');
-  if (!parametro || !parametro.ativo) return 0;
-  const valor = Number(parametro.valor);
-  return Number.isFinite(valor) && valor > 0 ? valor : 0;
+  const ativo = (chave: string) => parametros.find((p) => p.chave === chave && p.ativo)?.valor?.trim();
+
+  const intervalo = Number(ativo('RASTREAMENTO_INTERVALO_SEGUNDOS'));
+  const exigencia = (ativo('RASTREAMENTO_EXIGENCIA') ?? '').toUpperCase();
+  const soNaJornada = ativo('RASTREAMENTO_SO_NA_JORNADA');
+
+  return {
+    intervaloSegundos: Number.isFinite(intervalo) && intervalo > 0 ? intervalo : 0,
+    exigencia: exigencia === 'AVISO' || exigencia === 'OBRIGATORIO' ? exigencia : 'OPCIONAL',
+    jornada:
+      soNaJornada === undefined || ['1', 'true', 'sim', 'yes'].includes(soNaJornada.toLowerCase())
+        ? { inicio: ativo('JORNADA_INICIO') ?? '07:00', fim: ativo('JORNADA_FIM') ?? '17:00' }
+        : null,
+  };
 }

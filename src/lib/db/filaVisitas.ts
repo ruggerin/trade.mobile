@@ -27,6 +27,9 @@ export interface VisitaLocal {
   status: StatusVisitaLocal;
   pontoVenda: PontoVenda;
   ordemServicoId: string | null;
+  // O promotor escolheu esta OS (tocou no card dela na Agenda) — vai como `ordem_servico_escolhida`
+  // no check-in e a API não troca. false = sugestão do app (aba Lojas).
+  ordemServicoEscolhida: boolean;
   latitudeInicio: number;
   longitudeInicio: number;
   inicioEm: string;
@@ -46,6 +49,7 @@ interface LinhaFilaVisita {
   ponto_venda_id: string;
   ponto_venda_json: string;
   ordem_servico_id: string | null;
+  ordem_servico_escolhida: number | null;
   latitude_inicio: number;
   longitude_inicio: number;
   inicio_em: string;
@@ -65,6 +69,7 @@ function paraVisitaLocal(linha: LinhaFilaVisita): VisitaLocal {
     status: linha.status as StatusVisitaLocal,
     pontoVenda: JSON.parse(linha.ponto_venda_json) as PontoVenda,
     ordemServicoId: linha.ordem_servico_id,
+    ordemServicoEscolhida: Boolean(linha.ordem_servico_escolhida),
     latitudeInicio: linha.latitude_inicio,
     longitudeInicio: linha.longitude_inicio,
     inicioEm: linha.inicio_em,
@@ -81,6 +86,7 @@ export interface NovaVisitaLocal {
   usuarioId: string;
   pontoVenda: PontoVenda;
   ordemServicoId?: string | null;
+  ordemServicoEscolhida?: boolean;
   latitude: number;
   longitude: number;
 }
@@ -94,15 +100,16 @@ export async function criarVisitaLocal(dados: NovaVisitaLocal): Promise<VisitaLo
   await escrever(
     `INSERT INTO fila_visitas (
       id, usuario_id, servidor_id, status, ponto_venda_id, ponto_venda_json, ordem_servico_id,
-      latitude_inicio, longitude_inicio, inicio_em, latitude_fim, longitude_fim, fim_em, erro,
-      criado_em, atualizado_em
-    ) VALUES (?, ?, NULL, 'RASCUNHO', ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
+      ordem_servico_escolhida, latitude_inicio, longitude_inicio, inicio_em, latitude_fim,
+      longitude_fim, fim_em, erro, criado_em, atualizado_em
+    ) VALUES (?, ?, NULL, 'RASCUNHO', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)`,
     [
       id,
       dados.usuarioId,
       dados.pontoVenda.id,
       JSON.stringify(dados.pontoVenda),
       dados.ordemServicoId ?? null,
+      dados.ordemServicoId && dados.ordemServicoEscolhida ? 1 : 0,
       dados.latitude,
       dados.longitude,
       agora,
@@ -118,6 +125,7 @@ export async function criarVisitaLocal(dados: NovaVisitaLocal): Promise<VisitaLo
     status: 'RASCUNHO',
     pontoVenda: dados.pontoVenda,
     ordemServicoId: dados.ordemServicoId ?? null,
+    ordemServicoEscolhida: Boolean(dados.ordemServicoId && dados.ordemServicoEscolhida),
     latitudeInicio: dados.latitude,
     longitudeInicio: dados.longitude,
     inicioEm: agora,

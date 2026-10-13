@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../lib/auth/AuthContext';
 import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
 import { buscarRaioCheckinMetros } from '../lib/api/parametros';
+import { buscarAgendaSemanal } from '../lib/api/pontosVenda';
 import { calcularDistanciaMetros } from '../lib/location/distancia';
 import { obterLocalizacaoAtual, useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
@@ -20,6 +21,17 @@ import { amber, cores, espaco, indigo, neutro, raio as raioUI, sombraCard, tipog
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontoVendaCheckin'>;
 type Aba = 'DADOS' | 'HISTORICO';
+
+// Segunda a sábado, sem domingo (mesmo recorte do protótipo que motivou esta seção) — valor é o
+// `dia_semana` do backend (0=domingo…6=sábado, mesma convenção de AgendaVisita).
+const DIAS_SEMANA: { valor: number; rotulo: string }[] = [
+  { valor: 1, rotulo: 'seg' },
+  { valor: 2, rotulo: 'ter' },
+  { valor: 3, rotulo: 'qua' },
+  { valor: 4, rotulo: 'qui' },
+  { valor: 5, rotulo: 'sex' },
+  { valor: 6, rotulo: 'sáb' },
+];
 
 // docs/05-APP-MOBILE-UX.md §3.4 — mapa com PDV + posição atual + raio, distância sempre em
 // texto (nunca só cor). "Iniciar visita" grava local e navega na hora — não fala com a API
@@ -38,7 +50,7 @@ type Aba = 'DADOS' | 'HISTORICO';
 // (DadosCadastraisLoja), que já tem toda a lógica de download autenticado/upload e não devia
 // ser duplicada aqui só por uma miniatura. Ver docs/Trade.mobile app review-handoff.
 export function PontoVendaCheckinScreen({ route, navigation }: Props) {
-  const { pontoVenda, ordemServico: ordemServicoDaRota } = route.params;
+  const { pontoVenda, ordemServico: ordemServicoDaRota, ordemServicoEscolhida = false } = route.params;
   const { usuario } = useAuth();
   const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
@@ -95,6 +107,16 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   });
   const raio = raioQuery.data ?? 200;
 
+  // Dias da semana com atendimento (destaque abaixo dos atalhos) — online-only e silencioso,
+  // mesmo raciocínio do HistoricoLojaCard: dado secundário, sem cache, sem bloquear o check-in
+  // se faltar rede (a seção some sozinha, ver diasAtendimento abaixo).
+  const agendaSemanalQuery = useQuery({
+    queryKey: ['pontos-venda', pontoVenda.id, 'agenda-semanal'],
+    queryFn: () => buscarAgendaSemanal(pontoVenda.id),
+    retry: false,
+  });
+  const diasAtendimento = agendaSemanalQuery.data ?? [];
+
   const distancia = useMemo(() => {
     if (!localizacao.coords) return null;
     return calcularDistanciaMetros(
@@ -114,6 +136,18 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
       // Rebusca fresca no momento do check-in (rede primeiro, cache como fallback — mesma função
       // do resto do app); qualquer falha cai na OS que a tela já tinha, nunca trava o check-in.
       let ordemServicoId = ordemServico?.id;
+      // Veio do card da Agenda: o promotor escolheu ESTA OS — nada de reescolher entre as pendentes
+      // da loja (era o que trocava a OS de hoje por uma vencida, produção 13/10/2026).
+      if (ordemServicoEscolhida && ordemServicoDaRota) {
+        return iniciarVisitaLocal({
+          usuarioId: usuario!.id,
+          pontoVenda,
+          ordemServicoId: ordemServicoDaRota.id,
+          ordemServicoEscolhida: true,
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+        });
+      }
       try {
         const pendencias = await queryClient.fetchQuery({
           queryKey: ['ordens-servico', 'pendentes'],
@@ -349,6 +383,30 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
             <Text style={styles.atalhoTexto}>Histórico</Text>
           </Pressable>
         </View>
+
+        {diasAtendimento.length > 0 && (
+          <View style={styles.atendimentoSemanalWrap}>
+            <View style={styles.atendimentoSemanalCard}>
+              <View style={styles.atendimentoSemanalHeader}>
+                <MaterialCommunityIcons name="calendar-week-outline" size={14} color={cores.primaria} />
+                <Text style={styles.atendimentoSemanalRotulo}>Atendimento Semanal</Text>
+              </View>
+              <View style={styles.atendimentoSemanalDias}>
+                {DIAS_SEMANA.map((dia) => {
+                  const atende = diasAtendimento.includes(dia.valor);
+                  return (
+                    <View
+                      key={dia.valor}
+                      style={[styles.diaSemanaChip, atende && styles.diaSemanaChipAtivo]}
+                    >
+                      <Text style={[styles.diaSemanaTexto, atende && styles.diaSemanaTextoAtivo]}>{dia.rotulo}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          </View>
+        )}
 
         {ordemServico && <OrdemServicoCard ordemServico={ordemServico} />}
 
@@ -789,6 +847,55 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: neutro[700],
+  },
+  // Mesma família visual do card de Ordem de Serviço (osCard, abaixo) — fundo/borda/raio
+  // idênticos, de propósito: os dois são "cards informativos" da mesma tela, não deviam ter
+  // tratamentos diferentes. Ver docs/45-CHECKIN-ATENDIMENTO-SEMANAL.md.
+  atendimentoSemanalWrap: {
+    paddingHorizontal: espaco.lg,
+    paddingTop: espaco.md,
+  },
+  atendimentoSemanalCard: {
+    borderRadius: raioUI.lg,
+    backgroundColor: cores.primariaClara,
+    borderWidth: 1,
+    borderColor: cores.primariaBorda,
+    padding: espaco.md,
+    gap: espaco.sm,
+  },
+  atendimentoSemanalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  atendimentoSemanalRotulo: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+    color: cores.primaria,
+  },
+  atendimentoSemanalDias: {
+    flexDirection: 'row',
+    gap: espaco.xs,
+  },
+  diaSemanaChip: {
+    flex: 1,
+    height: 34,
+    borderRadius: raioUI.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  diaSemanaChipAtivo: {
+    backgroundColor: cores.primaria,
+  },
+  diaSemanaTexto: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: cores.primariaEscura,
+  },
+  diaSemanaTextoAtivo: {
+    color: cores.branco,
   },
   osCardWrap: {
     paddingHorizontal: espaco.lg,

@@ -2,14 +2,16 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { NavigatorScreenParams } from '@react-navigation/native';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AppState, StyleSheet, View, type AppStateStatus } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
+import { AvisoRastreamento, BloqueioRastreamento } from '../components/RastreamentoExigencia';
 import { useAuth } from '../lib/auth/AuthContext';
 import { podeTirarPedido } from '../lib/pedidoVenda';
-import { processarFilaEnvio } from '../lib/filaEnvio';
+import { listarVisitasLocaisPendentesOuRejeitadas } from '../lib/db/filaVisitas';
+import { desligarRetentativaAutomatica, ligarRetentativaAutomatica, processarFilaEnvio } from '../lib/filaEnvio';
 import { aoReconectar } from '../lib/network';
 import { useAoServidorMudarPelaFila } from '../lib/useFilaEnvioAtualizada';
 import { useRastreamento } from '../lib/useRastreamento';
@@ -54,14 +56,30 @@ export type MainTabsParamList = {
 const Tab = createBottomTabNavigator<MainTabsParamList>();
 
 export function MainTabs() {
-  const { usuario } = useAuth();
+  const { usuario, logout } = useAuth();
   // `height` fixo no tabBarStyle desliga o ajuste automático de safe area que o bottom-tabs faz
   // sozinho por padrão — sem somar o inset aqui, a barra fica curta e o gesto/home indicator do
   // aparelho cobre o rótulo da última linha.
   const insets = useSafeAreaInsets();
   // Rastreamento em tempo real (docs/11-RASTREAMENTO-TEMPO-REAL.md) — só PROMOTOR. Mantém a
   // tarefa em segundo plano viva e mostra a explicação antes de pedir a permissão "Sempre".
-  const rastreamento = useRastreamento(usuario?.user_type === 'PROMOTOR');
+  // docs/47-RASTREAMENTO-EXIGENCIA.md: com exigência AVISO/OBRIGATÓRIO, mostra a faixa de aviso ou
+  // bloqueia o app até o promotor resolver (visita em andamento → só aviso, deixa terminar).
+  const rastreamento = useRastreamento(usuario?.user_type === 'PROMOTOR', true, usuario?.id);
+
+  // Envios ainda na fila, mostrados na tela de bloqueio ("continuam sendo enviados") — só conta
+  // enquanto o bloqueio está aberto.
+  const [enviosPendentes, setEnviosPendentes] = useState(0);
+  useEffect(() => {
+    if (!rastreamento.bloquear || !usuario) return;
+    const contar = () =>
+      void listarVisitasLocaisPendentesOuRejeitadas(usuario.id)
+        .then((v) => setEnviosPendentes(v.length))
+        .catch(() => {});
+    contar();
+    const id = setInterval(contar, 10_000);
+    return () => clearInterval(id);
+  }, [rastreamento.bloquear, usuario]);
 
   // Visita finalizada/registro enviado pela fila: Agenda, pendências, Histórico e o histórico da loja
   // vêm do servidor e ficavam mostrando "Em andamento" até o app ser reaberto.
@@ -100,31 +118,36 @@ export function MainTabs() {
   }, [queryClient]);
 
   // Fila de ENVIO (check-in/registros/checkout coletados offline, ver lib/filaEnvio.ts e
-  // docs/04-APP-MOBILE.md "Fila offline de envio") — dispara em três momentos: ao entrar nas
-  // tabs, sempre que o app volta de background, e assim que o aparelho reconecta de verdade
-  // (NetInfo, mais imediato que esperar o próximo AppState). `processarFilaEnvio` é idempotente
-  // e não faz nada se já estiver rodando, então sobrepor os três gatilhos é seguro.
+  // docs/04-APP-MOBILE.md "Fila offline de envio") — ao entrar nas tabs e ao voltar de background
+  // liga a retentativa automática (que já faz uma passada e repete sozinha enquanto houver
+  // pendência, docs/51 Fase 1); indo pro background, desliga (nenhum timer fica vivo). Reconexão
+  // dispara uma passada na hora. `processarFilaEnvio` não perde chamada concorrente.
   useEffect(() => {
     if (!usuario) return;
 
-    // `.catch()` aqui é cinto e suspensório — processarFilaEnvio já não rejeita mais sozinha
-    // (tem seu próprio catch interno agora, ver lib/filaEnvio.ts), mas esses três disparos
-    // (`void ...`, sem ninguém esperando a promise) não têm handler nenhum por padrão; qualquer
-    // rejeição escapando por aqui vira promise sem handler, e é esse tipo de erro não tratado
-    // que derruba o app sozinho num build de produção.
-    void processarFilaEnvio(usuario.id).catch(() => {});
+    ligarRetentativaAutomatica(usuario.id);
 
+    // Estado anterior PRÓPRIO deste efeito: compartilhar o `appState` do efeito de sincronização
+    // acima fazia o listener de lá marcar 'active' antes deste conferir — a fila nunca via a
+    // volta do background (docs/51).
+    let estadoAnterior: AppStateStatus = AppState.currentState;
     const listenerAppState = (proximoEstado: AppStateStatus) => {
-      if (appState.current.match(/inactive|background/) && proximoEstado === 'active') {
-        void processarFilaEnvio(usuario.id).catch(() => {});
+      if (estadoAnterior.match(/inactive|background/) && proximoEstado === 'active') {
+        ligarRetentativaAutomatica(usuario.id);
+      } else if (proximoEstado === 'background') {
+        desligarRetentativaAutomatica();
       }
+      estadoAnterior = proximoEstado;
     };
     const subscriptionAppState = AppState.addEventListener('change', listenerAppState);
+    // `.catch()` é cinto e suspensório — rejeição solta vira erro não tratado que derruba o app
+    // num build de produção.
     const pararDeEscutarReconexao = aoReconectar(() => void processarFilaEnvio(usuario.id).catch(() => {}));
 
     return () => {
       subscriptionAppState.remove();
       pararDeEscutarReconexao();
+      desligarRetentativaAutomatica();
     };
     // Depende só do id (valor primitivo), não do objeto `usuario` inteiro — uma referência nova
     // em algum re-render que não seja login/logout de verdade (ex.: refetch de /auth/me
@@ -134,7 +157,16 @@ export function MainTabs() {
   }, [usuario?.id]);
 
   return (
-    <>
+    <View style={styles.raiz}>
+    <BloqueioRastreamento
+      visible={rastreamento.bloquear}
+      situacao={rastreamento.situacao}
+      detalhe={rastreamento.detalhe}
+      enviosPendentes={enviosPendentes}
+      resolvendo={rastreamento.resolvendo}
+      onResolver={() => void rastreamento.resolver()}
+      onSair={() => void logout()}
+    />
     <PermissaoRastreamentoModal
       visible={rastreamento.explicando}
       enviando={rastreamento.pedindo}
@@ -180,11 +212,23 @@ export function MainTabs() {
         options={{ title: 'Perfil', headerRight: () => <BotaoNotificacoes /> }}
       />
     </Tab.Navigator>
-    </>
+    {rastreamento.avisar && (
+      <AvisoRastreamento
+        situacao={rastreamento.situacao}
+        visitaEmAndamento={rastreamento.visitaEmAndamento}
+        obrigatorio={rastreamento.exigencia === 'OBRIGATORIO'}
+        resolvendo={rastreamento.resolvendo}
+        onResolver={() => void rastreamento.resolver()}
+      />
+    )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  raiz: {
+    flex: 1,
+  },
   headerTitulo: {
     fontWeight: '700',
   },

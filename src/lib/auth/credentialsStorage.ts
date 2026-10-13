@@ -1,24 +1,20 @@
 import * as SecureStore from 'expo-secure-store';
 
 /**
- * "Lembrar-me" da tela de login — pré-preenche e-mail/senha na próxima vez que a tela de login
- * aparecer (sessão revogada por outro login, token expirado), pra não redigitar tudo de novo.
- * Mesmo mecanismo de tokenStorage.ts (SecureStore, criptografado no Keychain/Keystore do
- * aparelho), guardado como um JSON único em vez de duas chaves separadas — mais simples de
- * limpar tudo de uma vez.
+ * "Lembrar meu e-mail" da tela de login — pré-preenche só o e-mail (docs/67 §4.5). A senha não é
+ * mais guardada: com ela salva, dois promotores revezavam o mesmo login em dois aparelhos com um
+ * toque. O retorno rápido ao app agora é o desbloqueio por biometria (`biometria`), que libera o
+ * token já salvo sem reenviar senha nenhuma — ver AuthContext.
  *
- * Só existe quando o promotor marca a opção na tela de login (ver LoginScreen) — nunca é
- * automático. Isso importa especialmente no cenário de aparelho compartilhado entre promotores
- * (mesmo raciocínio de `limparCacheLocal`, docs/04-APP-MOBILE.md "Aparelho compartilhado"): um
- * logout explícito limpa isso (ver AuthContext::logout) — guardar a SENHA de alguém (não só o
- * e-mail) sobrevivendo a um logout de propósito deixaria a próxima pessoa entrar na conta
- * anterior só de tocar "Entrar", sem nunca saber a senha.
+ * Só existe quando o promotor marca a opção na tela de login. Logout explícito limpa tudo (aparelho
+ * compartilhado: docs/04-APP-MOBILE.md "Aparelho compartilhado").
  */
 const STORAGE_KEY = 'pdv_mobile_credenciais';
 
 export interface CredenciaisSalvas {
   email: string;
-  senha: string;
+  /** Pedir digital/rosto ao abrir o app com sessão ativa. */
+  biometria: boolean;
 }
 
 export const credenciaisStorage = {
@@ -27,9 +23,15 @@ export const credenciaisStorage = {
     if (!valor) return null;
 
     try {
-      return JSON.parse(valor) as CredenciaisSalvas;
+      const salvas = JSON.parse(valor) as Partial<CredenciaisSalvas> & { senha?: string };
+      if (!salvas.email) return null;
+      // Versão antiga guardava a senha — regrava sem ela.
+      if (salvas.senha !== undefined) {
+        await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify({ email: salvas.email, biometria: false }));
+      }
+      return { email: salvas.email, biometria: Boolean(salvas.biometria) };
     } catch {
-      return null; // formato inesperado (ex.: versão antiga do app) — trata como se não tivesse nada salvo
+      return null; // formato inesperado — trata como se não tivesse nada salvo
     }
   },
   async set(credenciais: CredenciaisSalvas): Promise<void> {

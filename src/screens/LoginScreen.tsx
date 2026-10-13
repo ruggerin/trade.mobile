@@ -1,7 +1,7 @@
-import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Pressable,
   ScrollView,
@@ -11,32 +11,41 @@ import {
   View,
 } from 'react-native';
 import axios from 'axios';
+import * as LocalAuthentication from 'expo-local-authentication';
 import { useAuth } from '../lib/auth/AuthContext';
+import { abrirDocumento } from '../lib/api/documentosLegais';
 import { credenciaisStorage } from '../lib/auth/credentialsStorage';
 import { cores, espaco, raio, sombraFlutuante, tipografia } from '../theme';
 
 // docs/05-APP-MOBILE-UX.md §3.2 — campo e-mail, campo senha (toggle mostrar/ocultar), botão
 // "Entrar", estados padrão/carregando/erro inline/sem conexão.
 export function LoginScreen() {
-  const { login } = useAuth();
+  const { login, avisoSessao } = useAuth();
   const [email, setEmail] = useState('');
   const [senha, setSenha] = useState('');
   const [mostrarSenha, setMostrarSenha] = useState(false);
   const [lembrar, setLembrar] = useState(false);
+  // Desbloqueio por digital/rosto ao abrir o app (docs/67 §4.5) — só aparece se o aparelho tem.
+  const [biometria, setBiometria] = useState(false);
+  const [temBiometria, setTemBiometria] = useState(false);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
-  // Pré-preenche se o promotor marcou "lembrar" numa sessão anterior — ver
-  // lib/auth/credentialsStorage.ts. Só roda uma vez, ao montar a tela (ela só aparece de novo
-  // depois de logout/sessão revogada, então não precisa reagir a mudanças depois disso).
+  // Pré-preenche o e-mail se o promotor marcou "lembrar" numa sessão anterior — a senha não é
+  // mais guardada (docs/67 §4.5, ver lib/auth/credentialsStorage.ts). Só roda uma vez, ao montar.
   useEffect(() => {
     let cancelado = false;
     credenciaisStorage.get().then((salvas) => {
       if (cancelado || !salvas) return;
       setEmail(salvas.email);
-      setSenha(salvas.senha);
       setLembrar(true);
+      setBiometria(salvas.biometria);
     });
+    Promise.all([LocalAuthentication.hasHardwareAsync(), LocalAuthentication.isEnrolledAsync()])
+      .then(([hardware, cadastrada]) => {
+        if (!cancelado) setTemBiometria(hardware && cadastrada);
+      })
+      .catch(() => {});
     return () => {
       cancelado = true;
     };
@@ -53,9 +62,9 @@ export function LoginScreen() {
 
     try {
       await login(email.trim(), senha);
-      // Só depois do login confirmar — nunca guarda uma senha que nem foi validada ainda.
-      if (lembrar) {
-        await credenciaisStorage.set({ email: email.trim(), senha });
+      // Só depois do login confirmar. Biometria só faz sentido com o e-mail lembrado (mesma conta).
+      if (lembrar || biometria) {
+        await credenciaisStorage.set({ email: email.trim(), biometria: biometria && temBiometria });
       } else {
         await credenciaisStorage.clear();
       }
@@ -63,6 +72,9 @@ export function LoginScreen() {
       if (axios.isAxiosError<{ errors?: Record<string, string[]>; message?: string }>(err)) {
         if (!err.response) {
           setErro('Não foi possível conectar. Verifique sua internet e tente novamente.');
+        } else if (err.response.status === 429) {
+          // Limite de tentativas de login (docs/67 §2, B8).
+          setErro('Muitas tentativas seguidas. Aguarde um minuto e tente de novo.');
         } else {
           const primeiraMensagem = err.response.data.errors
             ? Object.values(err.response.data.errors)[0]?.[0]
@@ -87,11 +99,20 @@ export function LoginScreen() {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.logoBadge}>
-          <MaterialCommunityIcons name="storefront" size={32} color={cores.primaria} />
-        </View>
-        <Text style={styles.titulo}>PDV App</Text>
+        <Image
+          source={require('../../assets/horus-logo.png')}
+          style={styles.logo}
+          resizeMode="contain"
+          accessibilityRole="image"
+          accessibilityLabel="Horus"
+        />
         <Text style={styles.subtitulo}>Entre com sua conta de promotor</Text>
+
+        {avisoSessao && !erro && (
+          <View style={styles.avisoBox}>
+            <Text style={styles.avisoTexto}>{avisoSessao}</Text>
+          </View>
+        )}
 
         {erro && (
           <View style={styles.erroBox}>
@@ -141,8 +162,22 @@ export function LoginScreen() {
           <View style={[styles.checkbox, lembrar && styles.checkboxMarcado]}>
             {lembrar && <Text style={styles.checkboxMarca}>✓</Text>}
           </View>
-          <Text style={styles.lembrarTexto}>Lembrar e-mail e senha</Text>
+          <Text style={styles.lembrarTexto}>Lembrar meu e-mail</Text>
         </Pressable>
+
+        {temBiometria && (
+          <Pressable
+            style={styles.lembrarLinha}
+            onPress={() => setBiometria((v) => !v)}
+            disabled={carregando}
+            hitSlop={8}
+          >
+            <View style={[styles.checkbox, biometria && styles.checkboxMarcado]}>
+              {biometria && <Text style={styles.checkboxMarca}>✓</Text>}
+            </View>
+            <Text style={styles.lembrarTexto}>Abrir o app com digital ou rosto</Text>
+          </Pressable>
+        )}
 
         <Pressable
           style={({ pressed }) => [styles.botao, (carregando || pressed) && styles.botaoPressionado]}
@@ -155,6 +190,19 @@ export function LoginScreen() {
             <Text style={styles.botaoTexto}>Entrar</Text>
           )}
         </Pressable>
+
+        {/* docs/58 §6 — o aceite de verdade é na tela seguinte ao login; aqui só o aviso com os textos. */}
+        <Text style={styles.legal}>
+          Ao entrar, você concorda com os{' '}
+          <Text style={styles.legalLink} onPress={() => void abrirDocumento('TERMOS_USO')} accessibilityRole="link">
+            Termos de Uso
+          </Text>{' '}
+          e a{' '}
+          <Text style={styles.legalLink} onPress={() => void abrirDocumento('POLITICA_PRIVACIDADE')} accessibilityRole="link">
+            Política de Privacidade
+          </Text>
+          .
+        </Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -171,21 +219,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: espaco.xl,
     paddingVertical: espaco.xl,
   },
-  logoBadge: {
-    width: 64,
-    height: 64,
-    borderRadius: raio.lg,
-    backgroundColor: cores.primariaClara,
-    alignItems: 'center',
-    justifyContent: 'center',
+  // Logo horizontal oficial da marca (assets/horus-logo.png, proporção 1600 x 428).
+  logo: {
+    width: 180,
+    height: 48,
     alignSelf: 'center',
-    marginBottom: espaco.lg,
-  },
-  titulo: {
-    ...tipografia.tituloGrande,
-    fontSize: 30,
-    color: cores.texto,
-    textAlign: 'center',
+    marginBottom: espaco.md,
   },
   subtitulo: {
     fontSize: 16,
@@ -293,8 +332,31 @@ const styles = StyleSheet.create({
     padding: espaco.md,
     marginBottom: espaco.sm,
   },
+  legal: {
+    fontSize: 13,
+    color: cores.textoSecundario,
+    textAlign: 'center',
+    marginTop: espaco.lg,
+    lineHeight: 19,
+  },
+  legalLink: {
+    color: cores.primaria,
+    fontWeight: '600',
+  },
   erroTexto: {
     color: cores.erro,
+    fontSize: 14,
+  },
+  avisoBox: {
+    backgroundColor: cores.acentoClaro,
+    borderWidth: 1,
+    borderColor: cores.acentoBorda,
+    borderRadius: raio.md,
+    padding: espaco.md,
+    marginBottom: espaco.sm,
+  },
+  avisoTexto: {
+    color: cores.acentoTexto,
     fontSize: 14,
   },
 });

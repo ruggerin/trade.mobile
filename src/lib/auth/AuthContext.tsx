@@ -1,9 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import * as LocalAuthentication from 'expo-local-authentication';
+import { AppState } from 'react-native';
 import * as authApi from '../api/auth';
-import { authEvents, UNAUTHORIZED_EVENT } from '../api/client';
+import { APP_DESATUALIZADO_EVENT, authEvents, SessaoEncerradaEvent, UNAUTHORIZED_EVENT } from '../api/client';
 import { limparCacheLocal } from '../db/database';
 import { credenciaisStorage } from './credentialsStorage';
+import { renovarSessaoSeNecessario } from './renovacaoSessao';
 import { encerrarRastreamentoNoLogout } from '../rastreamento';
 import { tokenStorage } from './tokenStorage';
 import type { Usuario } from '../../types/api';
@@ -25,6 +28,15 @@ interface AuthContextValue {
   // abaixo) ficaria com o dado antigo pro resto da sessão, já que meQuery.enabled desliga assim
   // que `usuarioDoLogin` existe e nunca mais dispara sozinho.
   atualizarUsuario: (usuario: Usuario) => void;
+  // Por que a sessão caiu, vindo da API ("Sua conta entrou em outro aparelho (Moto G, 14:32)...")
+  // — a tela de login mostra (docs/67 §4.5).
+  avisoSessao: string | null;
+  limparAvisoSessao: () => void;
+  // API respondeu 426 (docs/67 Fase 2): versão abaixo da mínima, o app pede atualização.
+  appDesatualizado: boolean;
+  // Sessão ativa esperando a digital/rosto (docs/67 §4.5) — só quando o usuário ligou a opção.
+  bloqueadoPorBiometria: boolean;
+  desbloquearComBiometria: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -38,15 +50,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // meQuery.data pra um segundo useState via useEffect, isso abre uma janela de 1 frame com
   // dado carregado mas ainda não propagado.
   const [usuarioDoLogin, setUsuarioDoLogin] = useState<Usuario | null>(null);
+  const [avisoSessao, setAvisoSessao] = useState<string | null>(null);
+  const [appDesatualizado, setAppDesatualizado] = useState(false);
+  const [bloqueadoPorBiometria, setBloqueadoPorBiometria] = useState(false);
 
   useEffect(() => {
     let cancelado = false;
-    tokenStorage.get().then((valor) => {
+    (async () => {
+      const valor = await tokenStorage.get();
+      // Abrir o app com sessão ativa pede a biometria, se o usuário ligou a opção e o aparelho tem.
+      const exigeBiometria = Boolean(valor) && (await biometriaDisponivelELigada());
       if (!cancelado) {
+        setBloqueadoPorBiometria(exigeBiometria);
         setToken(valor);
         setTokenCarregado(true);
       }
-    });
+    })();
     return () => {
       cancelado = true;
     };
@@ -60,11 +79,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const usuario = usuarioDoLogin ?? meQuery.data?.usuario ?? null;
+  const logado = Boolean(token);
+
+  // Renovação do token (vence em 7 dias, docs/67 §4.4) ao abrir o app e ao voltar do segundo
+  // plano. Relê o token depois: o `token` exposto aqui vai em header de imagem (fora do axios) e
+  // o antigo só vale mais 60 s depois de renovado.
+  useEffect(() => {
+    if (!logado) return;
+
+    function renovar() {
+      void renovarSessaoSeNecessario()
+        .then(() => tokenStorage.get())
+        .then((atual) => {
+          if (atual) setToken(atual);
+        });
+    }
+
+    renovar();
+    const assinatura = AppState.addEventListener('change', (estado) => {
+      if (estado === 'active') renovar();
+    });
+    return () => assinatura.remove();
+  }, [logado]);
 
   // A API pode invalidar um token a qualquer momento (usuário desativado, troca de
   // dispositivo) — o interceptor do axios detecta o 401 e dispara isso pra limpar a sessão.
   useEffect(() => {
-    function handleUnauthorized() {
+    function handleUnauthorized(evento: Event) {
+      if (evento instanceof SessaoEncerradaEvent && evento.mensagem) setAvisoSessao(evento.mensagem);
       setToken(null);
       setUsuarioDoLogin(null);
       queryClient.clear();
@@ -75,11 +117,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void encerrarRastreamentoNoLogout().catch(() => {});
     }
 
+    function handleDesatualizado() {
+      setAppDesatualizado(true);
+    }
+
     authEvents.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
-    return () => authEvents.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+    authEvents.addEventListener(APP_DESATUALIZADO_EVENT, handleDesatualizado);
+    return () => {
+      authEvents.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+      authEvents.removeEventListener(APP_DESATUALIZADO_EVENT, handleDesatualizado);
+    };
   }, [queryClient]);
 
+  async function desbloquearComBiometria() {
+    const resultado = await LocalAuthentication.authenticateAsync({
+      promptMessage: 'Desbloquear o Horus',
+      cancelLabel: 'Cancelar',
+    });
+    if (resultado.success) setBloqueadoPorBiometria(false);
+  }
+
   async function login(email: string, senha: string) {
+    setAvisoSessao(null);
     const response = await authApi.login(email, senha);
     await tokenStorage.set(response.token);
     setToken(response.token);
@@ -98,11 +157,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     await tokenStorage.clear();
     // Logout explícito (diferente do handleUnauthorized acima, que é a sessão caindo sozinha) —
-    // é o sinal de "terminei"/"próxima pessoa usa o aparelho", então esquece a senha lembrada
+    // é o sinal de "terminei"/"próxima pessoa usa o aparelho", então esquece o e-mail lembrado
     // também. Ver credentialsStorage.ts.
     await credenciaisStorage.clear();
     setToken(null);
     setUsuarioDoLogin(null);
+    setBloqueadoPorBiometria(false);
     queryClient.clear();
     // Mesmo motivo do handleUnauthorized acima: aparelho pode ser compartilhado entre
     // promotores (ex.: celular da loja), o próximo login não pode herdar cache de outro.
@@ -123,11 +183,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         atualizarUsuario,
+        avisoSessao,
+        limparAvisoSessao: () => setAvisoSessao(null),
+        appDesatualizado,
+        bloqueadoPorBiometria,
+        desbloquearComBiometria,
       }}
     >
       {children}
     </AuthContext.Provider>
   );
+}
+
+async function biometriaDisponivelELigada(): Promise<boolean> {
+  try {
+    const salvas = await credenciaisStorage.get();
+    if (!salvas?.biometria) return false;
+    return (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync());
+  } catch {
+    return false;
+  }
 }
 
 export function useAuth(): AuthContextValue {

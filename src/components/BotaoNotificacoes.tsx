@@ -3,6 +3,7 @@ import { type NavigationProp, useNavigation } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { buscarNaoLidos } from '../lib/api/comentarios';
+import { buscarAvisosPedido } from '../lib/api/historicoLoja';
 import type { MainTabsParamList } from '../navigation/MainTabs';
 import { cores, neutro } from '../theme';
 
@@ -13,7 +14,9 @@ import { cores, neutro } from '../theme';
 export function BotaoNotificacoes() {
   const navigation = useNavigation<NavigationProp<MainTabsParamList>>();
   const naoLidosQuery = useQuery({ queryKey: ['comentarios-nao-lidos'], queryFn: buscarNaoLidos, retry: false });
-  const total = naoLidosQuery.data?.total ?? 0;
+  // Avisos de pedido (a caminho / entregue, docs/54) — fonte separada, mesmo badge.
+  const avisosPedidoQuery = useQuery({ queryKey: ['avisos-pedido'], queryFn: buscarAvisosPedido, retry: false });
+  const total = (naoLidosQuery.data?.total ?? 0) + (avisosPedidoQuery.data?.total ?? 0);
 
   return (
     <Pressable

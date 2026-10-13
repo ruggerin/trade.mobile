@@ -5,6 +5,7 @@ import { PontoVendaCheckinScreen } from '../screens/PontoVendaCheckinScreen';
 import { ReagendarCompromissoScreen } from '../screens/ReagendarCompromissoScreen';
 import { VisitaAndamentoScreen } from '../screens/VisitaAndamentoScreen';
 import { PedidoVendaScreen, type PedidoVendaParams } from '../screens/PedidoVendaScreen';
+import { PedidoDetalheScreen, type PedidoDetalheParams } from '../screens/PedidoDetalheScreen';
 import { VisitaDetalheScreen, type VisitaDetalheParams } from '../screens/VisitaDetalheScreen';
 import type { OrdemServico, PontoVenda } from '../types/api';
 
@@ -16,11 +17,14 @@ export type AgendaStackParamList = {
   AgendaLista: undefined;
   NovoCompromisso: undefined;
   ReagendarCompromisso: { ordemServico: OrdemServico };
-  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico };
+  // ordemServicoEscolhida: veio do card da Agenda — o check-in usa exatamente essa OS (docs/07).
+  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico; ordemServicoEscolhida?: boolean };
   // Ver comentário equivalente em PontosVendaStack.tsx.
   VisitaAndamento: { visitaLocalId: string };
   // Ver comentário equivalente em PontosVendaStack.tsx.
   VisitaDetalhe: VisitaDetalheParams;
+  // Detalhe do pedido do ERP (docs/54) — aberto pelo cartão da loja ou pelo sino.
+  PedidoDetalhe: PedidoDetalheParams;
   // Pedido de Venda a partir da visita ("Tirar pedido") — mesma tela da aba Pedidos, ver
   // PedidosStack.tsx e docs/38-PEDIDO-VENDEDOR.md §8.
   PedidoVenda: PedidoVendaParams | undefined;
@@ -46,6 +50,7 @@ export function AgendaStack() {
           duas barras empilhadas, tela bem menos "full screen" do que o protótipo. */}
       <Stack.Screen name="VisitaAndamento" component={VisitaAndamentoScreen} options={{ headerShown: false }} />
       <Stack.Screen name="VisitaDetalhe" component={VisitaDetalheScreen} options={{ title: 'Detalhe da visita' }} />
+      <Stack.Screen name="PedidoDetalhe" component={PedidoDetalheScreen} options={{ title: 'Pedido' }} />
       <Stack.Screen name="PedidoVenda" component={PedidoVendaScreen} options={{ title: 'Pedido' }} />
     </Stack.Navigator>
   );

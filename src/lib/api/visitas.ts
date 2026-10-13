@@ -10,11 +10,17 @@ export interface CheckinPayload {
   // Presente quando o check-in nasce de uma OrdemServico direcionada — ver
   // docs/07-ORDEM-DE-SERVICO.md.
   ordem_servico_uuid?: string;
+  // O promotor escolheu esta OS (card da Agenda): a API vincula exatamente ela. Ausente = é só a
+  // sugestão do app, e a API pode trocar uma OS fora do dia pela do dia (App\Support\OrdemDoCheckin).
+  ordem_servico_escolhida?: boolean;
   // Idempotência — mesmo uuid local da visita na fila (`fila_visitas.id`), reenviado sem mudar
   // a cada nova tentativa da mesma visita. Se o app fechar entre o servidor confirmar e o
   // celular gravar a resposta, o reenvio com a MESMA chave devolve a visita já criada em vez de
   // duplicar — ver VisitaController::store e lib/filaEnvio.ts.
   idempotency_key?: string;
+  // Hora do check-in no campo (ISO) — o servidor grava esta em vez da hora da chegada; sem ela
+  // (ou com relógio absurdo) usa a da chegada. docs/51-ENVIO-DA-FILA-EM-TEMPO-REAL.md Fase 2.
+  inicio_em?: string;
 }
 
 export async function iniciarVisita(payload: CheckinPayload): Promise<Visita> {
@@ -27,10 +33,12 @@ export async function buscarVisita(visitaId: string): Promise<Visita> {
   return data.visita;
 }
 
-export async function finalizarVisita(visitaId: string, latitude: number, longitude: number): Promise<Visita> {
+// `fimEm` = hora em que o promotor finalizou no campo (docs/51 Fase 2).
+export async function finalizarVisita(visitaId: string, latitude: number, longitude: number, fimEm?: string | null): Promise<Visita> {
   const { data } = await apiClient.patch<{ visita: Visita }>(`/visitas/${visitaId}/checkout`, {
     latitude,
     longitude,
+    ...(fimEm ? { fim_em: fimEm } : {}),
   });
   return data.visita;
 }
@@ -86,6 +94,8 @@ export interface CriarRegistroPayload {
   valoresCampos?: Record<string, string>;
   ruptura?: boolean;
   observacao?: string;
+  // Hora em que o registro foi salvo no celular (ISO) — docs/51 Fase 2.
+  criadoEm?: string;
 }
 
 export async function criarRegistro(payload: CriarRegistroPayload): Promise<VisitaRegistro> {
@@ -113,6 +123,9 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
   }
   if (payload.observacao) {
     form.append('observacao', payload.observacao);
+  }
+  if (payload.criadoEm) {
+    form.append('criado_em', payload.criadoEm);
   }
   // Laravel entende a notação `campo[chave]` em multipart/form-data como array associativo —
   // não dá pra mandar um objeto direto num FormData.

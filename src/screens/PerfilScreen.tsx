@@ -5,9 +5,12 @@ import { useEffect, useState } from 'react';
 import { useIsFocused } from '@react-navigation/native';
 import { ActivityIndicator, Alert, Image, Linking, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
+import { textoSituacao } from '../lib/textosRastreamento';
 import { useRastreamento } from '../lib/useRastreamento';
+import { abrirDocumento } from '../lib/api/documentosLegais';
 import { atualizarFotoPerfil, removerFotoPerfil } from '../lib/api/perfil';
 import { useAuth } from '../lib/auth/AuthContext';
+import { useHeadersAutenticados } from '../lib/seguranca/useHeadersAutenticados';
 import { obterUltimaSincronizacao } from '../lib/db/database';
 import { processarFilaEnvio } from '../lib/filaEnvio';
 import { sincronizarAgora } from '../lib/sync';
@@ -18,7 +21,9 @@ import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
 // docs/05-APP-MOBILE-UX.md §3.8 — nome/e-mail do usuário, empresa (tenant), botão Sair com
 // confirmação, espaço pra versão do app.
 export function PerfilScreen() {
-  const { usuario, token, logout, atualizarUsuario } = useAuth();
+  const { usuario, logout, atualizarUsuario } = useAuth();
+  // Authorization + assinatura do aparelho (docs/67 Fase 3) — o <Image> não passa pelo apiClient.
+  const headersFoto = useHeadersAutenticados(usuario?.foto_url);
   const queryClient = useQueryClient();
   const [ultimaSincronizacao, setUltimaSincronizacao] = useState<string | null>(null);
 
@@ -112,6 +117,9 @@ export function PerfilScreen() {
       // Sem isso o SQLite ficava atualizado mas as telas (ex.: lista de Lojas) seguiam com o que
       // já tinham em memória até reabrir o app.
       void queryClient.invalidateQueries();
+      // Parâmetro de rastreamento mudou no admin (ligar/desligar, intervalo, exigência)? Aplica já
+      // na tarefa em segundo plano, sem esperar o app ir e voltar do background.
+      void reavaliarRastreamento();
       Alert.alert(
         'Sincronizado',
         `${resultado.pontosVenda} ponto(s) de venda, ${resultado.tiposRegistro} tipo(s) de registro e ${resultado.parametros} parâmetro(s) atualizados.`,
@@ -182,10 +190,10 @@ export function PerfilScreen() {
         disabled={fotoMutation.isPending || removerFotoMutation.isPending}
         style={({ pressed }) => [styles.avatarToque, pressed && { opacity: 0.7 }]}
       >
-        {usuario?.foto_url ? (
+        {usuario?.foto_url && headersFoto ? (
           // Sempre a nossa própria API (ver Usuario.foto_url) — o header de autenticação nunca
           // vaza pra um host externo, diferente de avatar_url (que pode ser qualquer URL).
-          <Image source={{ uri: usuario.foto_url, headers: { Authorization: `Bearer ${token}` } }} style={styles.avatar} />
+          <Image source={{ uri: usuario.foto_url, headers: headersFoto }} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarSemFoto]}>
             <Text style={styles.avatarTexto}>{usuario?.nome?.charAt(0).toUpperCase() ?? '?'}</Text>
@@ -217,21 +225,32 @@ export function PerfilScreen() {
         <View style={styles.rastreamentoBox}>
           <View style={styles.rastreamentoTextos}>
             <Text style={styles.rastreamentoTitulo}>Compartilhar minha localização</Text>
+            {/* Motivo real de estar ou não rastreando (docs/47 §5.1) — antes só havia 3 estados e
+                qualquer falha ficava invisível. */}
             <Text style={styles.rastreamentoDescricao}>
               {rastreamento.situacao === 'ATIVO'
                 ? 'Ativo — seu gestor vê sua posição durante o expediente.'
                 : rastreamento.situacao === 'DESLIGADO_PELO_PROMOTOR'
                   ? 'Pausado por você.'
-                  : rastreamento.situacao === 'PERMISSAO_RECUSADA'
-                    ? 'Precisa da permissão de localização "o tempo todo".'
-                    : 'Aguardando permissão de localização.'}
+                  : `${textoSituacao(rastreamento.situacao).titulo}. ${textoSituacao(rastreamento.situacao).explicacao}`}
             </Text>
+            {rastreamento.exigencia !== 'OPCIONAL' && (
+              <Text style={styles.rastreamentoDescricao}>Obrigatório pela sua empresa durante o expediente.</Text>
+            )}
+            {rastreamento.irregular && textoSituacao(rastreamento.situacao).acao && rastreamento.situacao !== 'DESLIGADO_PELO_PROMOTOR' && (
+              <Pressable onPress={() => void rastreamento.resolver()} disabled={rastreamento.resolvendo} hitSlop={8}>
+                <Text style={styles.rastreamentoAcao}>{textoSituacao(rastreamento.situacao).acao}</Text>
+              </Pressable>
+            )}
           </View>
-          <Switch
-            value={rastreamento.situacao === 'ATIVO' || rastreamento.situacao === 'PRECISA_PERMISSAO'}
-            onValueChange={(ligado) => void rastreamento.alternar(ligado)}
-            trackColor={{ true: cores.primaria }}
-          />
+          {/* Pausar só existe quando a empresa deixa opcional. */}
+          {rastreamento.exigencia === 'OPCIONAL' && (
+            <Switch
+              value={rastreamento.situacao !== 'DESLIGADO_PELO_PROMOTOR'}
+              onValueChange={(ligado) => void rastreamento.alternar(ligado)}
+              trackColor={{ true: cores.primaria }}
+            />
+          )}
         </View>
       )}
 
@@ -240,6 +259,7 @@ export function PerfilScreen() {
         enviando={rastreamento.pedindo}
         onPermitir={() => void rastreamento.permitir()}
         onAgoraNao={() => void rastreamento.agoraNao()}
+        podePausar={rastreamento.exigencia === 'OPCIONAL'}
       />
 
       <View style={styles.syncBox}>
@@ -293,6 +313,17 @@ export function PerfilScreen() {
           </Pressable>
         </View>
       )}
+
+      {/* docs/58 §6 — os textos que ele aceitou, sempre à mão. */}
+      <View style={styles.legal}>
+        <Pressable onPress={() => void abrirDocumento('TERMOS_USO')} hitSlop={8} accessibilityRole="link">
+          <Text style={styles.legalLink}>Termos de Uso</Text>
+        </Pressable>
+        <Text style={styles.legalSeparador}>·</Text>
+        <Pressable onPress={() => void abrirDocumento('POLITICA_PRIVACIDADE')} hitSlop={8} accessibilityRole="link">
+          <Text style={styles.legalLink}>Política de Privacidade</Text>
+        </Pressable>
+      </View>
 
       <Pressable
         style={({ pressed }) => [styles.botaoSair, pressed && styles.botaoSairPressionado]}
@@ -399,6 +430,11 @@ const styles = StyleSheet.create({
     width: '100%',
     alignItems: 'center',
   },
+  rastreamentoAcao: {
+    ...tipografia.destaque,
+    color: cores.primaria,
+    marginTop: 6,
+  },
   botaoSync: {
     flexDirection: 'row',
     gap: espaco.sm,
@@ -468,10 +504,26 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
+  legal: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: espaco.sm,
+    marginTop: espaco.xxl,
+  },
+  legalLink: {
+    color: cores.primaria,
+    fontSize: 14,
+    fontWeight: '600',
+    paddingVertical: espaco.xs,
+  },
+  legalSeparador: {
+    color: cores.textoTerciario,
+  },
   botaoSair: {
     flexDirection: 'row',
     gap: espaco.sm,
-    marginTop: espaco.xxl,
+    marginTop: espaco.lg,
     width: '100%',
     minHeight: 52,
     borderRadius: raio.md,
