@@ -8,6 +8,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { TelaErro } from './src/components/TelaErro';
 import { instalarTratadorGlobalDeErros } from './src/lib/crashHandler';
+import { reportarErro } from './src/lib/sentry';
 // Efeito colateral proposital: registra a tarefa de rastreamento em segundo plano (defineTask) já
 // na inicialização do módulo, antes de qualquer tela — o SO pode acordar o app só pra rodá-la.
 import './src/lib/rastreamento';
@@ -53,7 +54,11 @@ export default function App() {
   const [erroFatal, setErroFatal] = useState<unknown>(null);
 
   useEffect(() => {
-    instalarTratadorGlobalDeErros(setErroFatal);
+    instalarTratadorGlobalDeErros((erro) => {
+      // O tratador do app substitui o do React Native (e o do Sentry): reporta aqui, explicitamente.
+      reportarErro(erro, 'erro_global', true);
+      setErroFatal(erro);
+    });
   }, []);
 
   if (erroFatal) {

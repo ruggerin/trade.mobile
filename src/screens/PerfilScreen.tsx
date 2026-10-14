@@ -14,6 +14,7 @@ import { useHeadersAutenticados } from '../lib/seguranca/useHeadersAutenticados'
 import { obterUltimaSincronizacao } from '../lib/db/database';
 import { processarFilaEnvio } from '../lib/filaEnvio';
 import { sincronizarAgora } from '../lib/sync';
+import { dispararTesteSentry } from '../lib/sentry';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import { listarVisitasLocaisPendentesOuRejeitadas } from '../lib/visitaLocal';
 import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
@@ -21,6 +22,23 @@ import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
 // docs/05-APP-MOBILE-UX.md §3.8 — nome/e-mail do usuário, empresa (tenant), botão Sair com
 // confirmação, espaço pra versão do app.
 export function PerfilScreen() {
+  // TEMPORÁRIO (docs/72 §4): 7 toques seguidos na versão abrem o teste do Sentry. Remover depois de validar.
+  const [toquesNaVersao, setToquesNaVersao] = useState(0);
+  function aoTocarNaVersao() {
+    const proximo = toquesNaVersao + 1;
+    if (proximo < 7) {
+      setToquesNaVersao(proximo);
+      return;
+    }
+    setToquesNaVersao(0);
+    Alert.alert('Teste do Sentry', 'Envia um evento de teste pro painel. Use só pra validar a coleta.', [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Mensagem', onPress: () => dispararTesteSentry('mensagem') },
+      { text: 'Erro de JS', onPress: () => dispararTesteSentry('erro_js') },
+      { text: 'Crash nativo', style: 'destructive', onPress: () => dispararTesteSentry('crash_nativo') },
+    ]);
+  }
+
   const { usuario, logout, atualizarUsuario } = useAuth();
   // Authorization + assinatura do aparelho (docs/67 Fase 3) — o <Image> não passa pelo apiClient.
   const headersFoto = useHeadersAutenticados(usuario?.foto_url);
@@ -333,7 +351,9 @@ export function PerfilScreen() {
         <Text style={styles.botaoSairTexto}>Sair</Text>
       </Pressable>
 
-      <Text style={styles.versao}>v1.0.0</Text>
+      <Text style={styles.versao} onPress={aoTocarNaVersao}>
+        v1.0.0
+      </Text>
     </View>
   );
 }

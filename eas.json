@@ -17,7 +17,9 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://trade-teste-api.prossigatec.com.br/api"
+        "EXPO_PUBLIC_API_URL": "https://trade-teste-api.prossigatec.com.br/api",
+        "EXPO_PUBLIC_SENTRY_ENV": "homologacao",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://f70d3381c5ef8aae2128782572bcc023@o4512246535618560.ingest.us.sentry.io/4512256277544960"
       }
     },
     "production": {
@@ -26,7 +28,9 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://trade-teste-api.prossigatec.com.br/api"
+        "EXPO_PUBLIC_API_URL": "https://trade-teste-api.prossigatec.com.br/api",
+        "EXPO_PUBLIC_SENTRY_ENV": "homologacao",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://f70d3381c5ef8aae2128782572bcc023@o4512246535618560.ingest.us.sentry.io/4512256277544960"
       }
     }
   },

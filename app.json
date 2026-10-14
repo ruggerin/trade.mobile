@@ -83,7 +83,15 @@
         }
       ],
       "./plugins/withExpoSourcesJarFix",
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "@sentry/react-native/expo",
+        {
+          "url": "https://sentry.io/",
+          "organization": "prossiga-d7",
+          "project": "horus-mobile-beta"
+        }
+      ]
     ],
     "extra": {
       "eas": {

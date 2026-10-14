@@ -8,6 +8,7 @@ import { limparCacheLocal } from '../db/database';
 import { credenciaisStorage } from './credentialsStorage';
 import { renovarSessaoSeNecessario } from './renovacaoSessao';
 import { encerrarRastreamentoNoLogout } from '../rastreamento';
+import { definirUsuarioSentry } from '../sentry';
 import { tokenStorage } from './tokenStorage';
 import type { Usuario } from '../../types/api';
 
@@ -79,6 +80,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const usuario = usuarioDoLogin ?? meQuery.data?.usuario ?? null;
+
+  // Sentry: identifica o erro pelo uuid do usuário e da empresa — nunca nome, e-mail nem telefone.
+  useEffect(() => {
+    definirUsuarioSentry(
+      usuario ? { id: usuario.id, empresaId: usuario.empresa?.id ?? null, tipo: usuario.user_type } : null,
+    );
+  }, [usuario?.id, usuario?.empresa?.id, usuario?.user_type]);
   const logado = Boolean(token);
 
   // Renovação do token (vence em 7 dias, docs/67 §4.4) ao abrir o app e ao voltar do segundo

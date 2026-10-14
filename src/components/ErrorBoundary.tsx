@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from 'react';
+import { reportarErro } from '../lib/sentry';
 import { TelaErro } from './TelaErro';
 
 interface Props {
@@ -19,6 +20,11 @@ export class ErrorBoundary extends Component<Props, State> {
 
   static getDerivedStateFromError(erro: unknown): State {
     return { erro };
+  }
+
+  componentDidCatch(erro: unknown) {
+    // A tela de fallback esconde o erro do usuário; sem isto ele também sumiria de quem mantém o app.
+    reportarErro(erro, 'render');
   }
 
   render() {
