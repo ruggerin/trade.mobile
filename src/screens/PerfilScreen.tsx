@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState } from 'react';
 import { useIsFocused } from '@react-navigation/native';
-import { ActivityIndicator, Alert, Image, Linking, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
 import { textoSituacao } from '../lib/textosRastreamento';
 import { useRastreamento } from '../lib/useRastreamento';
@@ -39,7 +39,16 @@ export function PerfilScreen() {
     ]);
   }
 
-  const { usuario, logout, atualizarUsuario } = useAuth();
+  const { usuario, logout, atualizarUsuario, biometria, definirBiometria } = useAuth();
+  const [alterandoBiometria, setAlterandoBiometria] = useState(false);
+  async function alternarBiometria(ativa: boolean) {
+    setAlterandoBiometria(true);
+    try {
+      await definirBiometria(ativa);
+    } finally {
+      setAlterandoBiometria(false);
+    }
+  }
   // Authorization + assinatura do aparelho (docs/67 Fase 3) — o <Image> não passa pelo apiClient.
   const headersFoto = useHeadersAutenticados(usuario?.foto_url);
   const queryClient = useQueryClient();
@@ -202,7 +211,8 @@ export function PerfilScreen() {
   }
 
   return (
-    <View style={styles.container}>
+    // Rola em celular pequeno — os cards de localização, biometria e fila podem aparecer juntos.
+    <ScrollView style={styles.tela} contentContainerStyle={styles.container}>
       <Pressable
         onPress={escolherFoto}
         disabled={fotoMutation.isPending || removerFotoMutation.isPending}
@@ -272,6 +282,28 @@ export function PerfilScreen() {
         </View>
       )}
 
+      {biometria && (
+        <View style={styles.rastreamentoBox}>
+          <MaterialCommunityIcons name="fingerprint" size={22} color={biometria.disponivel ? cores.primaria : cores.textoTerciario} />
+          <View style={styles.rastreamentoTextos}>
+            <Text style={styles.rastreamentoTitulo}>Entrar com biometria</Text>
+            <Text style={styles.rastreamentoDescricao}>
+              {!biometria.disponivel
+                ? 'Cadastre uma biometria nas configurações do celular para usar.'
+                : biometria.ativa
+                  ? 'Ativa — o app pede sua biometria ao abrir.'
+                  : 'Desbloqueie o app sem digitar e-mail e senha.'}
+            </Text>
+          </View>
+          <Switch
+            value={biometria.ativa && biometria.disponivel}
+            onValueChange={(ativa) => void alternarBiometria(ativa)}
+            disabled={!biometria.disponivel || alterandoBiometria}
+            trackColor={{ true: cores.primaria }}
+          />
+        </View>
+      )}
+
       <PermissaoRastreamentoModal
         visible={rastreamento.explicando}
         enviando={rastreamento.pedindo}
@@ -332,15 +364,28 @@ export function PerfilScreen() {
         </View>
       )}
 
-      {/* docs/58 §6 — os textos que ele aceitou, sempre à mão. */}
-      <View style={styles.legal}>
-        <Pressable onPress={() => void abrirDocumento('TERMOS_USO')} hitSlop={8} accessibilityRole="link">
-          <Text style={styles.legalLink}>Termos de Uso</Text>
-        </Pressable>
-        <Text style={styles.legalSeparador}>·</Text>
-        <Pressable onPress={() => void abrirDocumento('POLITICA_PRIVACIDADE')} hitSlop={8} accessibilityRole="link">
-          <Text style={styles.legalLink}>Política de Privacidade</Text>
-        </Pressable>
+      {/* docs/58 §6 — os textos que ele aceitou no primeiro acesso, sempre à mão. */}
+      <View style={styles.documentos}>
+        <Text style={styles.documentosTitulo}>Documentos</Text>
+        <View style={styles.documentosLista}>
+          {(
+            [
+              { tipo: 'TERMOS_USO', icone: 'file-document-outline', rotulo: 'Termos de Uso' },
+              { tipo: 'POLITICA_PRIVACIDADE', icone: 'shield-account-outline', rotulo: 'Política de Privacidade' },
+            ] as const
+          ).map((doc, i) => (
+            <Pressable
+              key={doc.tipo}
+              style={({ pressed }) => [styles.documentoLinha, i > 0 && styles.documentoLinhaDivisor, pressed && styles.botaoPressionado]}
+              onPress={() => void abrirDocumento(doc.tipo)}
+              accessibilityRole="link"
+            >
+              <MaterialCommunityIcons name={doc.icone} size={20} color={cores.primaria} />
+              <Text style={styles.documentoTexto}>{doc.rotulo}</Text>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={cores.textoTerciario} />
+            </Pressable>
+          ))}
+        </View>
       </View>
 
       <Pressable
@@ -354,13 +399,17 @@ export function PerfilScreen() {
       <Text style={styles.versao} onPress={aoTocarNaVersao}>
         v1.0.0
       </Text>
-    </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  tela: {
     flex: 1,
+    backgroundColor: cores.fundoCard,
+  },
+  container: {
+    flexGrow: 1,
     alignItems: 'center',
     paddingTop: espaco.xxl * 1.5,
     paddingHorizontal: espaco.xl,
@@ -524,21 +573,37 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  legal: {
+  documentos: {
+    marginTop: espaco.xl,
+    width: '100%',
+  },
+  documentosTitulo: {
+    ...tipografia.rotulo,
+    color: cores.textoSecundario,
+    marginBottom: espaco.sm,
+  },
+  documentosLista: {
+    borderRadius: raio.lg,
+    borderWidth: 1,
+    borderColor: cores.borda,
+    overflow: 'hidden',
+  },
+  documentoLinha: {
     flexDirection: 'row',
-    justifyContent: 'center',
     alignItems: 'center',
-    gap: espaco.sm,
-    marginTop: espaco.xxl,
+    gap: espaco.md,
+    minHeight: 52,
+    paddingHorizontal: espaco.lg,
   },
-  legalLink: {
-    color: cores.primaria,
-    fontSize: 14,
+  documentoLinhaDivisor: {
+    borderTopWidth: 1,
+    borderTopColor: cores.borda,
+  },
+  documentoTexto: {
+    flex: 1,
+    fontSize: 15,
     fontWeight: '600',
-    paddingVertical: espaco.xs,
-  },
-  legalSeparador: {
-    color: cores.textoTerciario,
+    color: cores.texto,
   },
   botaoSair: {
     flexDirection: 'row',

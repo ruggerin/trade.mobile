@@ -3,12 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { useState, type ReactNode } from 'react';
-import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Linking, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { buscarPontoVenda, enviarFachadaPromotor } from '../lib/api/pontosVenda';
 import { useAuth } from '../lib/auth/AuthContext';
 import { headersAutenticados } from '../lib/seguranca/chaveAparelho';
-import type { ContratoAtivo, PontoVenda } from '../types/api';
+import type { ContratoAtivo, PontoVenda, VendedorDaLoja } from '../types/api';
 import { cores, espaco, neutro, raio, sombraCard } from '../theme';
 
 const TIPO_CONTRATO: Record<ContratoAtivo['tipo'], string> = {
@@ -56,6 +56,8 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
   });
   const loja = { ...pontoVenda, ...(detalheQuery.data ?? {}) };
   const contratos = loja.contratos_ativos ?? [];
+  // Inativo no ERP não aparece pro promotor — ele não vai mais atender.
+  const vendedores = (loja.vendedores ?? []).filter((v) => v.ativo);
 
   // A foto é rota autenticada. Em vez de deixar o <Image> buscar com header (que falhava sem dizer
   // por quê), baixa pra um arquivo local com o Bearer — dá o status HTTP real quando falha e a foto
@@ -196,7 +198,7 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
       <View style={styles.cartao}>
         <Linha rotulo="Rua" valor={[loja.endereco, loja.numero].filter(Boolean).join(', ')} />
         <Linha rotulo="Bairro" valor={loja.bairro} />
-        <Linha rotulo="Cidade" valor={loja.cidade} />
+        <Linha rotulo="Cidade" valor={[loja.cidade, loja.uf].filter(Boolean).join('/')} />
         <Linha rotulo="CEP" valor={loja.cep} />
       </View>
 
@@ -206,6 +208,17 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
         <Linha rotulo="Ramo" valor={loja.ramo_atividade?.descricao} />
         <Linha rotulo="Checkouts" valor={loja.numero_checkouts} />
       </View>
+
+      {vendedores.length > 0 && (
+        <>
+          <Text style={styles.secao}>{vendedores.length === 1 ? 'Vendedor' : `Vendedores · ${vendedores.length}`}</Text>
+          <View style={styles.cartao}>
+            {vendedores.map((v, i) => (
+              <VendedorLinha key={v.id} vendedor={v} ultimo={i === vendedores.length - 1} />
+            ))}
+          </View>
+        </>
+      )}
 
       <Text style={styles.secao}>
         {contratos.length > 0
@@ -239,7 +252,75 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
   );
 }
 
+/** Número brasileiro só com dígitos e DDI 55, como o WhatsApp espera. null se não parece telefone. */
+function paraWhatsapp(telefone: string): string | null {
+  const digitos = telefone.replace(/\D/g, '');
+  if (digitos.length === 10 || digitos.length === 11) return `55${digitos}`;
+  if ((digitos.length === 12 || digitos.length === 13) && digitos.startsWith('55')) return digitos;
+  return null;
+}
+
+function VendedorLinha({ vendedor, ultimo }: { vendedor: VendedorDaLoja; ultimo: boolean }) {
+  const whatsapp = vendedor.telefone ? paraWhatsapp(vendedor.telefone) : null;
+  return (
+    <View style={[styles.vendedor, ultimo && { borderBottomWidth: 0 }]}>
+      <View style={styles.vendedorTextos}>
+        <Text style={styles.vendedorNome} numberOfLines={1}>
+          {vendedor.nome}
+        </Text>
+        <Text style={styles.vendedorDetalhe} numberOfLines={1}>
+          {[vendedor.telefone, vendedor.supervisor ? `Sup. ${vendedor.supervisor.nome}` : null].filter(Boolean).join(' · ') ||
+            'Sem telefone cadastrado'}
+        </Text>
+      </View>
+      {vendedor.telefone && (
+        <Pressable
+          style={({ pressed }) => [styles.vendedorAcao, pressed && { opacity: 0.7 }]}
+          onPress={() => void Linking.openURL(`tel:${vendedor.telefone!.replace(/[^\d+]/g, '')}`)}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={`Ligar para ${vendedor.nome}`}
+        >
+          <MaterialCommunityIcons name="phone" size={18} color={cores.primaria} />
+        </Pressable>
+      )}
+      {whatsapp && (
+        <Pressable
+          style={({ pressed }) => [styles.vendedorAcao, pressed && { opacity: 0.7 }]}
+          onPress={() => void Linking.openURL(`https://wa.me/${whatsapp}`)}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={`Conversar com ${vendedor.nome} no WhatsApp`}
+        >
+          <MaterialCommunityIcons name="whatsapp" size={18} color={cores.sucesso} />
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  vendedor: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.sm,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: cores.divisor,
+  },
+  vendedorTextos: { flex: 1, minWidth: 0 },
+  vendedorNome: { fontSize: 14, fontWeight: '700', color: cores.texto },
+  vendedorDetalhe: { fontSize: 12, color: cores.textoSecundario, marginTop: 2 },
+  vendedorAcao: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: cores.fundo,
+    borderWidth: 1,
+    borderColor: cores.divisor,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   container: { padding: espaco.lg, gap: espaco.xs },
   fachadaBox: { borderRadius: raio.lg, overflow: 'hidden', marginBottom: espaco.md, backgroundColor: neutro[200] } ,
   // Menor que antes (170) — a foto de verdade agora se vê inteira no lightbox (toque pra

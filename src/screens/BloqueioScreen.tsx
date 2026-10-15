@@ -31,9 +31,9 @@ export function DesbloqueioScreen() {
     <View style={styles.container}>
       <Image source={require('../../assets/horus-logo.png')} style={styles.logo} resizeMode="contain" />
       <Text style={styles.titulo}>App bloqueado</Text>
-      <Text style={styles.texto}>Use sua digital ou rosto para continuar.</Text>
+      <Text style={styles.texto}>Use sua biometria para continuar.</Text>
       <Pressable style={({ pressed }) => [styles.botao, pressed && styles.pressionado]} onPress={() => void desbloquearComBiometria()}>
-        <Text style={styles.botaoTexto}>Desbloquear</Text>
+        <Text style={styles.botaoTexto}>Usar biometria</Text>
       </Pressable>
       <Pressable style={styles.link} onPress={() => void logout()} hitSlop={8}>
         <Text style={styles.linkTexto}>Entrar com e-mail e senha</Text>

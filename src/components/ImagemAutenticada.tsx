@@ -1,3 +1,4 @@
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ActivityIndicator, Image, StyleSheet, View, type ImageStyle, type StyleProp } from 'react-native';
@@ -47,10 +48,19 @@ export function ImagemAutenticada({
 
   const uriFinal = remota ? query.data : uri;
 
-  if (remota && (query.isLoading || query.isError)) {
+  if (remota && query.isLoading) {
     return (
       <View style={[styles.estado, style]}>
-        <ActivityIndicator color={query.isError ? cores.erro : cores.primaria} size="small" />
+        <ActivityIndicator color={cores.primaria} size="small" />
+      </View>
+    );
+  }
+
+  // Falhou de vez (já com a nova tentativa): ícone fixo, não um spinner vermelho girando pra sempre.
+  if (remota && query.isError) {
+    return (
+      <View style={[styles.estado, style]} accessibilityLabel="Imagem indisponível">
+        <MaterialCommunityIcons name="image-broken-variant" size={26} color={cores.textoTerciario} />
       </View>
     );
   }

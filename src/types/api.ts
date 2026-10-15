@@ -58,6 +58,8 @@ export interface PontoVenda {
   numero: string | null;
   bairro: string | null;
   cidade: string;
+  // UF (docs/78 §5) — ausente em cache antigo e null nas lojas que ainda não têm.
+  uf?: string | null;
   cep: string | null;
   telefone: string | null;
   email: string | null;
@@ -73,7 +75,19 @@ export interface PontoVenda {
   // Só título/tipo/vigência dos contratos vigentes (nunca metas nem valores) — lista da aba Dados
   // cadastrais. Ausente em cache antigo.
   contratos_ativos?: ContratoAtivo[];
+  // Vendedores do ERP que atendem a loja (carteira, docs/73 §11.1) — só no detalhe (online). O
+  // e-mail não vem pro promotor.
+  vendedores?: VendedorDaLoja[];
   ativo: boolean;
+}
+
+export interface VendedorDaLoja {
+  id: string;
+  codigo_externo: string;
+  nome: string;
+  telefone: string | null;
+  ativo: boolean;
+  supervisor: { id: string; nome: string } | null;
 }
 
 export interface ContratoAtivo {

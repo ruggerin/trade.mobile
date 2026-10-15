@@ -9,6 +9,9 @@ import * as Sentry from '@sentry/react-native';
 const DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
 const AMBIENTE = process.env.EXPO_PUBLIC_SENTRY_ENV ?? 'homologacao';
 const LIGAR_EM_DEV = process.env.EXPO_PUBLIC_SENTRY_EM_DEV === 'true';
+// Session Replay (docs/72 §6): desligado por padrão. Quando ligado, grava só a tela dos segundos antes de um
+// erro/crash, com texto, imagens e vetores mascarados — nunca sessões normais.
+const REPLAY_LIGADO = process.env.EXPO_PUBLIC_SENTRY_REPLAY === 'true';
 
 /** Chaves cujo valor nunca sai do aparelho (em qualquer nível de `extra`, `contexts` e breadcrumbs). */
 const CHAVE_SENSIVEL = /(senha|password|token|authorization|cookie|secret|latitude|longitude|^lat$|^lng$|^lon$|coord|cpf|cnpj|email|telefone|phone|foto|imagem|image|base64)/i;
@@ -67,21 +70,41 @@ export function limparBreadcrumb(b: Sentry.Breadcrumb): Sentry.Breadcrumb {
   return { ...b, data };
 }
 
+/**
+ * Configuração do Session Replay. Sem a variável, nada de replay (nem a integração nativa é carregada).
+ * Com ela: sessão normal 0 (não grava o dia a dia do promotor), 100% das sessões com erro, tudo mascarado.
+ */
+export function configuracaoReplay(ligado: boolean = REPLAY_LIGADO): Partial<Sentry.ReactNativeOptions> {
+  if (!ligado) return {};
+  return {
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 1.0,
+    integrations: [Sentry.mobileReplayIntegration({ maskAllText: true, maskAllImages: true, maskAllVectors: true })],
+  };
+}
+
 export function iniciarSentry(): void {
   if (!DSN || (__DEV__ && !LIGAR_EM_DEV)) return;
 
-  Sentry.init({
-    dsn: DSN,
-    environment: AMBIENTE,
-    // Release e dist vêm do build (nome do pacote, versionName e versionCode) pelo plugin do Expo.
-    sendDefaultPii: false,
-    attachScreenshot: false,
-    attachViewHierarchy: false,
-    maxBreadcrumbs: 50,
-    // Tracing/profiling/replay/logs: não definidos = desligados.
-    beforeSend: limparEvento,
-    beforeBreadcrumb: limparBreadcrumb,
-  });
+  // Rodando no index.ts, antes de qualquer tratador de erro: se o SDK falhar ao ligar (módulo nativo
+  // ausente ou mal empacotado no build), isso não pode impedir o app de abrir.
+  try {
+    Sentry.init({
+      dsn: DSN,
+      environment: AMBIENTE,
+      // Release e dist vêm do build (nome do pacote, versionName e versionCode) pelo plugin do Expo.
+      sendDefaultPii: false,
+      attachScreenshot: false,
+      attachViewHierarchy: false,
+      maxBreadcrumbs: 50,
+      // Tracing/profiling/replay/logs: não definidos = desligados.
+      beforeSend: limparEvento,
+      beforeBreadcrumb: limparBreadcrumb,
+      ...configuracaoReplay(),
+    });
+  } catch (erro) {
+    if (__DEV__) console.log("[sentry] não iniciou", erro);
+  }
 }
 
 /** Quem está logado: só o id (uuid) e a empresa — nunca nome, e-mail nem telefone. */
@@ -104,6 +127,28 @@ export function definirUsuarioSentry(usuario: { id: string; empresaId?: string |
 export function reportarErro(erro: unknown, origem: 'erro_global' | 'render' | 'outro', fatal = false): void {
   try {
     Sentry.captureException(erro, { tags: { origem }, level: fatal ? 'fatal' : 'error' });
+  } catch {
+    // Reportar nunca pode derrubar o app.
+  }
+}
+
+/**
+ * Recusa PERMANENTE da fila de envio (4xx: check-in fora do raio, registro inválido, checkout
+ * recusado) — antes não deixava rastro nenhum em release (docs/75 item 11). Vai só o que ajuda a
+ * agrupar: etapa, status HTTP e os NOMES dos campos que a validação recusou. A mensagem do
+ * servidor não vai (pode citar loja ou dado digitado); ela continua na tela do promotor.
+ */
+export function reportarRecusaFila(etapa: 'checkin' | 'registro' | 'checkout', erro: unknown): void {
+  try {
+    const resposta = (erro as { response?: { status?: number; data?: { errors?: Record<string, unknown>; motivo?: string } } })
+      ?.response;
+    const campos = resposta?.data?.errors ? Object.keys(resposta.data.errors).sort().join(',') : undefined;
+    Sentry.captureMessage(`Fila de envio: ${etapa} recusado`, {
+      level: 'warning',
+      tags: { origem: 'fila_envio', etapa, http_status: String(resposta?.status ?? 'sem_resposta') },
+      extra: { campos, motivo: resposta?.data?.motivo },
+      fingerprint: ['fila-envio', etapa, String(resposta?.status ?? ''), campos ?? ''],
+    });
   } catch {
     // Reportar nunca pode derrubar o app.
   }

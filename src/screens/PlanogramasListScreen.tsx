@@ -1,9 +1,9 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from '@tanstack/react-query';
-import { ActivityIndicator, FlatList, Image, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import { ImagemAutenticada } from '../components/ImagemAutenticada';
 import { listarPlanogramas } from '../lib/api/planogramas';
-import { useHeadersAutenticados } from '../lib/seguranca/useHeadersAutenticados';
 import { useRecarregarAoFocar } from '../lib/useRecarregarAoFocar';
 import type { PlanogramasStackParamList } from '../navigation/PlanogramasStack';
 import type { Planograma } from '../types/api';
@@ -58,18 +58,13 @@ export function PlanogramasListScreen({ navigation }: Props) {
 }
 
 function PlanogramaCard({ planograma, onPress }: { planograma: Planograma; onPress: () => void }) {
-  // Authorization + assinatura do aparelho (docs/67 Fase 3) — o <Image> não passa pelo apiClient.
-  const headersCapa = useHeadersAutenticados(planograma.foto_capa_url);
-
   return (
     <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressionado]} onPress={onPress}>
       <View style={styles.capa}>
-        {planograma.foto_capa_url && headersCapa ? (
-          <Image
-            source={{ uri: planograma.foto_capa_url, headers: headersCapa }}
-            style={styles.capaImagem}
-            resizeMode="cover"
-          />
+        {/* <Image> com headers falhava calado e deixava o card em branco (docs/75 item 7) — o
+            ImagemAutenticada baixa com o header certo e tem estado de carga e de erro. */}
+        {planograma.foto_capa_url ? (
+          <ImagemAutenticada uri={planograma.foto_capa_url} style={styles.capaImagem} />
         ) : (
           <MaterialCommunityIcons name="image-off-outline" size={28} color={cores.textoTerciario} />
         )}

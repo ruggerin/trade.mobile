@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Horus",
-    "slug": "pdv-app-mobile",
+    "slug": "horus",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -37,7 +37,9 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.FOREGROUND_SERVICE_LOCATION"
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
       ],
       "config": {
         "googleMaps": {
@@ -72,7 +74,8 @@
         {
           "android": {
             "enableProguardInReleaseBuilds": true,
-            "enableShrinkResourcesInReleaseBuilds": true
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "enableMinifyInReleaseBuilds": true
           }
         }
       ],
@@ -95,9 +98,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "f931506a-4879-4b56-8532-29f2883b08f6"
+        "projectId": "ddef4169-e19c-4fc8-9a55-5adbbc269c7e"
       }
     },
-    "owner": "dev.stoneup"
+    "owner": "prossigatec.com.br"
   }
 }

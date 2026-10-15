@@ -12,6 +12,7 @@ import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
 import { ConfirmarRupturaModal } from '../components/ConfirmarRupturaModal';
 import { FinalizarVisitaModal } from '../components/FinalizarVisitaModal';
 import { ProdutoDetalheModal, type ProdutoDetalhe } from '../components/ProdutoDetalheModal';
+import { VisitaConcluida, type ResumoVisita } from '../components/VisitaConcluida';
 import { RegistroDetalheModal, type RegistroDetalhe } from '../components/RegistroDetalheModal';
 import { RegistroFormModal, type RegistroFormResultado } from '../components/RegistroFormModal';
 import { buscarProdutosDisponiveis } from '../lib/api/campanhas';
@@ -562,12 +563,16 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   }
 
   const [finalizarAberto, setFinalizarAberto] = useState(false);
+  // Números mostrados na VisitaConcluida — guardados na hora do check-out, porque online a visita
+  // (e os registros dela) some do aparelho logo depois que a fila confirma.
+  const [resumoFinal, setResumoFinal] = useState<ResumoVisita | null>(null);
 
   const checkoutMutation = useMutation({
     mutationFn: async () => {
       const coords = await obterLocalizacaoAtual();
       await finalizarVisitaLocal({ usuarioId: usuario!.id, visitaLocalId, latitude: coords.latitude, longitude: coords.longitude });
     },
+    onSuccess: () => setFinalizarAberto(false),
     onError: () => Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.'),
   });
 
@@ -702,6 +707,19 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     );
   }
 
+  const concluida = (enviado: boolean) => (
+    <VisitaConcluida
+      resumo={resumoFinal}
+      enviado={enviado}
+      online={online}
+      onVoltarAgenda={() => navigation.popToTop()}
+      onIrParaLoja={(pontoVenda, ordemServico) => {
+        navigation.popToTop();
+        navigation.navigate('PontoVendaCheckin', { pontoVenda, ordemServico, ordemServicoEscolhida: true });
+      }}
+    />
+  );
+
   if (visitaQuery.isLoading) {
     return (
       <View style={styles.centroTela}>
@@ -723,18 +741,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         motivoExclusaoVisita(visitaLocalId) === 'checkout-confirmado' ||
         checkoutMutation.isSuccess ||
         ultimoStatusVisto.current === 'FINALIZADA_LOCAL';
-      if (terminou) {
-        return (
-          <View style={styles.centroTela}>
-            <MaterialCommunityIcons name="check-circle" size={56} color={cores.sucesso} />
-            <Text style={[styles.pdvNome, { textAlign: 'center' }]}>Visita finalizada</Text>
-            <Text style={styles.vazioTexto}>Tudo foi enviado ao servidor com sucesso.</Text>
-            <Pressable style={styles.botaoRetry} onPress={() => navigation.popToTop()}>
-              <Text style={styles.botaoRetryTexto}>Voltar</Text>
-            </Pressable>
-          </View>
-        );
-      }
+      if (terminou) return concluida(true);
       return (
         <View style={styles.centroTela}>
           <Text style={styles.vazioTexto}>
@@ -753,6 +760,9 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       </View>
     );
   }
+
+  // Check-out feito nesta tela, visita ainda no aparelho (sem sinal, ou a fila ainda enviando).
+  if (checkoutMutation.isSuccess) return concluida(false);
 
   return (
     <View style={styles.container}>
@@ -1135,15 +1145,20 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         nRupturas={nRupturasFinalizar}
         faltando={faltandoFinalizar}
         enviando={checkoutMutation.isPending}
-        sucesso={checkoutMutation.isSuccess}
-        mensagemSucesso={
-          online
-            ? 'Enviando pro servidor agora — pode fechar o app, o envio continua sozinho.'
-            : 'Sem conexão no momento — será enviada automaticamente assim que o sinal voltar.'
-        }
         onCancelar={() => setFinalizarAberto(false)}
-        onConfirmar={() => checkoutMutation.mutate()}
-        onVoltarInicio={() => navigation.popToTop()}
+        onConfirmar={() => {
+          setResumoFinal({
+            lojaNome: visita.pontoVenda.fantasia,
+            ordemServicoId: visita.ordemServicoId,
+            minutos: Math.max(1, Math.round((Date.now() - new Date(visita.inicioEm).getTime()) / 60_000)),
+            nRegistros: registrosLocais.length,
+            nRupturas: nRupturasFinalizar,
+            feitasObrigatorias,
+            totalObrigatorias,
+            nFaltando: faltandoFinalizar.length,
+          });
+          checkoutMutation.mutate();
+        }}
       />
 
       <RegistroFormModal

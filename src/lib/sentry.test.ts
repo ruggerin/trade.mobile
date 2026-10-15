@@ -6,10 +6,11 @@ jest.mock('@sentry/react-native', () => ({
   setTag: jest.fn(),
   captureException: jest.fn(),
   wrap: (c: unknown) => c,
+  mobileReplayIntegration: jest.fn((opcoes: unknown) => ({ name: 'MobileReplay', opcoes })),
 }));
 
 import * as Sentry from '@sentry/react-native';
-import { definirUsuarioSentry, limparBreadcrumb, limparEvento, redigir, reportarErro } from './sentry';
+import { configuracaoReplay, definirUsuarioSentry, limparBreadcrumb, limparEvento, redigir, reportarErro } from './sentry';
 
 describe('redigir', () => {
   it('troca valor de chave sensível em qualquer nível, sem mexer no resto', () => {
@@ -91,5 +92,19 @@ describe('usuário e reporte', () => {
       throw new Error('sdk quebrou');
     });
     expect(() => reportarErro(erro, 'render')).not.toThrow();
+  });
+});
+
+describe('configuracaoReplay', () => {
+  it('desligado: não devolve nada (nenhuma integração nativa)', () => {
+    expect(configuracaoReplay(false)).toEqual({});
+  });
+
+  it('ligado: só grava em erro, nunca sessão normal, e mascara tudo', () => {
+    const c = configuracaoReplay(true);
+
+    expect(c.replaysSessionSampleRate).toBe(0);
+    expect(c.replaysOnErrorSampleRate).toBe(1);
+    expect(Sentry.mobileReplayIntegration).toHaveBeenCalledWith({ maskAllText: true, maskAllImages: true, maskAllVectors: true });
   });
 });

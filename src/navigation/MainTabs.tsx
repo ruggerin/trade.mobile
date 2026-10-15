@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AppState, StyleSheet, View, type AppStateStatus } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
+import { OfertaBiometriaModal } from '../components/OfertaBiometriaModal';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
 import { AvisoRastreamento, BloqueioRastreamento } from '../components/RastreamentoExigencia';
 import { useAuth } from '../lib/auth/AuthContext';
@@ -56,7 +57,7 @@ export type MainTabsParamList = {
 const Tab = createBottomTabNavigator<MainTabsParamList>();
 
 export function MainTabs() {
-  const { usuario, logout } = useAuth();
+  const { usuario, logout, biometria, definirBiometria } = useAuth();
   // `height` fixo no tabBarStyle desliga o ajuste automático de safe area que o bottom-tabs faz
   // sozinho por padrão — sem somar o inset aqui, a barra fica curta e o gesto/home indicator do
   // aparelho cobre o rótulo da última linha.
@@ -172,6 +173,12 @@ export function MainTabs() {
       enviando={rastreamento.pedindo}
       onPermitir={() => void rastreamento.permitir()}
       onAgoraNao={() => void rastreamento.agoraNao()}
+    />
+    {/* Pergunta pós-login da biometria. Espera os avisos de localização: o iOS não abre dois
+        Modals ao mesmo tempo. */}
+    <OfertaBiometriaModal
+      visible={Boolean(biometria?.perguntar) && !rastreamento.explicando && !rastreamento.bloquear}
+      onResponder={definirBiometria}
     />
     <Tab.Navigator
       screenOptions={({ route }) => ({

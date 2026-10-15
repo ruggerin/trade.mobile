@@ -302,7 +302,7 @@ export function PontosVendaListScreen({ navigation }: Props) {
       )}
 
       {query.isSuccess && pontosVendaFiltrados.length > 0 && modo === 'mapa' && (
-        <MapaPontosVenda pontosVenda={pontosVendaFiltrados} onSelecionar={irParaCheckin} />
+        <MapaPontosVenda pontosVenda={pontosVendaFiltrados} posicao={localizacao.coords} onSelecionar={irParaCheckin} />
       )}
     </View>
   );
@@ -310,15 +310,25 @@ export function PontosVendaListScreen({ navigation }: Props) {
 
 function MapaPontosVenda({
   pontosVenda,
+  posicao,
   onSelecionar,
 }: {
   pontosVenda: PontoVenda[];
+  posicao: { latitude: number; longitude: number } | null;
   onSelecionar: (pontoVenda: PontoVenda) => void;
 }) {
-  const regiaoInicial = useMemo(() => calcularRegiao(pontosVenda), [pontosVenda]);
+  // Com a posição do promotor, enquadra ele + as lojas mais perto (docs/75 item 3) — a carteira
+  // inteira pode estar espalhada pelo país e abria o mapa no Brasil todo. Sem posição, a carteira.
+  const regiaoInicial = useMemo(() => {
+    if (!posicao) return calcularRegiao(pontosVenda);
+    const maisPerto = [...pontosVenda]
+      .sort((a, b) => distancia(posicao, a) - distancia(posicao, b))
+      .slice(0, LOJAS_NO_ENQUADRAMENTO);
+    return calcularRegiao([...maisPerto, posicao]);
+  }, [pontosVenda, posicao]);
 
   return (
-    <MapView style={styles.mapa} initialRegion={regiaoInicial}>
+    <MapView style={styles.mapa} initialRegion={regiaoInicial} userInterfaceStyle="light" showsUserLocation={Boolean(posicao)}>
       {pontosVenda.map((pontoVenda) => (
         <Marker
           key={pontoVenda.id}
@@ -334,7 +344,12 @@ function MapaPontosVenda({
 
 // Enquadra todos os PDVs visíveis de uma vez — centro geográfico + folga de 50% sobre a maior
 // dimensão (nunca menor que ~2km) pra não ficar colado nas bordas do mapa.
-function calcularRegiao(pontosVenda: PontoVenda[]) {
+const LOJAS_NO_ENQUADRAMENTO = 5;
+
+type Ponto = { latitude: number; longitude: number };
+const distancia = (a: Ponto, b: Ponto) => calcularDistanciaMetros(a.latitude, a.longitude, b.latitude, b.longitude);
+
+function calcularRegiao(pontosVenda: { latitude: number; longitude: number }[]) {
   const latitudes = pontosVenda.map((p) => p.latitude);
   const longitudes = pontosVenda.map((p) => p.longitude);
   const minLat = Math.min(...latitudes);

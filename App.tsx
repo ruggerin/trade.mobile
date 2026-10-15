@@ -81,7 +81,8 @@ export default function App() {
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
               <RootNavigator />
-              <StatusBar style="auto" />
+              {/* App é sempre claro: "auto" seguia o modo escuro do sistema e deixava ícones brancos no fundo claro (docs/75 item 1). */}
+              <StatusBar style="dark" />
             </AuthProvider>
           </QueryClientProvider>
         </SafeAreaProvider>

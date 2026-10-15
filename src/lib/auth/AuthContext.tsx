@@ -1,10 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import * as LocalAuthentication from 'expo-local-authentication';
 import { AppState } from 'react-native';
 import * as authApi from '../api/auth';
 import { APP_DESATUALIZADO_EVENT, authEvents, SessaoEncerradaEvent, UNAUTHORIZED_EVENT } from '../api/client';
 import { limparCacheLocal } from '../db/database';
+import { aparelhoTemBiometria, confirmarBiometria, preferenciaBiometria } from './biometria';
 import { credenciaisStorage } from './credentialsStorage';
 import { renovarSessaoSeNecessario } from './renovacaoSessao';
 import { encerrarRastreamentoNoLogout } from '../rastreamento';
@@ -35,9 +35,21 @@ interface AuthContextValue {
   limparAvisoSessao: () => void;
   // API respondeu 426 (docs/67 Fase 2): versão abaixo da mínima, o app pede atualização.
   appDesatualizado: boolean;
-  // Sessão ativa esperando a digital/rosto (docs/67 §4.5) — só quando o usuário ligou a opção.
+  // Sessão ativa esperando a biometria (docs/67 §4.5) — só quando o usuário ligou a opção.
   bloqueadoPorBiometria: boolean;
   desbloquearComBiometria: () => Promise<void>;
+  // Opção "Entrar com biometria" (lib/auth/biometria.ts). `null` enquanto lê o aparelho/storage.
+  biometria: EstadoBiometria | null;
+  // Liga (só depois de passar no prompt do sistema) ou desliga. Devolve se ficou ligada.
+  definirBiometria: (ativa: boolean) => Promise<boolean>;
+}
+
+export interface EstadoBiometria {
+  /** Aparelho tem leitor e uma biometria cadastrada no sistema. */
+  disponivel: boolean;
+  ativa: boolean;
+  /** Este usuário ainda não respondeu à pergunta pós-login — o MainTabs mostra a oferta. */
+  perguntar: boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -54,13 +66,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [avisoSessao, setAvisoSessao] = useState<string | null>(null);
   const [appDesatualizado, setAppDesatualizado] = useState(false);
   const [bloqueadoPorBiometria, setBloqueadoPorBiometria] = useState(false);
+  const [biometria, setBiometria] = useState<EstadoBiometria | null>(null);
 
   useEffect(() => {
     let cancelado = false;
     (async () => {
       const valor = await tokenStorage.get();
       // Abrir o app com sessão ativa pede a biometria, se o usuário ligou a opção e o aparelho tem.
-      const exigeBiometria = Boolean(valor) && (await biometriaDisponivelELigada());
+      // O login confere que a preferência salva é de quem está logado (ver login abaixo).
+      const exigeBiometria = Boolean(valor) && (await biometriaLigadaNoAparelho());
       if (!cancelado) {
         setBloqueadoPorBiometria(exigeBiometria);
         setToken(valor);
@@ -88,6 +102,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
   }, [usuario?.id, usuario?.empresa?.id, usuario?.user_type]);
   const logado = Boolean(token);
+
+  // Estado da opção de biometria pra quem está logado — relê a cada troca de usuário.
+  useEffect(() => {
+    const usuarioId = usuario?.id;
+    if (!usuarioId) {
+      setBiometria(null);
+      return;
+    }
+    let cancelado = false;
+    void Promise.all([aparelhoTemBiometria(), preferenciaBiometria.get()]).then(([disponivel, salva]) => {
+      if (cancelado) return;
+      const doUsuario = salva?.usuarioId === usuarioId ? salva : null;
+      setBiometria({ disponivel, ativa: Boolean(doUsuario?.ativa), perguntar: disponivel && !doUsuario });
+    });
+    return () => {
+      cancelado = true;
+    };
+  }, [usuario?.id]);
 
   // Renovação do token (vence em 7 dias, docs/67 §4.4) ao abrir o app e ao voltar do segundo
   // plano. Relê o token depois: o `token` exposto aqui vai em header de imagem (fora do axios) e
@@ -138,16 +170,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   async function desbloquearComBiometria() {
-    const resultado = await LocalAuthentication.authenticateAsync({
-      promptMessage: 'Desbloquear o Horus',
-      cancelLabel: 'Cancelar',
-    });
-    if (resultado.success) setBloqueadoPorBiometria(false);
+    if (await confirmarBiometria('Desbloquear o Horus')) setBloqueadoPorBiometria(false);
+  }
+
+  async function definirBiometria(ativa: boolean): Promise<boolean> {
+    if (!usuario) return false;
+    // Ligar exige passar no prompt — confirma que funciona e que é o dono do aparelho.
+    if (ativa && !(await confirmarBiometria('Ativar a biometria no Horus'))) return false;
+    await preferenciaBiometria.set({ usuarioId: usuario.id, ativa });
+    setBiometria((atual) => (atual ? { ...atual, ativa, perguntar: false } : atual));
+    return ativa;
   }
 
   async function login(email: string, senha: string) {
     setAvisoSessao(null);
     const response = await authApi.login(email, senha);
+    // Sessão anterior caiu (sem logout) e agora entrou outra conta: a escolha de biometria era da
+    // outra pessoa — descarta, a nova é perguntada de novo.
+    const preferencia = await preferenciaBiometria.get();
+    if (preferencia && preferencia.usuarioId !== response.usuario.id) await preferenciaBiometria.clear();
     await tokenStorage.set(response.token);
     setToken(response.token);
     setUsuarioDoLogin(response.usuario);
@@ -168,6 +209,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // é o sinal de "terminei"/"próxima pessoa usa o aparelho", então esquece o e-mail lembrado
     // também. Ver credentialsStorage.ts.
     await credenciaisStorage.clear();
+    await preferenciaBiometria.clear();
     setToken(null);
     setUsuarioDoLogin(null);
     setBloqueadoPorBiometria(false);
@@ -196,6 +238,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         appDesatualizado,
         bloqueadoPorBiometria,
         desbloquearComBiometria,
+        biometria,
+        definirBiometria,
       }}
     >
       {children}
@@ -203,11 +247,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-async function biometriaDisponivelELigada(): Promise<boolean> {
+async function biometriaLigadaNoAparelho(): Promise<boolean> {
   try {
-    const salvas = await credenciaisStorage.get();
-    if (!salvas?.biometria) return false;
-    return (await LocalAuthentication.hasHardwareAsync()) && (await LocalAuthentication.isEnrolledAsync());
+    const preferencia = await preferenciaBiometria.get();
+    return Boolean(preferencia?.ativa) && (await aparelhoTemBiometria());
   } catch {
     return false;
   }

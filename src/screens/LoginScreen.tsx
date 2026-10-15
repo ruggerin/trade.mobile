@@ -11,7 +11,6 @@ import {
   View,
 } from 'react-native';
 import axios from 'axios';
-import * as LocalAuthentication from 'expo-local-authentication';
 import { useAuth } from '../lib/auth/AuthContext';
 import { abrirDocumento } from '../lib/api/documentosLegais';
 import { credenciaisStorage } from '../lib/auth/credentialsStorage';
@@ -25,9 +24,6 @@ export function LoginScreen() {
   const [senha, setSenha] = useState('');
   const [mostrarSenha, setMostrarSenha] = useState(false);
   const [lembrar, setLembrar] = useState(false);
-  // Desbloqueio por digital/rosto ao abrir o app (docs/67 §4.5) — só aparece se o aparelho tem.
-  const [biometria, setBiometria] = useState(false);
-  const [temBiometria, setTemBiometria] = useState(false);
   const [carregando, setCarregando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -39,13 +35,7 @@ export function LoginScreen() {
       if (cancelado || !salvas) return;
       setEmail(salvas.email);
       setLembrar(true);
-      setBiometria(salvas.biometria);
     });
-    Promise.all([LocalAuthentication.hasHardwareAsync(), LocalAuthentication.isEnrolledAsync()])
-      .then(([hardware, cadastrada]) => {
-        if (!cancelado) setTemBiometria(hardware && cadastrada);
-      })
-      .catch(() => {});
     return () => {
       cancelado = true;
     };
@@ -62,9 +52,10 @@ export function LoginScreen() {
 
     try {
       await login(email.trim(), senha);
-      // Só depois do login confirmar. Biometria só faz sentido com o e-mail lembrado (mesma conta).
-      if (lembrar || biometria) {
-        await credenciaisStorage.set({ email: email.trim(), biometria: biometria && temBiometria });
+      // Só depois do login confirmar. A biometria não é mais escolhida aqui: o app pergunta depois
+      // do login e a opção fica no Perfil (lib/auth/biometria.ts).
+      if (lembrar) {
+        await credenciaisStorage.set({ email: email.trim() });
       } else {
         await credenciaisStorage.clear();
       }
@@ -164,20 +155,6 @@ export function LoginScreen() {
           </View>
           <Text style={styles.lembrarTexto}>Lembrar meu e-mail</Text>
         </Pressable>
-
-        {temBiometria && (
-          <Pressable
-            style={styles.lembrarLinha}
-            onPress={() => setBiometria((v) => !v)}
-            disabled={carregando}
-            hitSlop={8}
-          >
-            <View style={[styles.checkbox, biometria && styles.checkboxMarcado]}>
-              {biometria && <Text style={styles.checkboxMarca}>✓</Text>}
-            </View>
-            <Text style={styles.lembrarTexto}>Abrir o app com digital ou rosto</Text>
-          </Pressable>
-        )}
 
         <Pressable
           style={({ pressed }) => [styles.botao, (carregando || pressed) && styles.botaoPressionado]}
