@@ -17,6 +17,7 @@ import type { AgendaStackParamList } from '../navigation/AgendaStack';
 import type { MainTabsParamList } from '../navigation/MainTabs';
 import type { OrdemServico, StatusOrdemServico } from '../types/api';
 import { amber, cores, espaco, indigo, neutro, raio, sombraCard, tipografia, verde, vermelho } from '../theme';
+import { antesDaVez, exigeSequencia, filaDoDia, mensagemAntesDaVez } from '../lib/rotaObrigatoria';
 
 type Props = NativeStackScreenProps<AgendaStackParamList, 'AgendaLista'>;
 type Aba = 'hoje' | 'semana';
@@ -191,7 +192,14 @@ export function AgendaScreen({ navigation }: Props) {
       return;
     }
     // O promotor tocou NESTE compromisso: o check-in resolve exatamente esta OS, nunca outra da loja.
-    navigation.navigate('PontoVendaCheckin', { pontoVenda, ordemServico: os, ordemServicoEscolhida: true });
+    // Fora da vez (perfil que segue a sequência, docs/74), a loja abre só pra consulta.
+    const antes = antesDaVez(os, fila);
+    navigation.navigate('PontoVendaCheckin', {
+      pontoVenda,
+      ordemServico: os,
+      ordemServicoEscolhida: true,
+      foraDaVez: antes ? mensagemAntesDaVez(antes) : undefined,
+    });
   }
 
   const grupos = agrupar(agendaQuery.data ?? [], aba);
@@ -202,6 +210,11 @@ export function AgendaScreen({ navigation }: Props) {
   const ordensDeHoje = useMemo(
     () => (aba === 'hoje' ? (agendaQuery.data ?? []) : (agendaQuery.data ?? []).filter((os) => os.prazo_fim.slice(0, 10) === hoje)),
     [agendaQuery.data, aba, hoje],
+  );
+  // Sequência do dia (docs/74): só o primeiro da fila inicia; vazia pra quem não tem a marca.
+  const fila = useMemo(
+    () => (usuario && exigeSequencia(usuario) ? filaDoDia(agendaQuery.data ?? [], usuario.id, hoje) : []),
+    [agendaQuery.data, usuario, hoje],
   );
   const proximaOS = useMemo(() => {
     const candidatas = ordensDeHoje.filter((os) => os.status === 'EM_ANDAMENTO' || os.status === 'PENDENTE');
@@ -364,7 +377,12 @@ export function AgendaScreen({ navigation }: Props) {
             <View style={styles.secao}>
               {aba === 'semana' && <Text style={styles.secaoTitulo}>{grupo.titulo}</Text>}
               {grupo.itens.map((os) => (
-                <CompromissoCard key={os.id} ordemServico={os} onPress={() => void abrirCompromisso(os)} />
+                <CompromissoCard
+                  key={os.id}
+                  ordemServico={os}
+                  aguardando={antesDaVez(os, fila)?.ponto_venda.fantasia}
+                  onPress={() => void abrirCompromisso(os)}
+                />
               ))}
             </View>
           )}
@@ -451,7 +469,16 @@ function ProximaVisitaCard({ ordemServico: os, onAbrir }: { ordemServico: OrdemS
 
 // Reagendar/Cancelar NÃO ficam mais aqui: foram pra dentro da tela da loja (AcoesCompromisso), onde o
 // toque é intencional — na lista, ao lado do endereço, era fácil demais cancelar sem querer.
-function CompromissoCard({ ordemServico, onPress }: { ordemServico: OrdemServico; onPress: () => void }) {
+function CompromissoCard({
+  ordemServico,
+  aguardando,
+  onPress,
+}: {
+  ordemServico: OrdemServico;
+  // Loja que vem antes na sequência do dia (docs/74) — o card abre pra leitura, sem iniciar.
+  aguardando?: string;
+  onPress: () => void;
+}) {
   const status = statusExibicao(ordemServico);
   const corQuadrado = ordemServico.tipo_visita?.cor ?? neutro[400];
   const endereco = [ordemServico.ponto_venda.endereco, ordemServico.ponto_venda.bairro].filter(Boolean).join(' — ');
@@ -467,6 +494,14 @@ function CompromissoCard({ ordemServico, onPress }: { ordemServico: OrdemServico
         {!!ordemServico.horario_previsto && <Text style={styles.cardHorario}>{ordemServico.horario_previsto}</Text>}
       </View>
       {!!endereco && <Text style={styles.cardEndereco}>{endereco}</Text>}
+      {!!aguardando && (
+        <View style={styles.cardAguardando}>
+          <MaterialCommunityIcons name="lock-clock" size={14} color={cores.textoSecundario} />
+          <Text style={styles.cardAguardandoTexto} numberOfLines={1}>
+            Aguardando {aguardando}
+          </Text>
+        </View>
+      )}
 
       <View style={styles.cardLinhaInferior}>
         {status && (
@@ -890,6 +925,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: neutro[700],
   },
+  cardAguardando: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 },
+  cardAguardandoTexto: { fontSize: 12, color: cores.textoSecundario, fontWeight: '600', flexShrink: 1 },
   cardEndereco: {
     fontSize: 13,
     color: cores.textoSecundario,

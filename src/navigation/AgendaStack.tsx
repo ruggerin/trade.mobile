@@ -18,7 +18,9 @@ export type AgendaStackParamList = {
   NovoCompromisso: undefined;
   ReagendarCompromisso: { ordemServico: OrdemServico };
   // ordemServicoEscolhida: veio do card da Agenda — o check-in usa exatamente essa OS (docs/07).
-  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico; ordemServicoEscolhida?: boolean };
+  // `foraDaVez`: o perfil segue a sequência do dia e este compromisso não é o da vez (docs/74) — a
+  // mensagem de quem vem antes; a tela abre pra consulta, sem iniciar.
+  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico; ordemServicoEscolhida?: boolean; foraDaVez?: string };
   // Ver comentário equivalente em PontosVendaStack.tsx.
   VisitaAndamento: { visitaLocalId: string };
   // Ver comentário equivalente em PontosVendaStack.tsx.

@@ -254,6 +254,13 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     // Coluna já existe — nada a fazer.
   }
 
+  // Visita fora da agenda autorizada pelo gestor (docs/74) — o uuid da liberação vai no check-in.
+  try {
+    await db.execAsync('ALTER TABLE fila_visitas ADD COLUMN liberacao_id TEXT');
+  } catch {
+    // Coluna já existe — nada a fazer.
+  }
+
   return db;
 }
 

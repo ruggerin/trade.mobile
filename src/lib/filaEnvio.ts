@@ -2,6 +2,7 @@ import axios from 'axios';
 import { criarRegistro, finalizarVisita, iniciarVisita } from './api/visitas';
 import { ehErroDeRede, ehErroTransitorio } from './db/database';
 import { descartarRegistrosDaVisita, listarRegistrosLocais, marcarRegistroComErro, marcarRegistroEnviado, type RegistroLocal } from './db/filaRegistros';
+import { reportarRecusaFila } from './sentry';
 import {
   atualizarErroVisita,
   excluirVisitaLocalCompleta,
@@ -245,6 +246,7 @@ async function enviarCheckin(visita: VisitaLocal, resultado: ResultadoFilaEnvio)
       longitude: visita.longitudeInicio,
       ordem_servico_uuid: visita.ordemServicoId ?? undefined,
       ordem_servico_escolhida: visita.ordemServicoEscolhida || undefined,
+      liberacao_uuid: visita.liberacaoId ?? undefined,
       // Mesmo uuid local em toda tentativa desta visita — é o que torna seguro reter e tentar
       // de novo abaixo mesmo quando a falha foi transitória (o servidor pode até ter processado
       // a chamada anterior sem a resposta chegar até aqui).
@@ -266,6 +268,7 @@ async function enviarCheckin(visita: VisitaLocal, resultado: ResultadoFilaEnvio)
       return false;
     }
     const mensagem = mensagemDeErroServidor(err) ?? 'Check-in recusado pelo servidor.';
+    reportarRecusaFila('checkin', err);
     await marcarVisitaRejeitada(visita.id, mensagem);
     await descartarRegistrosDaVisita(visita.id);
     resultado.visitasRejeitadas += 1;
@@ -305,6 +308,7 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
     // de negócio, tentar de novo com o mesmo payload dá o mesmo resultado) vira ERRO e espera o
     // promotor notar/corrigir/reenviar na mão.
     if (ehErroTransitorio(err)) return false;
+    reportarRecusaFila('registro', err);
     await marcarRegistroComErro(registro.id, mensagemDeErroServidor(err) ?? 'Registro recusado pelo servidor.');
     resultado.registrosComErro += 1;
     return true; // erro de validação de UM registro não trava os outros nem o checkout
@@ -320,6 +324,8 @@ async function enviarCheckout(visita: VisitaLocal): Promise<boolean> {
     await excluirVisitaLocalCompleta(visita.id, 'checkout-confirmado');
     return true;
   } catch (err) {
+    // Checkout não vira terminal (continua tentando), mas uma recusa 4xx merece rastro.
+    if (!ehErroTransitorio(err)) reportarRecusaFila('checkout', err);
     const mensagem = ehErroDeRede(err)
       ? 'Sem conexão no momento do envio — tentando de novo automaticamente.'
       : (mensagemDeErroServidor(err) ?? 'Não foi possível confirmar o checkout — tentando de novo automaticamente.');

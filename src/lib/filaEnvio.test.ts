@@ -94,6 +94,7 @@ function visitaLocal(overrides: Partial<VisitaLocal> = {}): VisitaLocal {
     pontoVenda: PDV,
     ordemServicoId: null,
     ordemServicoEscolhida: false,
+    liberacaoId: null,
     latitudeInicio: -3.1,
     longitudeInicio: -60.0,
     inicioEm: '2026-09-24T10:00:00.000Z',

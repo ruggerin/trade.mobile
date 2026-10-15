@@ -44,6 +44,8 @@ export interface IniciarVisitaLocalParams {
   ordemServicoId?: string | null;
   // Escolhida pelo promotor no card da Agenda (a API vincula exatamente ela). Ver docs/07.
   ordemServicoEscolhida?: boolean;
+  // Liberação do gestor pra visita fora da agenda (docs/74).
+  liberacaoId?: string | null;
   latitude: number;
   longitude: number;
 }
@@ -83,6 +85,7 @@ export async function iniciarVisitaLocal(params: IniciarVisitaLocalParams): Prom
     pontoVenda: params.pontoVenda,
     ordemServicoId: params.ordemServicoId,
     ordemServicoEscolhida: params.ordemServicoEscolhida,
+    liberacaoId: params.liberacaoId,
     latitude: params.latitude,
     longitude: params.longitude,
   });

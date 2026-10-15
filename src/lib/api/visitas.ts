@@ -13,6 +13,8 @@ export interface CheckinPayload {
   // O promotor escolheu esta OS (card da Agenda): a API vincula exatamente ela. Ausente = é só a
   // sugestão do app, e a API pode trocar uma OS fora do dia pela do dia (App\Support\OrdemDoCheckin).
   ordem_servico_escolhida?: boolean;
+  // Visita fora da agenda autorizada pelo gestor (docs/74) — ver liberarVisita.
+  liberacao_uuid?: string;
   // Idempotência — mesmo uuid local da visita na fila (`fila_visitas.id`), reenviado sem mudar
   // a cada nova tentativa da mesma visita. Se o app fechar entre o servidor confirmar e o
   // celular gravar a resposta, o reenvio com a MESMA chave devolve a visita já criada em vez de
@@ -26,6 +28,28 @@ export interface CheckinPayload {
 export async function iniciarVisita(payload: CheckinPayload): Promise<Visita> {
   const { data } = await apiClient.post<{ visita: Visita }>('/visitas', payload);
   return data.visita;
+}
+
+export interface LiberacaoVisita {
+  id: string;
+  expira_em: string;
+  autorizada_por: { nome: string };
+}
+
+/**
+ * Visita fora da agenda (ou fora da vez) autorizada por um gestor no aparelho do promotor (docs/74):
+ * código de 6 dígitos gerado no admin, ou e-mail e senha dele. Precisa de sinal; o check-in depois
+ * pode sair offline levando o `id` como `liberacao_uuid`.
+ */
+export async function liberarVisita(
+  pontoVendaUuid: string,
+  autorizacao: { codigo: string } | { email: string; senha: string },
+): Promise<LiberacaoVisita> {
+  const { data } = await apiClient.post<{ liberacao: LiberacaoVisita }>('/visitas/liberacoes', {
+    ponto_venda_uuid: pontoVendaUuid,
+    ...autorizacao,
+  });
+  return data.liberacao;
 }
 
 export async function buscarVisita(visitaId: string): Promise<Visita> {

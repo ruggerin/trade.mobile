@@ -16,7 +16,9 @@ export type PontosVendaStackParamList = {
   // vindo da aba Agenda, ver AgendaStack) — ausente pra check-in espontâneo, que continua o
   // fluxo comum. Ver docs/07-ORDEM-DE-SERVICO.md.
   // ordemServicoEscolhida: veio do card da Agenda — o check-in usa exatamente essa OS (docs/07).
-  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico; ordemServicoEscolhida?: boolean };
+  // `foraDaVez`: o perfil segue a sequência do dia e este compromisso não é o da vez (docs/74) — a
+  // mensagem de quem vem antes; a tela abre pra consulta, sem iniciar.
+  PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico; ordemServicoEscolhida?: boolean; foraDaVez?: string };
   // Aberto a partir das ações do compromisso dentro da tela da loja (AcoesCompromisso).
   ReagendarCompromisso: { ordemServico: OrdemServico };
   // Só o id local (fila_visitas) — a visita nasce e vive na fila de envio até o checkout ser

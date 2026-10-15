@@ -17,14 +17,21 @@ export function AutorizacaoGestorModal({
   onEnviarSenha,
   onSoNesteAparelho,
   onClose,
+  motivo = 'O cancelamento pelo promotor não está liberado para esta visita.',
+  acao = 'Autorizar e descartar',
 }: {
   visible: boolean;
   enviando: boolean;
   erro: string | null;
   onEnviarCodigo: (codigo: string) => void;
   onEnviarSenha: (email: string, senha: string) => void;
-  onSoNesteAparelho: () => void;
+  // Sem ele, não mostra "Descartar só neste aparelho" (só faz sentido no descarte de visita).
+  onSoNesteAparelho?: () => void;
   onClose: () => void;
+  // Por que precisa do gestor e o texto do botão — o padrão é o descarte de visita travada; a
+  // visita fora da agenda (docs/74) usa os próprios.
+  motivo?: string;
+  acao?: string;
 }) {
   const [modo, setModo] = useState<'CODIGO' | 'SENHA'>('CODIGO');
   const [codigo, setCodigo] = useState('');
@@ -52,8 +59,8 @@ export function AutorizacaoGestorModal({
           {modo === 'CODIGO' ? (
             <>
               <Text style={styles.texto}>
-                O cancelamento pelo promotor não está liberado para esta visita. Peça a um gestor o código de
-                autorização gerado no sistema (válido por 10 minutos) e digite abaixo.
+                {motivo} Peça a um gestor o código de autorização gerado no sistema (válido por 10 minutos) e
+                digite abaixo.
               </Text>
               <TextInput
                 style={[styles.input, styles.inputCodigo]}
@@ -69,7 +76,7 @@ export function AutorizacaoGestorModal({
                 disabled={!prontoCodigo}
                 onPress={() => onEnviarCodigo(codigo.trim())}
               >
-                {enviando ? <ActivityIndicator color={cores.onPrimaria} /> : <Text style={styles.botaoTexto}>Autorizar e descartar</Text>}
+                {enviando ? <ActivityIndicator color={cores.onPrimaria} /> : <Text style={styles.botaoTexto}>{acao}</Text>}
               </Pressable>
               <Pressable style={styles.link} onPress={() => setModo('SENHA')} disabled={enviando}>
                 <Text style={styles.linkTextoNeutro}>Não tenho um código — usar e-mail e senha</Text>
@@ -78,8 +85,7 @@ export function AutorizacaoGestorModal({
           ) : (
             <>
               <Text style={styles.texto}>
-                O cancelamento pelo promotor não está liberado para esta visita. Peça a um gestor para digitar o e-mail
-                e a senha dele — ficam registrados na visita.
+                {motivo} Peça a um gestor para digitar o e-mail e a senha dele — ficam registrados na visita.
               </Text>
               <TextInput
                 style={styles.input}
@@ -106,7 +112,7 @@ export function AutorizacaoGestorModal({
                 disabled={!prontoSenha}
                 onPress={() => onEnviarSenha(email.trim(), senha)}
               >
-                {enviando ? <ActivityIndicator color={cores.onPrimaria} /> : <Text style={styles.botaoTexto}>Autorizar e descartar</Text>}
+                {enviando ? <ActivityIndicator color={cores.onPrimaria} /> : <Text style={styles.botaoTexto}>{acao}</Text>}
               </Pressable>
               <Pressable style={styles.link} onPress={() => setModo('CODIGO')} disabled={enviando}>
                 <Text style={styles.linkTextoNeutro}>Usar código de autorização</Text>
@@ -114,9 +120,11 @@ export function AutorizacaoGestorModal({
             </>
           )}
 
-          <Pressable style={styles.link} onPress={onSoNesteAparelho} disabled={enviando}>
-            <Text style={styles.linkTexto}>Descartar só neste aparelho</Text>
-          </Pressable>
+          {onSoNesteAparelho && (
+            <Pressable style={styles.link} onPress={onSoNesteAparelho} disabled={enviando}>
+              <Text style={styles.linkTexto}>Descartar só neste aparelho</Text>
+            </Pressable>
+          )}
           <Pressable style={styles.link} onPress={onClose} disabled={enviando}>
             <Text style={[styles.linkTexto, { color: cores.textoSecundario }]}>Voltar</Text>
           </Pressable>

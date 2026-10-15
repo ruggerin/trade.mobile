@@ -110,9 +110,23 @@ export async function reagendarOrdemServico(
   return data.ordem_servico;
 }
 
-export async function cancelarOrdemServico(ordemServicoUuid: string): Promise<OrdemServico> {
-  const { data } = await apiClient.post<{ ordem_servico: OrdemServico }>(`/ordens-servico/${ordemServicoUuid}/cancelar`);
+// `motivo_uuid` (motivo de não execução) é obrigatório pra quem segue a sequência do dia — é o
+// "pular a vez" (docs/74 §7.1), e aparece em Visitas não realizadas e nos relatórios.
+export async function cancelarOrdemServico(ordemServicoUuid: string, payload: { motivo_uuid?: string } = {}): Promise<OrdemServico> {
+  const { data } = await apiClient.post<{ ordem_servico: OrdemServico }>(`/ordens-servico/${ordemServicoUuid}/cancelar`, payload);
   return data.ordem_servico;
+}
+
+export interface MotivoNaoExecucao {
+  id: string;
+  descricao: string;
+}
+
+export async function listarMotivosNaoExecucao(): Promise<MotivoNaoExecucao[]> {
+  const { data } = await apiClient.get<{ motivos_nao_execucao: MotivoNaoExecucao[] }>('/motivos-nao-execucao', {
+    params: { ativo: 1 },
+  });
+  return data.motivos_nao_execucao;
 }
 
 // Busca individual, com os formulários exigidos (obrigatorio/calcula_percentual_compliance/

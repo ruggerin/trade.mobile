@@ -1,4 +1,6 @@
+import axios from 'axios';
 import { AcoesCompromisso } from '../components/AcoesCompromisso';
+import { AutorizacaoGestorModal } from '../components/AutorizacaoGestorModal';
 import { DadosCadastraisLoja } from '../components/DadosCadastraisLoja';
 import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -9,6 +11,8 @@ import { Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } 
 import MapView, { Circle, Marker } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../lib/auth/AuthContext';
+import { liberarVisita, type LiberacaoVisita } from '../lib/api/visitas';
+import { exigeAgenda, exigeSequencia } from '../lib/rotaObrigatoria';
 import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
 import { buscarRaioCheckinMetros } from '../lib/api/parametros';
 import { buscarAgendaSemanal } from '../lib/api/pontosVenda';
@@ -50,7 +54,7 @@ const DIAS_SEMANA: { valor: number; rotulo: string }[] = [
 // (DadosCadastraisLoja), que já tem toda a lógica de download autenticado/upload e não devia
 // ser duplicada aqui só por uma miniatura. Ver docs/Trade.mobile app review-handoff.
 export function PontoVendaCheckinScreen({ route, navigation }: Props) {
-  const { pontoVenda, ordemServico: ordemServicoDaRota, ordemServicoEscolhida = false } = route.params;
+  const { pontoVenda, ordemServico: ordemServicoDaRota, ordemServicoEscolhida = false, foraDaVez } = route.params;
   const { usuario } = useAuth();
   const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
@@ -67,6 +71,11 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   });
   const ordemServico = ordemServicoDaRota ?? escolherOrdemDaLoja((pendenciasQuery.data ?? []).filter((os) => os.ponto_venda.id === pontoVenda.id));
   const [erroCheckin, setErroCheckin] = useState<string | null>(null);
+  // Visita fora da agenda/da vez autorizada pelo gestor no aparelho (docs/74).
+  const [liberacao, setLiberacao] = useState<LiberacaoVisita | null>(null);
+  const [pedindoAutorizacao, setPedindoAutorizacao] = useState(false);
+  const [enviandoAutorizacao, setEnviandoAutorizacao] = useState(false);
+  const [erroAutorizacao, setErroAutorizacao] = useState<string | null>(null);
   const [aba, setAba] = useState<Aba>('DADOS');
   const [mapaExpandido, setMapaExpandido] = useState(false);
 
@@ -81,6 +90,34 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   const visitaEmAndamento = emAndamentoQuery.data ?? null;
   const emAndamentoNestaLoja = visitaEmAndamento?.pontoVenda.id === pontoVenda.id;
   const emAndamentoEmOutraLoja = visitaEmAndamento !== null && !emAndamentoNestaLoja;
+
+  // Perfil obrigado a seguir a agenda (docs/74): pela aba Lojas a tela fica só pra consulta, e na
+  // Agenda só o compromisso da vez inicia. A liberação do gestor abre a exceção. Visita já em
+  // andamento nunca fica presa. A API reconfere tudo no check-in.
+  const bloqueioRota =
+    visitaEmAndamento || liberacao
+      ? null
+      : exigeAgenda(usuario) && !(ordemServicoEscolhida && ordemServicoDaRota)
+        ? 'Seu perfil só permite iniciar visita pela agenda.'
+        : (foraDaVez ?? null);
+
+  async function autorizar(autorizacao: { codigo: string } | { email: string; senha: string }) {
+    setEnviandoAutorizacao(true);
+    setErroAutorizacao(null);
+    try {
+      setLiberacao(await liberarVisita(pontoVenda.id, autorizacao));
+      setPedindoAutorizacao(false);
+    } catch (err) {
+      const mensagem = axios.isAxiosError<{ message?: string }>(err)
+        ? err.response
+          ? err.response.data?.message
+          : 'Sem conexão. A autorização do gestor precisa de internet.'
+        : undefined;
+      setErroAutorizacao(mensagem || 'Não foi possível autorizar agora. Tente novamente.');
+    } finally {
+      setEnviandoAutorizacao(false);
+    }
+  }
 
   // Contexto de negócio rápido antes de entrar na visita — docs/26-MELHORIAS-PRODUTIVIDADE-PROMOTOR.md
   // §2 itens 2/3, mesmo raciocínio do card da lista (PontosVendaListScreen).
@@ -144,6 +181,7 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
           pontoVenda,
           ordemServicoId: ordemServicoDaRota.id,
           ordemServicoEscolhida: true,
+          liberacaoId: liberacao?.id,
           latitude: coords.latitude,
           longitude: coords.longitude,
         });
@@ -165,6 +203,7 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
         usuarioId: usuario!.id,
         pontoVenda,
         ordemServicoId,
+        liberacaoId: liberacao?.id,
         latitude: coords.latitude,
         longitude: coords.longitude,
       });
@@ -192,6 +231,11 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   function iniciarVisita() {
     if (visitaEmAndamento) {
       navigation.replace('VisitaAndamento', { visitaLocalId: visitaEmAndamento.id });
+      return;
+    }
+    if (bloqueioRota) {
+      setErroAutorizacao(null);
+      setPedindoAutorizacao(true);
       return;
     }
     if (iniciandoRef.current) return;
@@ -266,6 +310,7 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
         >
           {localizacao.coords ? (
             <MapView
+              userInterfaceStyle="light"
               style={styles.mapa}
               initialRegion={{
                 latitude: pontoVenda.latitude,
@@ -327,11 +372,11 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
             </View>
             <View style={styles.distanciaTextos}>
               <Text style={[styles.distanciaTitulo, { color: dentroDoRaio ? cores.sucesso : amber[700] }]}>
-                {dentroDoRaio ? 'Dentro do raio' : 'Fora do raio'}
+                {semLimite ? 'Sem limite de distância' : dentroDoRaio ? 'Dentro do raio' : 'Fora do raio'}
               </Text>
               <Text style={styles.distanciaSubtitulo}>
                 {semLimite
-                  ? 'Sem limite configurado'
+                  ? 'Check-in liberado de qualquer lugar'
                   : dentroDoRaio
                     ? 'Check-in liberado'
                     : distancia !== null
@@ -434,7 +479,8 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
         {/* Reagendar/Cancelar só faz sentido pra um compromisso que nasceu na agenda do
             promotor — uma OS de Direcionamento/campanha "encontrada" ao abrir a loja pela aba
             Lojas não é um compromisso da agenda dele pra reagendar/cancelar. */}
-        {ordemServico?.origem === 'AGENDA' && (
+        {/* Quem segue a sequência do dia (docs/74) pula a vez por aqui em qualquer compromisso dele. */}
+        {(ordemServico?.origem === 'AGENDA' || (exigeSequencia(usuario) && ordemServicoEscolhida && ordemServico)) && (
           <View style={styles.acoesCompromissoWrap}>
             <AcoesCompromisso
               ordemServico={ordemServico}
@@ -459,7 +505,21 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
             </Text>
           </View>
         )}
-        {!visitaEmAndamento && !dentroDoRaio && !erroCheckin && (
+        {bloqueioRota && !erroCheckin && (
+          <View style={styles.avisoForaRaio}>
+            <MaterialCommunityIcons name="lock-outline" size={16} color={amber[700]} />
+            <Text style={styles.avisoForaRaioTexto}>
+              {bloqueioRota} Para iniciar mesmo assim, peça a autorização de um gestor.
+            </Text>
+          </View>
+        )}
+        {liberacao && !visitaEmAndamento && !erroCheckin && (
+          <View style={styles.avisoForaRaio}>
+            <MaterialCommunityIcons name="shield-check-outline" size={16} color={amber[700]} />
+            <Text style={styles.avisoForaRaioTexto}>Visita autorizada por {liberacao.autorizada_por.nome}.</Text>
+          </View>
+        )}
+        {!visitaEmAndamento && !bloqueioRota && !dentroDoRaio && !erroCheckin && (
           <View style={styles.avisoForaRaio}>
             <MaterialCommunityIcons name="alert-outline" size={16} color={amber[700]} />
             <Text style={styles.avisoForaRaioTexto}>
@@ -496,10 +556,23 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
                 ? 'Continuar visita'
                 : emAndamentoEmOutraLoja
                   ? 'Ir para a visita em andamento'
-                  : 'Iniciar visita'}
+                  : bloqueioRota
+                    ? 'Pedir autorização do gestor'
+                    : 'Iniciar visita'}
           </Text>
         </Pressable>
       </View>
+
+      <AutorizacaoGestorModal
+        visible={pedindoAutorizacao}
+        enviando={enviandoAutorizacao}
+        erro={erroAutorizacao}
+        motivo={`${bloqueioRota ?? 'Esta visita está fora da sua agenda.'}`}
+        acao="Autorizar visita"
+        onEnviarCodigo={(codigo) => void autorizar({ codigo })}
+        onEnviarSenha={(email, senha) => void autorizar({ email, senha })}
+        onClose={() => setPedindoAutorizacao(false)}
+      />
 
       {/* Mapa de verdade, em tela cheia — aqui sim com zoom/arrastar/bússola/localização, sem
           nenhuma ScrollView por perto brigando pelo gesto. */}
@@ -507,6 +580,7 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
         <View style={styles.mapaExpandidoContainer}>
           {localizacao.coords && (
             <MapView
+              userInterfaceStyle="light"
               style={styles.mapa}
               initialRegion={{
                 latitude: pontoVenda.latitude,
@@ -534,7 +608,7 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
             </Text>
             {distancia !== null && (
               <Text style={styles.mapaExpandidoDistancia}>
-                {dentroDoRaio ? 'Dentro do raio' : 'Fora do raio'} ·{' '}
+                {semLimite ? 'Sem limite de distância' : dentroDoRaio ? 'Dentro do raio' : 'Fora do raio'} ·{' '}
                 {distancia >= 1000 ? `${(distancia / 1000).toFixed(1).replace('.', ',')} km` : `${Math.round(distancia)} m`}
               </Text>
             )}
