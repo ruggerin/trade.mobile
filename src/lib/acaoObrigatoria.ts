@@ -67,6 +67,17 @@ function dentroDoIntervalo(tipo: TipoRegistro, { ultimosRegistros, inicioVisita,
   return diasDeCalendario(ultimoEm, agora) < dias;
 }
 
+/** Junta o último registro por formulário de duas fontes (servidor e fila do celular), ficando com o mais recente. */
+export function juntarUltimosRegistros(...fontes: (Record<string, string> | undefined)[]): Record<string, string> {
+  const resultado: Record<string, string> = {};
+  for (const fonte of fontes) {
+    for (const [tipo, data] of Object.entries(fonte ?? {})) {
+      if (!resultado[tipo] || new Date(data) > new Date(resultado[tipo])) resultado[tipo] = data;
+    }
+  }
+  return resultado;
+}
+
 /** Diferença em dias de calendário no fuso do aparelho (ontem 23h → hoje 8h = 1 dia). */
 export function diasDeCalendario(de: Date, ate: Date): number {
   const inicioDoDia = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -81,35 +92,46 @@ function linhaAusente(tipo: TipoRegistro, mix: SortimentoPontoVenda[]): boolean 
 }
 
 function cobre(tipo: TipoRegistro, item: SortimentoPontoVenda): boolean {
-  const produto = item.produto;
   switch (tipo.escopo_tipo_vinculo) {
-    case 'SECAO': {
-      const secao = tipo.escopo_secao;
-      if (!secao) return true;
-      if (item.tipo_item === 'PRODUTO') return produto?.secao_uuid === secao.id;
-      if (item.tipo_item === 'SECAO') return item.secao?.id === secao.id;
-      if (item.tipo_item === 'DEPARTAMENTO') return !!secao.departamento_uuid && item.departamento?.id === secao.departamento_uuid;
-      return false;
-    }
-    case 'DEPARTAMENTO': {
-      const departamento = tipo.escopo_departamento?.id;
-      if (!departamento) return true;
-      if (item.tipo_item === 'PRODUTO') return produto?.departamento_uuid === departamento;
-      if (item.tipo_item === 'SECAO') return item.secao?.departamento_uuid === departamento;
-      if (item.tipo_item === 'DEPARTAMENTO') return item.departamento?.id === departamento;
-      return false;
-    }
-    case 'MARCA': {
-      const marca = tipo.escopo_marca?.id;
-      if (!marca) return true;
-      if (item.tipo_item === 'PRODUTO') return produto?.marca_uuid === marca;
-      if (item.tipo_item === 'MARCA') return item.marca?.id === marca;
-      return false;
-    }
+    case 'SECAO':
+      return !tipo.escopo_secao || cobreRecorte('SECAO', tipo.escopo_secao.id, tipo.escopo_secao.departamento_uuid ?? null, item);
+    case 'DEPARTAMENTO':
+      return !tipo.escopo_departamento?.id || cobreRecorte('DEPARTAMENTO', tipo.escopo_departamento.id, null, item);
+    case 'MARCA':
+      return !tipo.escopo_marca?.id || cobreRecorte('MARCA', tipo.escopo_marca.id, null, item);
     default:
       // Sem recorte configurado (cache antigo): nada a levantar.
       return true;
   }
+}
+
+/**
+ * O item do Mix cobre o recorte? Mesma regra do backend (LinhaAusente::cobreRecorte) — usada pela
+ * linha ausente (docs/80) e pela lista "Na loja" (docs/82). `departamentoDaSecao`: só pra seção
+ * (item de departamento cobre as seções dele).
+ */
+export function cobreRecorte(
+  tipo: 'SECAO' | 'DEPARTAMENTO' | 'MARCA',
+  uuid: string,
+  departamentoDaSecao: string | null,
+  item: SortimentoPontoVenda,
+): boolean {
+  const produto = item.produto;
+  if (tipo === 'SECAO') {
+    if (item.tipo_item === 'PRODUTO') return produto?.secao_uuid === uuid;
+    if (item.tipo_item === 'SECAO') return item.secao?.id === uuid;
+    if (item.tipo_item === 'DEPARTAMENTO') return !!departamentoDaSecao && item.departamento?.id === departamentoDaSecao;
+    return false;
+  }
+  if (tipo === 'DEPARTAMENTO') {
+    if (item.tipo_item === 'PRODUTO') return produto?.departamento_uuid === uuid;
+    if (item.tipo_item === 'SECAO') return item.secao?.departamento_uuid === uuid;
+    if (item.tipo_item === 'DEPARTAMENTO') return item.departamento?.id === uuid;
+    return false;
+  }
+  if (item.tipo_item === 'PRODUTO') return produto?.marca_uuid === uuid;
+  if (item.tipo_item === 'MARCA') return item.marca?.id === uuid;
+  return false;
 }
 
 /**

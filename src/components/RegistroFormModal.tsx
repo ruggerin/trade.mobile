@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconeTipoRegistro } from './IconeTipoRegistro';
+import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
 import { buscarSortimentoCampo, type ProdutoSortimento, type RecortesDoMix } from '../lib/api/campoSortimento';
 import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
 import { listarProdutosCatalogo } from '../lib/api/produtosAuditoria';
@@ -25,14 +26,20 @@ import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } fro
 import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type RascunhosColeta } from '../lib/db/rascunhosColeta';
 import { mascararMoeda, moedaParaApi } from '../lib/mascaraMoeda';
 import {
+  type OpcaoRecorte,
   ROTULO_RECORTE,
-  agruparChecklist,
-  produtosDoRecorte,
-  recortesPermitidos,
   type RecorteEscolhido,
   type TipoRecorte,
+  agruparChecklist,
+  descricaoRecorte,
+  estaNaLoja,
+  marcasNaLoja,
+  mixAprovado,
+  opcoesDaAba,
+  produtosDoRecorte,
+  recortesPermitidos,
 } from '../lib/recorteEscolhido';
-import type { CampoTipoRegistro, CatalogoItem, ProdutoDisponivel, TipoRegistro, TipoVinculoRegistro } from '../types/api';
+import type { CampoTipoRegistro, CatalogoItem, ProdutoDisponivel, SortimentoPontoVenda, TipoRegistro, TipoVinculoRegistro } from '../types/api';
 import { cores, espaco, indigo, neutro, raio, sombraCard, tipografia } from '../theme';
 
 /** Valor de um campo SORTIMENTO em valores_campos — sempre um JSON deste shape, ver decisão 3 de docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. */
@@ -171,6 +178,7 @@ export function RegistroFormModal({
       setRuptura(false);
       setVinculo(null);
       setRecorte(null);
+      recorteJaEscolhidoRef.current = false;
       setCategoriaAberta(null);
       setErroLocal(null);
       setProdutoLista(null);
@@ -219,6 +227,18 @@ export function RegistroFormModal({
   });
   const recortesDoMix = mixQueSegueQuery.data?.recortes;
   const usarCatalogoNaEscolha = pedeRecorte && !campoQueSegue;
+  // Mix da loja em cache (mesma chave da tela da visita): bloco "Na loja" sem rede (docs/82 §5.1).
+  const mixDaLojaQuery = useQuery({
+    queryKey: ['sortimento', pontoVendaUuid],
+    queryFn: () => buscarSortimento(pontoVendaUuid!),
+    enabled: pedeRecorte && !!pontoVendaUuid,
+  });
+  // Já escolheu uma vez neste registro: depois de "Trocar", a escolha automática não volta.
+  const recorteJaEscolhidoRef = useRef(false);
+  function escolherRecorte(r: RecorteEscolhido) {
+    recorteJaEscolhidoRef.current = true;
+    setRecorte(r);
+  }
 
   // Trocar o recorte muda os produtos do checklist — as marcações anteriores não valem mais.
   function trocarRecorte() {
@@ -233,17 +253,17 @@ export function RegistroFormModal({
   const secoesQuery = useQuery({
     queryKey: ['secoes-auditoria'],
     queryFn: listarSecoes,
-    enabled: categoriaAberta === 'SECAO' || (usarCatalogoNaEscolha && permitidos.includes('SECAO')),
+    enabled: categoriaAberta === 'SECAO' || (pedeRecorte && permitidos.includes('SECAO')),
   });
   const departamentosQuery = useQuery({
     queryKey: ['departamentos-auditoria'],
     queryFn: listarDepartamentos,
-    enabled: categoriaAberta === 'DEPARTAMENTO' || (usarCatalogoNaEscolha && permitidos.includes('DEPARTAMENTO')),
+    enabled: categoriaAberta === 'DEPARTAMENTO' || (pedeRecorte && permitidos.includes('DEPARTAMENTO')),
   });
   const marcasQuery = useQuery({
     queryKey: ['marcas-auditoria'],
     queryFn: listarMarcas,
-    enabled: categoriaAberta === 'MARCA' || (usarCatalogoNaEscolha && permitidos.includes('MARCA')),
+    enabled: categoriaAberta === 'MARCA' || (pedeRecorte && (permitidos.includes('MARCA') || !!tipo?.filtra_marca)),
   });
 
   // Foto de registro é evidência de campo: só câmera, na hora — nunca da galeria (uma foto
@@ -516,9 +536,12 @@ export function RegistroFormModal({
       departamentoUuid: recorte
         ? recorte.tipo === 'DEPARTAMENTO' ? recorte.uuid : undefined
         : vinculo?.categoria === 'DEPARTAMENTO' ? vinculo.uuid : undefined,
-      marcaUuid: recorte ? (recorte.tipo === 'MARCA' ? recorte.uuid : undefined) : vinculo?.categoria === 'MARCA' ? vinculo.uuid : undefined,
+      // Marca inteira, ou a marca como filtro da seção/departamento (docs/82 §5.2).
+      marcaUuid: recorte
+        ? recorte.tipo === 'MARCA' ? recorte.uuid : (recorte.marca?.uuid ?? undefined)
+        : vinculo?.categoria === 'MARCA' ? vinculo.uuid : undefined,
       vinculoLabel: recorte
-        ? `${ROTULO_RECORTE[recorte.tipo]}: ${recorte.descricao}`
+        ? `${ROTULO_RECORTE[recorte.tipo]}: ${descricaoRecorte(recorte)}`
         : !produtoContexto && vinculo && vinculo.categoria !== 'PRODUTO' ? vinculo.label : undefined,
       valoresCampos: Object.keys(valoresNormalizados).length > 0 ? valoresNormalizados : undefined,
       ruptura: ruptura || undefined,
@@ -644,10 +667,21 @@ export function RegistroFormModal({
             <EscolhaRecorte
               permitidos={permitidos}
               recortesDoMix={recortesDoMix}
-              carregando={campoQueSegue ? mixQueSegueQuery.isLoading : secoesQuery.isLoading || departamentosQuery.isLoading || marcasQuery.isLoading}
+              produtosDoMixDoCampo={mixQueSegueQuery.data?.produtos ?? []}
+              mix={mixDaLojaQuery.data}
+              carregando={
+                (campoQueSegue ? mixQueSegueQuery.isLoading : false) ||
+                mixDaLojaQuery.isLoading ||
+                secoesQuery.isLoading ||
+                departamentosQuery.isLoading ||
+                marcasQuery.isLoading
+              }
               catalogo={{ SECAO: secoesQuery.data ?? [], DEPARTAMENTO: departamentosQuery.data ?? [], MARCA: marcasQuery.data ?? [] }}
+              lista={tipo.lista_recorte ?? 'PRIMEIRO_DA_LOJA'}
+              filtraMarca={!!tipo.filtra_marca}
+              permitirAutoEscolha={!recorteJaEscolhidoRef.current}
               paddingInferior={espaco.lg + insets.bottom}
-              onEscolher={setRecorte}
+              onEscolher={escolherRecorte}
             />
           )}
 
@@ -657,8 +691,11 @@ export function RegistroFormModal({
                 {recorte && (
                   <View style={styles.recorteFaixa}>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.recorteFaixaTipo}>{ROTULO_RECORTE[recorte.tipo]}</Text>
-                      <Text style={styles.recorteFaixaNome} numberOfLines={1}>{recorte.descricao}</Text>
+                      <Text style={styles.recorteFaixaTipo}>
+                        {ROTULO_RECORTE[recorte.tipo]}
+                        {recorte.marca ? ' · Marca' : ''}
+                      </Text>
+                      <Text style={styles.recorteFaixaNome} numberOfLines={1}>{descricaoRecorte(recorte)}</Text>
                     </View>
                     <Pressable onPress={trocarRecorte} hitSlop={8} style={styles.recorteFaixaBotao}>
                       <Text style={styles.recorteFaixaBotaoTexto}>Trocar</Text>
@@ -1091,13 +1128,13 @@ function BuscaProdutoForaDoMix({
 }) {
   const [busca, setBusca] = useState('');
   const query = useQuery({
-    queryKey: ['catalogo-fora-do-mix', recorte.tipo, recorte.uuid, busca.trim()],
+    queryKey: ['catalogo-fora-do-mix', recorte.tipo, recorte.uuid, recorte.marca?.uuid, busca.trim()],
     queryFn: () =>
       listarProdutosCatalogo({
         busca: busca.trim(),
         secaoUuid: recorte.tipo === 'SECAO' ? recorte.uuid : null,
         departamentoUuid: recorte.tipo === 'DEPARTAMENTO' ? recorte.uuid : null,
-        marcaUuid: recorte.tipo === 'MARCA' ? recorte.uuid : null,
+        marcaUuid: recorte.tipo === 'MARCA' ? recorte.uuid : (recorte.marca?.uuid ?? null),
       }),
     enabled: busca.trim().length >= 2,
   });
@@ -1110,7 +1147,7 @@ function BuscaProdutoForaDoMix({
           style={[styles.input, { flex: 1 }]}
           value={busca}
           onChangeText={setBusca}
-          placeholder={`Buscar em ${recorte.descricao}`}
+          placeholder={`Buscar em ${descricaoRecorte(recorte)}`}
           autoFocus
         />
         <Pressable onPress={onCancelar} hitSlop={8}>
@@ -1138,36 +1175,112 @@ function BuscaProdutoForaDoMix({
 function EscolhaRecorte({
   permitidos,
   recortesDoMix,
+  produtosDoMixDoCampo,
+  mix,
   catalogo,
   carregando,
+  lista,
+  filtraMarca,
+  permitirAutoEscolha,
   paddingInferior,
   onEscolher,
 }: {
   permitidos: TipoRecorte[];
   recortesDoMix: RecortesDoMix | undefined;
+  produtosDoMixDoCampo: ProdutoSortimento[];
+  // Mix da loja em cache (docs/82 §5.1): fonte do bloco "Na loja", offline.
+  mix: SortimentoPontoVenda[] | undefined;
   catalogo: Record<TipoRecorte, CatalogoItem[]>;
   carregando: boolean;
+  lista: 'PRIMEIRO_DA_LOJA' | 'SO_DA_LOJA';
+  filtraMarca: boolean;
+  // Só na primeira abertura: depois de um "Trocar", nunca escolhe sozinho de novo.
+  permitirAutoEscolha: boolean;
   paddingInferior: number;
   onEscolher: (recorte: RecorteEscolhido) => void;
 }) {
-  const [aba, setAba] = useState<TipoRecorte>(permitidos.includes('DEPARTAMENTO') ? 'DEPARTAMENTO' : permitidos[0]);
+  const aprovados = useMemo(() => mixAprovado(mix), [mix]);
+  // Loja sem Mix: "Só o que a loja tem" libera a lista inteira (decisão 5: nunca trava).
+  const mixVazio = aprovados.length === 0 && !recortesDoMix?.secoes.length && !recortesDoMix?.departamentos.length && !recortesDoMix?.marcas.length;
+  const soDaLoja = lista === 'SO_DA_LOJA' && !mixVazio;
 
-  // Do mix da loja quando dá; senão (formulário sem Mix que segue a escolha) do catálogo.
-  const itens: { uuid: string; descricao: string; grupo: string | null }[] = recortesDoMix
-    ? aba === 'MARCA'
-      ? recortesDoMix.marcas.map((m) => ({ uuid: m.uuid, descricao: m.descricao, grupo: null }))
-      : aba === 'DEPARTAMENTO'
-        ? recortesDoMix.departamentos.map((d) => ({ uuid: d.uuid, descricao: d.descricao, grupo: null }))
-        : recortesDoMix.secoes.map((s) => ({
-            uuid: s.uuid,
-            descricao: s.descricao,
-            grupo: recortesDoMix.departamentos.find((d) => d.uuid === s.departamento_uuid)?.descricao ?? null,
-          }))
-    : catalogo[aba].map((c) => ({ uuid: c.id, descricao: c.descricao, grupo: null }));
-  const ordenados = [...itens].sort((a, b) => `${a.grupo ?? ''}|${a.descricao}`.localeCompare(`${b.grupo ?? ''}|${b.descricao}`, 'pt-BR'));
+  const porAba = useMemo(() => {
+    const resultado = {} as Record<TipoRecorte, { naLoja: OpcaoRecorte[]; outras: OpcaoRecorte[] }>;
+    for (const a of permitidos) {
+      const todas = opcoesDaAba(a, catalogo[a], recortesDoMix);
+      const naLoja = todas.filter((o) => estaNaLoja(a, o, aprovados, recortesDoMix));
+      const naLojaUuids = new Set(naLoja.map((o) => o.uuid));
+      resultado[a] = { naLoja, outras: todas.filter((o) => !naLojaUuids.has(o.uuid)) };
+    }
+    return resultado;
+  }, [permitidos, catalogo, recortesDoMix, aprovados]);
+
+  // Aba inicial: a primeira liberada que tenha algo "Na loja".
+  const abaInicial = permitidos.find((a) => porAba[a].naLoja.length > 0) ?? (permitidos.includes('DEPARTAMENTO') ? 'DEPARTAMENTO' : permitidos[0]);
+  const [abaEscolhida, setAba] = useState<TipoRecorte | null>(null);
+  const aba = abaEscolhida ?? abaInicial;
+  const [outrasAbertas, setOutrasAbertas] = useState(false);
+  const [busca, setBusca] = useState('');
+  // Passo 2 (docs/82 §5.2): seção/departamento escolhido, esperando a marca.
+  const [pendente, setPendente] = useState<RecorteEscolhido | null>(null);
+
+  function escolher(recorte: RecorteEscolhido) {
+    if (filtraMarca && recorte.tipo !== 'MARCA') setPendente(recorte);
+    else onEscolher(recorte);
+  }
+
+  // Uma opção só "Na loja" (decisão 3): já vem escolhida.
+  const autoEscolhaFeita = useRef(false);
+  useEffect(() => {
+    if (!permitirAutoEscolha || carregando || autoEscolhaFeita.current) return;
+    autoEscolhaFeita.current = true;
+    const unicas = permitidos.flatMap((a) => porAba[a].naLoja.map((o) => ({ a, o })));
+    if (unicas.length === 1) escolher({ tipo: unicas[0].a, uuid: unicas[0].o.uuid, descricao: unicas[0].o.descricao });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carregando, permitirAutoEscolha]);
+
+  if (pendente) {
+    return (
+      <PassoMarca
+        recorte={pendente}
+        marcas={marcasNaLoja(pendente, produtosDoMixDoCampo, aprovados, catalogo.MARCA)}
+        catalogoMarcas={soDaLoja ? [] : catalogo.MARCA}
+        paddingInferior={paddingInferior}
+        onVoltar={() => setPendente(null)}
+        onConfirmar={(marca) => onEscolher({ ...pendente, marca })}
+      />
+    );
+  }
+
+  const { naLoja, outras } = porAba[aba];
+  const termo = busca.trim().toLowerCase();
+  const outrasFiltradas = termo ? outras.filter((o) => o.descricao.toLowerCase().includes(termo)) : outras;
+  // Sem nada "Na loja" (ou loja sem Mix), a lista inteira já aparece aberta.
+  const mostrarOutrasDireto = naLoja.length === 0;
+
+  const linha = (o: OpcaoRecorte, naLojaItem: boolean) => (
+    <Pressable
+      key={o.uuid}
+      style={({ pressed }) => [styles.tipoCard, pressed && styles.itemPressionado]}
+      onPress={() => escolher({ tipo: aba, uuid: o.uuid, descricao: o.descricao })}
+    >
+      <View style={styles.tipoCardConteudo}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.tipoNome}>{o.descricao}</Text>
+          {aba === 'SECAO' && o.departamento?.descricao ? <Text style={styles.recorteOpcaoSub}>{o.departamento.descricao}</Text> : null}
+        </View>
+        {naLojaItem && (
+          <View style={styles.seloNaLoja}>
+            <Text style={styles.seloNaLojaTexto}>Na loja</Text>
+          </View>
+        )}
+        <MaterialCommunityIcons name="chevron-right" size={20} color={neutro[700]} />
+      </View>
+    </Pressable>
+  );
 
   return (
-    <ScrollView contentContainerStyle={[styles.lista, { paddingBottom: paddingInferior }]}>
+    <ScrollView contentContainerStyle={[styles.lista, { paddingBottom: paddingInferior }]} keyboardShouldPersistTaps="handled">
       <Text style={styles.escolhaTitulo}>Onde é este registro?</Text>
       <Text style={styles.escolhaSubtitulo}>Escolha a parte da loja. As perguntas e o checklist valem pra ela.</Text>
       {permitidos.length > 1 && (
@@ -1180,21 +1293,125 @@ function EscolhaRecorte({
         </View>
       )}
       {carregando && <ActivityIndicator color={cores.primaria} style={{ padding: 12 }} />}
-      {!carregando && ordenados.length === 0 && <Text style={styles.vazioTexto}>Nada desta loja pra escolher aqui.</Text>}
-      {ordenados.map((item, i) => (
-        <View key={item.uuid}>
-          {item.grupo && item.grupo !== ordenados[i - 1]?.grupo && <Text style={styles.grupoChecklistSupertitulo}>{item.grupo}</Text>}
-          <Pressable
-            style={({ pressed }) => [styles.tipoCard, pressed && styles.itemPressionado]}
-            onPress={() => onEscolher({ tipo: aba, uuid: item.uuid, descricao: item.descricao })}
-          >
-            <View style={styles.tipoCardConteudo}>
-              <Text style={[styles.tipoNome, { flex: 1 }]}>{item.descricao}</Text>
-              <MaterialCommunityIcons name="chevron-right" size={20} color={neutro[700]} />
-            </View>
-          </Pressable>
-        </View>
-      ))}
+      {lista === 'SO_DA_LOJA' && mixVazio && !carregando && (
+        <Text style={styles.avisoRecorte}>Esta loja não tem Mix cadastrado. Mostrando a lista inteira.</Text>
+      )}
+
+      {naLoja.length > 0 && (
+        <>
+          <Text style={styles.blocoRecorteTitulo}>Na loja · {naLoja.length}</Text>
+          {naLoja.map((o) => linha(o, true))}
+        </>
+      )}
+
+      {!soDaLoja && (outras.length > 0 || busca !== '') && (
+        <>
+          {!mostrarOutrasDireto && (
+            <Pressable style={styles.blocoRecorteToggle} onPress={() => setOutrasAbertas((v) => !v)} hitSlop={6}>
+              <Text style={styles.blocoRecorteTitulo}>Outras · {outras.length}</Text>
+              <MaterialCommunityIcons name={outrasAbertas ? 'chevron-up' : 'chevron-down'} size={20} color={neutro[700]} />
+            </Pressable>
+          )}
+          {(outrasAbertas || mostrarOutrasDireto) && (
+            <>
+              <TextInput
+                style={[styles.input, { marginBottom: espaco.sm }]}
+                value={busca}
+                onChangeText={setBusca}
+                placeholder={`Buscar ${ROTULO_RECORTE[aba].toLowerCase()}`}
+                placeholderTextColor={cores.textoTerciario}
+              />
+              {outrasFiltradas.map((o) => linha(o, false))}
+            </>
+          )}
+        </>
+      )}
+
+      {!carregando && naLoja.length === 0 && (soDaLoja || outras.length === 0) && (
+        <Text style={styles.vazioTexto}>Nada desta loja pra escolher aqui.</Text>
+      )}
+    </ScrollView>
+  );
+}
+
+/** Passo 2 (docs/82 §5.2): marca depois da seção/departamento, com "Todas" já marcado. */
+function PassoMarca({
+  recorte,
+  marcas,
+  catalogoMarcas,
+  paddingInferior,
+  onVoltar,
+  onConfirmar,
+}: {
+  recorte: RecorteEscolhido;
+  marcas: { uuid: string; descricao: string }[];
+  // Vazio = "Só o que a loja tem": sem "Outra marca".
+  catalogoMarcas: CatalogoItem[];
+  paddingInferior: number;
+  onVoltar: () => void;
+  onConfirmar: (marca: { uuid: string; descricao: string } | null) => void;
+}) {
+  const [marca, setMarca] = useState<{ uuid: string; descricao: string } | null>(null);
+  const [buscandoOutra, setBuscandoOutra] = useState(false);
+  const [busca, setBusca] = useState('');
+  const naLoja = new Set(marcas.map((m) => m.uuid));
+  const termo = busca.trim().toLowerCase();
+  const outras = catalogoMarcas
+    .filter((m) => !naLoja.has(m.id) && (!termo || m.descricao.toLowerCase().includes(termo)))
+    .sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
+  const marcaForaDaLoja = marca && !naLoja.has(marca.uuid) ? marca : null;
+
+  const chip = (chave: string, rotulo: string, ativo: boolean, onPress: () => void) => (
+    <Pressable key={chave} onPress={onPress} style={[styles.chipMarca, ativo && styles.chipMarcaAtivo]}>
+      <Text style={[styles.chipMarcaTexto, ativo && styles.chipMarcaTextoAtivo]}>{rotulo}</Text>
+    </Pressable>
+  );
+
+  return (
+    <ScrollView contentContainerStyle={[styles.lista, { paddingBottom: paddingInferior }]} keyboardShouldPersistTaps="handled">
+      <Text style={styles.escolhaTitulo}>Qual marca?</Text>
+      <Text style={styles.escolhaSubtitulo}>
+        Em {recorte.descricao}. Deixe em Todas se o registro não for de uma marca só.
+      </Text>
+      <View style={styles.chipsMarca}>
+        {chip('todas', 'Todas', marca === null, () => setMarca(null))}
+        {marcas.map((m) => chip(m.uuid, m.descricao, marca?.uuid === m.uuid, () => setMarca(m)))}
+        {marcaForaDaLoja && chip(marcaForaDaLoja.uuid, marcaForaDaLoja.descricao, true, () => setMarca(marcaForaDaLoja))}
+        {catalogoMarcas.length > 0 && chip('outra', 'Outra marca', false, () => setBuscandoOutra((v) => !v))}
+      </View>
+      {buscandoOutra && (
+        <>
+          <TextInput
+            style={[styles.input, { marginTop: espaco.sm }]}
+            value={busca}
+            onChangeText={setBusca}
+            placeholder="Buscar marca"
+            placeholderTextColor={cores.textoTerciario}
+            autoFocus
+          />
+          {outras.slice(0, 30).map((m) => (
+            <Pressable
+              key={m.id}
+              style={({ pressed }) => [styles.tipoCard, pressed && styles.itemPressionado]}
+              onPress={() => {
+                setMarca({ uuid: m.id, descricao: m.descricao });
+                setBuscandoOutra(false);
+                setBusca('');
+              }}
+            >
+              <View style={styles.tipoCardConteudo}>
+                <Text style={[styles.tipoNome, { flex: 1 }]}>{m.descricao}</Text>
+              </View>
+            </Pressable>
+          ))}
+        </>
+      )}
+      <Pressable style={({ pressed }) => [styles.botaoContinuarMarca, pressed && { opacity: 0.85 }]} onPress={() => onConfirmar(marca)}>
+        <Text style={styles.botaoContinuarMarcaTexto}>Continuar</Text>
+      </Pressable>
+      <Pressable style={styles.voltarMarca} onPress={onVoltar} hitSlop={8}>
+        <Text style={styles.voltarMarcaTexto}>Voltar</Text>
+      </Pressable>
     </ScrollView>
   );
 }
@@ -1415,6 +1632,22 @@ const styles = StyleSheet.create({
   recorteFaixaBotao: { backgroundColor: cores.fundoCard, borderRadius: raio.md, paddingHorizontal: espaco.md, minHeight: 40, justifyContent: 'center' },
   recorteFaixaBotaoTexto: { fontSize: 13, fontWeight: '600', color: cores.primaria },
   escolhaTitulo: { fontSize: 18, fontWeight: '700', color: cores.texto },
+  // docs/82 — blocos "Na loja"/"Outras", selo, aviso e passo da marca.
+  blocoRecorteTitulo: { fontSize: 12, fontWeight: '800', letterSpacing: 0.6, textTransform: 'uppercase', color: neutro[500], marginTop: espaco.sm, marginBottom: 6 },
+  blocoRecorteToggle: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 40 },
+  recorteOpcaoSub: { fontSize: 12, color: cores.textoTerciario, marginTop: 1 },
+  seloNaLoja: { backgroundColor: cores.sucessoFundo, borderRadius: raio.pill, paddingHorizontal: 8, paddingVertical: 2, marginRight: 4 },
+  seloNaLojaTexto: { fontSize: 11, fontWeight: '700', color: cores.sucesso },
+  avisoRecorte: { fontSize: 13, color: cores.acentoTexto, backgroundColor: cores.acentoClaro, borderRadius: raio.md, padding: espaco.md, marginBottom: espaco.sm },
+  chipsMarca: { flexDirection: 'row', flexWrap: 'wrap', gap: espaco.sm },
+  chipMarca: { minHeight: 40, paddingHorizontal: espaco.md, borderRadius: raio.pill, borderWidth: 1, borderColor: cores.borda, backgroundColor: cores.fundoCard, justifyContent: 'center' },
+  chipMarcaAtivo: { backgroundColor: cores.primaria, borderColor: cores.primaria },
+  chipMarcaTexto: { fontSize: 14, fontWeight: '600', color: neutro[700] },
+  chipMarcaTextoAtivo: { color: cores.branco },
+  botaoContinuarMarca: { minHeight: 52, borderRadius: raio.md, backgroundColor: cores.primaria, alignItems: 'center', justifyContent: 'center', marginTop: espaco.lg },
+  botaoContinuarMarcaTexto: { fontSize: 16, fontWeight: '700', color: cores.branco },
+  voltarMarca: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  voltarMarcaTexto: { fontSize: 14, fontWeight: '600', color: cores.textoSecundario },
   escolhaSubtitulo: { fontSize: 13, color: cores.textoTerciario, marginTop: 4, marginBottom: espaco.md },
   abasRecorte: { flexDirection: 'row', gap: 4, backgroundColor: neutro[100], padding: 4, borderRadius: raio.md, marginBottom: espaco.md },
   abaRecorte: { flex: 1, minHeight: 40, borderRadius: raio.sm, alignItems: 'center', justifyContent: 'center' },

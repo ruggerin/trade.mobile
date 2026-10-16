@@ -15,12 +15,16 @@ export interface ProdutoSortimento {
   secao_descricao?: string | null;
   departamento_uuid?: string | null;
   departamento_descricao?: string | null;
+  // Marca do próprio produto (docs/82 §5.3). Ausente em cache antigo.
+  marca_uuid?: string | null;
+  marca_descricao?: string | null;
 }
 
 // O que dá pra escolher em "Onde é?" — só o que existe no mix desta loja (docs/79 §4.2). Só vem
 // quando o campo segue a escolha do promotor.
 export interface RecortesDoMix {
-  marcas: { uuid: string; descricao: string; departamentos_uuids: string[] }[];
+  // `secoes_uuids`: onde a marca aparece nesta loja (docs/82 §5.2). Ausente em cache antigo.
+  marcas: { uuid: string; descricao: string; departamentos_uuids: string[]; secoes_uuids?: string[] }[];
   departamentos: { uuid: string; descricao: string }[];
   secoes: { uuid: string; descricao: string; departamento_uuid: string | null }[];
 }

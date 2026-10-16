@@ -19,3 +19,22 @@ export async function lerUltimosRegistrosCache(pontoVendaUuid: string): Promise<
   ]);
   return linha ? (JSON.parse(linha.dados) as UltimosRegistros) : {};
 }
+
+/**
+ * Registros de OUTRAS visitas desta loja que ainda estão no celular (fila de envio) — o cache do
+ * servidor só os conhece depois de sincronizar (docs/80 §5.6). Sem isso, um levantamento feito
+ * ontem sem sinal cobrava a Ação de novo hoje. A visita atual fica de fora: registro dela faz a Ação
+ * aparecer feita, não sumir. Registro descartado (visita recusada) não conta.
+ */
+export async function lerUltimosRegistrosNaFila(pontoVendaUuid: string, visitaAtualId: string): Promise<UltimosRegistros> {
+  const db = await getDatabase();
+  const linhas = await db.getAllAsync<{ tipo_registro_uuid: string; ultimo: string }>(
+    `SELECT r.tipo_registro_uuid, MAX(r.criado_em) AS ultimo
+       FROM fila_registros r
+       JOIN fila_visitas v ON v.id = r.visita_local_id
+      WHERE v.ponto_venda_id = ? AND v.id <> ? AND r.status <> 'DESCARTADO'
+      GROUP BY r.tipo_registro_uuid`,
+    [pontoVendaUuid, visitaAtualId],
+  );
+  return Object.fromEntries(linhas.map((l) => [l.tipo_registro_uuid, l.ultimo]));
+}

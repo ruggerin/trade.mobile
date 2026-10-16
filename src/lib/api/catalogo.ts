@@ -27,7 +27,7 @@ async function buscarComCache(
   chaveResposta: string,
 ): Promise<CatalogoItem[]> {
   try {
-    const { data } = await apiClient.get<Record<string, CatalogoItem[]>>(endpoint, { params: { ativo: 1 } });
+    const { data } = await apiClient.get<Record<string, CatalogoItem[]>>(endpoint, { params: { ativo: 1, por_pagina: 1000 } });
     const itens = data[chaveResposta] ?? [];
     void salvarCatalogoCache(tipo, itens).catch(() => {});
     return itens;

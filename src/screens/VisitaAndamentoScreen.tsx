@@ -25,10 +25,10 @@ import {
   buscarCancelamentoVisitaPermitido,
 } from '../lib/api/parametros';
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
-import { lerUltimosRegistrosCache } from '../lib/db/ultimosRegistrosCache';
+import { lerUltimosRegistrosCache, lerUltimosRegistrosNaFila } from '../lib/db/ultimosRegistrosCache';
 import { listarTiposRegistro } from '../lib/api/tiposRegistro';
 import { useAuth } from '../lib/auth/AuthContext';
-import { acaoConcluida, acaoValeNestaVisita, progressoLista } from '../lib/acaoObrigatoria';
+import { acaoConcluida, acaoValeNestaVisita, juntarUltimosRegistros, progressoLista } from '../lib/acaoObrigatoria';
 import { motivoExclusaoVisita } from '../lib/db/filaVisitas';
 import { podeTirarPedido } from '../lib/pedidoVenda';
 import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
@@ -395,10 +395,15 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // lib/acaoObrigatoria.ts.
   const campanhasDaVisita = useMemo(() => new Set(gruposPorCampanha.map((g) => g.campanhaUuid)), [gruposPorCampanha]);
   // Último registro por formulário com intervalo (docs/80 §5.2) — gravado junto do Mix pelo
-  // buscarSortimento; relê o cache sempre que o Mix atualiza.
+  // buscarSortimento; relê o cache sempre que o Mix atualiza. Soma os registros de outras visitas
+  // desta loja que ainda estão na fila do celular (sem sinal, o servidor ainda não sabe deles).
   const ultimosRegistrosQuery = useQuery({
-    queryKey: ['ultimos-registros', pontoVendaUuid, sortimentoQuery.dataUpdatedAt],
-    queryFn: () => lerUltimosRegistrosCache(pontoVendaUuid as string),
+    queryKey: ['ultimos-registros', pontoVendaUuid, visitaLocalId, sortimentoQuery.dataUpdatedAt],
+    queryFn: async () =>
+      juntarUltimosRegistros(
+        await lerUltimosRegistrosCache(pontoVendaUuid as string),
+        await lerUltimosRegistrosNaFila(pontoVendaUuid as string, visitaLocalId).catch(() => ({})),
+      ),
     enabled: Boolean(pontoVendaUuid) && !sortimentoQuery.isLoading,
   });
   const acoesPendentes = useMemo(

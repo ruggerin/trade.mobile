@@ -1,5 +1,5 @@
 import type { SortimentoPontoVenda, TipoRegistro } from '../types/api';
-import { acaoConcluida, acaoValeNestaVisita, progressoLista } from './acaoObrigatoria';
+import { acaoConcluida, acaoValeNestaVisita, progressoLista, juntarUltimosRegistros } from './acaoObrigatoria';
 
 // docs/40-ACAO-OBRIGATORIA-LOJA-REDE.md §4.
 const tipo = (over: Partial<TipoRegistro>) =>
@@ -160,5 +160,18 @@ describe('acaoValeNestaVisita — intervalo em dias', () => {
     const destaVisita = { f1: new Date(2026, 9, 15, 8, 45).toISOString() };
     expect(acaoValeNestaVisita(sempre(7), loja, semCampanha, undefined, { ultimosRegistros: destaVisita, inicioVisita, agora })).toBe(true);
     expect(acaoValeNestaVisita(sempre(7), loja, semCampanha, undefined, { ultimosRegistros: {}, inicioVisita, agora })).toBe(true);
+  });
+});
+
+// docs/80 §5.6 — registro de outra visita ainda na fila do celular também conta pro intervalo.
+describe('juntarUltimosRegistros', () => {
+  it('fica com o mais recente de cada formulário entre servidor e fila', () => {
+    expect(
+      juntarUltimosRegistros(
+        { a: '2026-10-01T10:00:00Z', b: '2026-10-10T10:00:00Z' },
+        { a: '2026-10-09T10:00:00Z', c: '2026-10-05T10:00:00Z' },
+        undefined,
+      ),
+    ).toEqual({ a: '2026-10-09T10:00:00Z', b: '2026-10-10T10:00:00Z', c: '2026-10-05T10:00:00Z' });
   });
 });

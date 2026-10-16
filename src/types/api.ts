@@ -289,6 +289,9 @@ export interface TipoRegistro {
   escolhe_marca?: boolean;
   escolhe_departamento?: boolean;
   escolhe_secao?: boolean;
+  // docs/82: lista "Onde é" (o que a loja tem primeiro, ou só ele) e filtro de marca depois da seção.
+  lista_recorte?: 'PRIMEIRO_DA_LOJA' | 'SO_DA_LOJA';
+  filtra_marca?: boolean;
   eh_ruptura: boolean;
   // Controla se o tipo aparece solto no dropdown de "criar registro" do promotor — decisão 8 de
   // docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. `false` pra tipos nascidos dentro de uma campanha
@@ -303,6 +306,9 @@ export interface TipoRegistro {
 export interface CatalogoItem {
   id: string;
   descricao: string;
+  // Só nas seções: o departamento dela (agrupar e "departamento cobre a seção", docs/82). Opcional:
+  // cache antigo não tem.
+  departamento?: { id: string; descricao: string } | null;
 }
 
 export interface VisitaRegistro {
