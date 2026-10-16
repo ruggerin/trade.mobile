@@ -37,6 +37,8 @@ export interface RegistroLocal {
   observacao: string | null;
   /** Cópias persistentes das fotos (0..N) — ver RegistroFormModal.capturarFoto. */
   imagensLocais: string[];
+  /** Registro de resposta a um "ainda está lá?" (docs/83). */
+  acompanhamentoUuid?: string | null;
   erro: string | null;
   criadoEm: string;
   atualizadoEm: string;
@@ -60,6 +62,7 @@ interface LinhaFilaRegistro {
   observacao: string | null;
   imagem_local_path: string | null;
   imagens_locais_json: string | null;
+  acompanhamento_uuid?: string | null;
   erro: string | null;
   criado_em: string;
   atualizado_em: string;
@@ -90,6 +93,7 @@ function paraRegistroLocal(linha: LinhaFilaRegistro): RegistroLocal {
       : linha.imagem_local_path
         ? [linha.imagem_local_path]
         : [],
+    acompanhamentoUuid: linha.acompanhamento_uuid ?? null,
     erro: linha.erro,
     criadoEm: linha.criado_em,
     atualizadoEm: linha.atualizado_em,
@@ -111,6 +115,7 @@ export interface NovoRegistroLocal {
   observacao?: string | null;
   /** Caminhos já persistentes (copiados pro FileSystem.documentDirectory) — nunca a uri transitória do image picker. */
   imagensLocais?: string[];
+  acompanhamentoUuid?: string | null;
 }
 
 export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<RegistroLocal> {
@@ -122,9 +127,9 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
     `INSERT INTO fila_registros (
       id, visita_local_id, status, tipo_registro_uuid, produto_auditoria_uuid, produto_descricao,
       tipo_vinculo, secao_uuid, departamento_uuid, marca_uuid, vinculo_descricao,
-      valores_campos_json, ruptura, observacao, imagens_locais_json, erro, criado_em,
+      valores_campos_json, ruptura, observacao, imagens_locais_json, acompanhamento_uuid, erro, criado_em,
       atualizado_em
-    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     [
       id,
       dados.visitaLocalId,
@@ -140,6 +145,7 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
       dados.ruptura === undefined || dados.ruptura === null ? null : dados.ruptura ? 1 : 0,
       dados.observacao ?? null,
       JSON.stringify(dados.imagensLocais ?? []),
+      dados.acompanhamentoUuid ?? null,
       agora,
       agora,
     ],

@@ -3,6 +3,7 @@ import type { PontoVenda } from '../../types/api';
 import { gerarUuidLocal } from '../uuid';
 import { getDatabase, escrever } from './database';
 import { excluirRegistrosDaVisita, listarRegistrosLocais } from './filaRegistros';
+import { excluirRespostasDaVisita } from './filaAcompanhamentos';
 import { apagarRascunhosDaVisita } from './rascunhosColeta';
 
 /**
@@ -278,6 +279,8 @@ export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclu
     }
   }
   await excluirRegistrosDaVisita(id);
+  // Respostas ao "ainda está lá?" desta visita (docs/83) — já foram ou não vão mais.
+  await excluirRespostasDaVisita(id);
   // Coleta guiada não salva (rascunho) — sem a visita, não tem mais pra onde ir.
   await apagarRascunhosDaVisita(id);
 

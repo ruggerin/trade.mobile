@@ -120,6 +120,8 @@ export interface CriarRegistroPayload {
   observacao?: string;
   // Hora em que o registro foi salvo no celular (ISO) — docs/51 Fase 2.
   criadoEm?: string;
+  // Resposta a um "ainda está lá?" (docs/83): não abre acompanhamento novo.
+  acompanhamentoUuid?: string;
 }
 
 export async function criarRegistro(payload: CriarRegistroPayload): Promise<VisitaRegistro> {
@@ -150,6 +152,9 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
   }
   if (payload.criadoEm) {
     form.append('criado_em', payload.criadoEm);
+  }
+  if (payload.acompanhamentoUuid) {
+    form.append('acompanhamento_uuid', payload.acompanhamentoUuid);
   }
   // Laravel entende a notação `campo[chave]` em multipart/form-data como array associativo —
   // não dá pra mandar um objeto direto num FormData.
@@ -213,4 +218,13 @@ export async function cancelarVisitaAutorizado(
 export async function cancelarVisita(visitaId: string): Promise<Visita> {
   const { data } = await apiClient.post<{ visita: Visita }>(`/visitas/${visitaId}/cancelar-propria`);
   return data.visita;
+}
+
+/** "Ainda está lá?" (docs/83 §5.2): resposta na visita, idempotente pela chave da fila. */
+export async function responderAcompanhamento(
+  visitaServidorId: string,
+  acompanhamentoUuid: string,
+  dados: { resposta: 'CONTINUA' | 'ACABOU' | 'NAO_CONSEGUI_VER'; idempotency_key: string; criado_em: string; registro_uuid?: string },
+): Promise<void> {
+  await apiClient.post(`/visitas/${visitaServidorId}/acompanhamentos/${acompanhamentoUuid}/respostas`, dados);
 }

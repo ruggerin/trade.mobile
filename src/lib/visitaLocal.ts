@@ -1,4 +1,7 @@
 import type { RegistroFormResultado } from '../components/RegistroFormModal';
+import type { RespostaAcompanhamento } from '../types/api';
+import { gerarUuidLocal } from './uuid';
+import { criarRespostaLocal } from './db/filaAcompanhamentos';
 import { cancelarRegistro, cancelarVisita } from './api/visitas';
 import type { PontoVenda } from '../types/api';
 import {
@@ -119,6 +122,7 @@ export async function criarRegistroVisitaLocal(params: CriarRegistroLocalParams)
       valoresCampos: params.resultado.valoresCampos,
       ruptura: params.resultado.ruptura,
       imagensLocais: params.resultado.imagensUri ?? [],
+      acompanhamentoUuid: params.resultado.acompanhamentoUuid ?? null,
     });
 
     sincronizarEmSegundoPlano(params.usuarioId);
@@ -223,4 +227,25 @@ export async function cancelarRegistroVisitaLocal(visitaServidorId: string | nul
     void apagarImagemPersistente(uri);
   }
   await excluirRegistroLocal(registro.id);
+}
+
+/**
+ * "Ainda está lá?" (docs/83 §5.4): grava a resposta na fila do aparelho e tenta enviar. Com
+ * formulário, `registroLocalId` é o registro recém-salvo — a fila manda ele antes da resposta.
+ */
+export async function responderAcompanhamentoLocal(params: {
+  usuarioId: string;
+  visitaLocalId: string;
+  acompanhamentoUuid: string;
+  resposta: RespostaAcompanhamento;
+  registroLocalId?: string | null;
+}): Promise<void> {
+  await criarRespostaLocal({
+    id: gerarUuidLocal(),
+    visitaLocalId: params.visitaLocalId,
+    acompanhamentoUuid: params.acompanhamentoUuid,
+    resposta: params.resposta,
+    registroLocalId: params.registroLocalId ?? null,
+  });
+  sincronizarEmSegundoPlano(params.usuarioId);
 }

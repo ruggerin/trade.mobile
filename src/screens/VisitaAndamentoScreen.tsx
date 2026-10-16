@@ -15,6 +15,13 @@ import { ProdutoDetalheModal, type ProdutoDetalhe } from '../components/ProdutoD
 import { VisitaConcluida, type ResumoVisita } from '../components/VisitaConcluida';
 import { RegistroDetalheModal, type RegistroDetalhe } from '../components/RegistroDetalheModal';
 import { RegistroFormModal, type RegistroFormResultado } from '../components/RegistroFormModal';
+import { CartaoAcompanhamento } from '../components/CartaoAcompanhamento';
+import { cartoesDaVisita } from '../lib/acompanhamentos';
+import {
+  acompanhamentosRespondidosEmOutrasVisitas,
+  lerAcompanhamentosCache,
+  listarRespostasDaVisita,
+} from '../lib/db/filaAcompanhamentos';
 import { buscarProdutosDisponiveis } from '../lib/api/campanhas';
 import { buscarNaoLidos } from '../lib/api/comentarios';
 import { buscarOrdemServico } from '../lib/api/ordensServico';
@@ -34,7 +41,13 @@ import { podeTirarPedido } from '../lib/pedidoVenda';
 import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { useEstaOnline } from '../lib/network';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
-import type { ProdutoDisponivel, SortimentoPontoVenda, TipoRegistro } from '../types/api';
+import type {
+  AcompanhamentoAberto,
+  ProdutoDisponivel,
+  RespostaAcompanhamento,
+  SortimentoPontoVenda,
+  TipoRegistro,
+} from '../types/api';
 import { copiarImagemParaArmazenamentoPersistente, type RegistroLocal } from '../lib/db/filaRegistros';
 import {
   cancelarRegistroVisitaLocal,
@@ -46,6 +59,7 @@ import {
   lerVisitaLocal,
   listarRegistrosLocais,
   reabrirVisitaLocal,
+  responderAcompanhamentoLocal,
   tentarEnviarAgora,
 } from '../lib/visitaLocal';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
@@ -130,6 +144,14 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // Preenchido quando o formulário abre a partir de um produto do Mix — o produto já é o
   // contexto, não faz sentido pedir "vincular a" de novo. Ver RegistroFormModal.produtoContexto.
   const [produtoContextoModal, setProdutoContextoModal] = useState<{ uuid: string; descricao: string } | null>(null);
+  // "Ainda está lá?" que abriu o formulário (Continua com formulário, ou a justificativa do
+  // Acabou) — a resposta só vai pra fila depois que o registro salvar (docs/83 §5.4).
+  const [respostaPendente, setRespostaPendente] = useState<{
+    acompanhamentoUuid: string;
+    resposta: RespostaAcompanhamento;
+    valoresIniciais: Record<string, string> | null;
+    vinculo: { tipoVinculo: 'SECAO' | 'DEPARTAMENTO' | 'MARCA'; uuid: string; descricao: string; marcaUuid: string | null } | null;
+  } | null>(null);
   const [aba, setAba] = useState<Aba>('ACOES');
   // Cronômetro do cabeçalho — só força um re-render por segundo (o texto em si é derivado de
   // `visita.inicioEm` mais abaixo), mesmo truque do protótipo. Sem `visita` ainda (tela carregando)
@@ -219,6 +241,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const releLocal = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: ['visita-local', visitaLocalId] });
     void queryClient.invalidateQueries({ queryKey: ['registros-local', visitaLocalId] });
+    void queryClient.invalidateQueries({ queryKey: ['respostas-acompanhamento', visitaLocalId] });
     // A fila de envio pode ter acabado de mandar um registro que confirma um formulário de
     // Direcionamento (respondido_em) — reler a OS reflete isso na aba Ações assim que a rede
     // voltar, sem o promotor precisar sair e voltar da tela.
@@ -417,6 +440,31 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     [tiposRegistro, campanhasDaVisita, pontoVenda, sortimentoQuery.data, ultimosRegistrosQuery.data, visita?.inicioEm],
   );
 
+  // "Ainda está lá?" (docs/83 §3.2) — os acompanhamentos abertos da loja vêm junto do Mix
+  // (buscarSortimento grava o cache), então funciona offline; as respostas ficam na fila local.
+  const acompanhamentosQuery = useQuery({
+    queryKey: ['acompanhamentos-pdv', pontoVendaUuid, sortimentoQuery.dataUpdatedAt],
+    queryFn: () => lerAcompanhamentosCache(pontoVendaUuid as string),
+    enabled: Boolean(pontoVendaUuid) && !sortimentoQuery.isLoading,
+  });
+  const respostasAcompanhamentoQuery = useQuery({
+    queryKey: ['respostas-acompanhamento', visitaLocalId],
+    queryFn: async () => ({
+      destaVisita: await listarRespostasDaVisita(visitaLocalId),
+      outrasVisitas: await acompanhamentosRespondidosEmOutrasVisitas(visitaLocalId),
+    }),
+  });
+  const cartoesAcompanhamento = useMemo(
+    () =>
+      cartoesDaVisita(acompanhamentosQuery.data ?? [], {
+        inicioVisita: visita?.inicioEm,
+        respondidosEmOutrasVisitas: respostasAcompanhamentoQuery.data?.outrasVisitas,
+        respostasDestaVisita: new Map((respostasAcompanhamentoQuery.data?.destaVisita ?? []).map((r) => [r.acompanhamentoUuid, r.resposta])),
+      }),
+    [acompanhamentosQuery.data, respostasAcompanhamentoQuery.data, visita?.inicioEm],
+  );
+  const acompanhamentosPendentes = cartoesAcompanhamento.filter((c) => !c.respostaNestaVisita);
+
   // Formulários da Ordem de Serviço ainda não respondidos — soma "de servidor" (respondido_em)
   // com "local, ainda não sincronizado" (já existe um RegistroLocal pra esse tipo_registro,
   // mesmo que a fila de envio não tenha confirmado com o servidor ainda) pra não mostrar de
@@ -446,7 +494,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       .length;
 
   const abasDaVisita: AbaLoja<Aba>[] = [
-    { chave: 'ACOES', rotulo: 'Ações', icone: 'clipboard-check-outline', selo: acoesPendentes.length + formulariosPendentesOS.length },
+    { chave: 'ACOES', rotulo: 'Ações', icone: 'clipboard-check-outline', selo: acoesPendentes.length + formulariosPendentesOS.length + acompanhamentosPendentes.length },
     { chave: 'PRODUTOS', rotulo: 'Mix', icone: 'package-variant-closed' },
     { chave: 'REGISTROS', rotulo: 'Registros', icone: 'format-list-checks' },
     { chave: 'LOJA', rotulo: 'Loja', icone: 'store-outline' },
@@ -501,8 +549,18 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         resultado,
         produtoDescricao: resultado.produtoDescricao ?? null,
       }),
-    onSuccess: (_dados, resultado) => {
+    onSuccess: async (registro, resultado) => {
       setErroRegistro(null);
+      if (resultado.acompanhamentoUuid && respostaPendente?.acompanhamentoUuid === resultado.acompanhamentoUuid) {
+        await responderAcompanhamentoLocal({
+          usuarioId: usuario!.id,
+          visitaLocalId,
+          acompanhamentoUuid: resultado.acompanhamentoUuid,
+          resposta: respostaPendente.resposta,
+          registroLocalId: registro.id,
+        }).catch(() => setErroRegistro('O registro foi salvo, mas a conferência não. Responda o cartão de novo.'));
+        setRespostaPendente(null);
+      }
       releLocal();
       // Coleta guiada por lista de produtos: o modal volta sozinho pra lista — só fecha se precisar
       // abrir a confirmação de ruptura logo abaixo (dois modais empilhados não dá).
@@ -675,6 +733,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     setErroRegistro(null);
     setTipoFixoModal(null);
     setProdutoContextoModal(null);
+    setRespostaPendente(null);
     setModalAberto(true);
   }
 
@@ -682,7 +741,67 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     setErroRegistro(null);
     setTipoFixoModal(tipo);
     setProdutoContextoModal(null);
+    setRespostaPendente(null);
     setModalAberto(true);
+  }
+
+  // "Ainda está lá?" — resposta direta (sem formulário) vai pra fila na hora.
+  const responderDireto = useCallback(
+    async (a: AcompanhamentoAberto, resposta: RespostaAcompanhamento) => {
+      try {
+        await responderAcompanhamentoLocal({ usuarioId: usuario!.id, visitaLocalId, acompanhamentoUuid: a.id, resposta });
+      } catch {
+        Alert.alert('Não foi possível salvar', 'Tente de novo.');
+      }
+      void queryClient.invalidateQueries({ queryKey: ['respostas-acompanhamento', visitaLocalId] });
+    },
+    [usuario, visitaLocalId, queryClient],
+  );
+
+  function abrirFormularioAcompanhamento(
+    a: AcompanhamentoAberto,
+    tipo: TipoRegistro,
+    resposta: RespostaAcompanhamento,
+    comContexto: boolean,
+  ) {
+    const o = a.origem;
+    const uuidRecorte =
+      o.tipo_vinculo === 'SECAO' ? o.secao_uuid : o.tipo_vinculo === 'DEPARTAMENTO' ? o.departamento_uuid : o.tipo_vinculo === 'MARCA' ? o.marca_uuid : null;
+    const vinculo =
+      comContexto && uuidRecorte && (o.tipo_vinculo === 'SECAO' || o.tipo_vinculo === 'DEPARTAMENTO' || o.tipo_vinculo === 'MARCA')
+        ? { tipoVinculo: o.tipo_vinculo, uuid: uuidRecorte, descricao: o.vinculo_descricao ?? '', marcaUuid: o.marca_uuid }
+        : null;
+    setErroRegistro(null);
+    setRespostaPendente({
+      acompanhamentoUuid: a.id,
+      resposta,
+      valoresIniciais: comContexto && a.ao_continuar === 'FORMULARIO_PREENCHIDO' ? o.valores_campos : null,
+      vinculo,
+    });
+    setTipoFixoModal(tipo);
+    setProdutoContextoModal(comContexto && o.produto ? { uuid: o.produto.id, descricao: o.produto.descricao } : null);
+    setModalAberto(true);
+  }
+
+  function continuaAcompanhamento(a: AcompanhamentoAberto) {
+    const tipo = a.ao_continuar === 'CONFIRMA' ? null : tipoRegistroPorUuid.get(a.tipo_registro.id);
+    if (!tipo) {
+      void responderDireto(a, 'CONTINUA');
+      return;
+    }
+    abrirFormularioAcompanhamento(a, tipo, 'CONTINUA', true);
+  }
+
+  function acabouAcompanhamento(a: AcompanhamentoAberto) {
+    const justificativa = a.formulario_acabou ? tipoRegistroPorUuid.get(a.formulario_acabou.id) : null;
+    if (justificativa) {
+      abrirFormularioAcompanhamento(a, justificativa, 'ACABOU', false);
+      return;
+    }
+    Alert.alert(a.rotulo_acabou, `Confirma que "${a.tipo_registro.descricao}" não está mais na loja?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      { text: 'Confirmar', onPress: () => void responderDireto(a, 'ACABOU') },
+    ]);
   }
 
   // Toque num item do Mix: a ação principal é registrar a coleta já vinculada a este produto
@@ -691,6 +810,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     setErroRegistro(null);
     setTipoFixoModal(null);
     setProdutoContextoModal({ uuid: item.produtoUuid, descricao: item.descricao });
+    setRespostaPendente(null);
     setModalAberto(true);
   }
 
@@ -710,8 +830,9 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         .filter((f) => f.obrigatorio)
         .map((f) => tipoRegistroPorUuid.get(f.tipo_registro.id)?.descricao ?? 'Formulário obrigatório'),
       ...produtosChaveFaltando.map((nome) => `${nome} (produto-chave)`),
+      ...acompanhamentosPendentes.map((c) => `Conferir: ${c.acompanhamento.tipo_registro.descricao}`),
     ],
-    [acoesPendentes, formulariosPendentesOS, registrosPorTipoRegistro, tipoRegistroPorUuid, produtosChaveFaltando],
+    [acoesPendentes, formulariosPendentesOS, registrosPorTipoRegistro, tipoRegistroPorUuid, produtosChaveFaltando, acompanhamentosPendentes],
   );
   const nRupturasFinalizar = registrosLocais.filter((r) => r.ruptura).length;
 
@@ -975,6 +1096,23 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             </View>
           )}
 
+          {/* "Ainda está lá?" — registros anteriores desta loja pra conferir (docs/83 §3.2). */}
+          {cartoesAcompanhamento.length > 0 && (
+            <View style={styles.secao}>
+              <Text style={styles.secaoTitulo}>Ainda está lá?</Text>
+              <Text style={styles.secaoSubtitulo}>Registrado antes nesta loja — confira e responda.</Text>
+              {cartoesAcompanhamento.map((c) => (
+                <CartaoAcompanhamento
+                  key={c.acompanhamento.id}
+                  acompanhamento={c.acompanhamento}
+                  respostaNestaVisita={c.respostaNestaVisita}
+                  onContinua={() => continuaAcompanhamento(c.acompanhamento)}
+                  onAcabou={() => acabouAcompanhamento(c.acompanhamento)}
+                  onNaoConseguiVer={() => void responderDireto(c.acompanhamento, 'NAO_CONSEGUI_VER')}
+                />
+              ))}
+            </View>
+          )}
         </ScrollView>
       ) : aba === 'PRODUTOS' ? (
         <ScrollView contentContainerStyle={styles.lista}>
@@ -1193,8 +1331,10 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           setModalAberto(false);
           setErroRegistro(null);
           setProdutoContextoModal(null);
+          setRespostaPendente(null);
         }}
         onSubmit={(resultado) => criarRegistroMutation.mutateAsync(resultado)}
+        respostaAcompanhamento={respostaPendente}
         produtosColetados={produtosColetadosPorTipo}
         visitaLocalId={visitaLocalId}
       />

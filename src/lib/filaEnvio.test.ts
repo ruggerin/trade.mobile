@@ -1,4 +1,5 @@
-import { criarRegistro, finalizarVisita, iniciarVisita } from './api/visitas';
+import { criarRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
+import { listarRespostasDaVisita, marcarRespostaEnviada } from './db/filaAcompanhamentos';
 import { ehErroDeRede, ehErroTransitorio } from './db/database';
 import {
   descartarRegistrosDaVisita,
@@ -41,6 +42,12 @@ jest.mock('./api/visitas', () => ({
   iniciarVisita: jest.fn(),
   finalizarVisita: jest.fn(),
   criarRegistro: jest.fn(),
+  responderAcompanhamento: jest.fn(),
+}));
+jest.mock('./db/filaAcompanhamentos', () => ({
+  listarRespostasDaVisita: jest.fn(),
+  marcarRespostaComErro: jest.fn(),
+  marcarRespostaEnviada: jest.fn(),
 }));
 jest.mock('./db/database', () => ({
   ehErroDeRede: jest.fn(),
@@ -82,6 +89,9 @@ const mockListarVisitasLocaisPendentesOuRejeitadas = listarVisitasLocaisPendente
 const mockMarcarCheckinEnviado = marcarCheckinEnviado as jest.MockedFunction<typeof marcarCheckinEnviado>;
 const mockMarcarVisitaRejeitada = marcarVisitaRejeitada as jest.MockedFunction<typeof marcarVisitaRejeitada>;
 const mockEstaOnline = estaOnline as jest.MockedFunction<typeof estaOnline>;
+const mockListarRespostasDaVisita = listarRespostasDaVisita as jest.MockedFunction<typeof listarRespostasDaVisita>;
+const mockResponderAcompanhamento = responderAcompanhamento as jest.MockedFunction<typeof responderAcompanhamento>;
+const mockMarcarRespostaEnviada = marcarRespostaEnviada as jest.MockedFunction<typeof marcarRespostaEnviada>;
 
 const PDV = { id: 'pdv-1' } as unknown as PontoVenda;
 
@@ -137,6 +147,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockEstaOnline.mockResolvedValue(true);
   mockListarRegistrosLocais.mockResolvedValue([]);
+  mockListarRespostasDaVisita.mockResolvedValue([]);
   mockEhErroTransitorio.mockReturnValue(false);
   mockEhErroDeRede.mockReturnValue(false);
 });
@@ -518,3 +529,48 @@ describe('processarFilaEnvio', () => {
     });
   });
 });
+
+// docs/83 — resposta ao "ainda está lá?" sai depois do registro do formulário e antes do checkout.
+describe('respostas de acompanhamento', () => {
+  const resposta = (registroLocalId: string | null) => ({
+    id: 'resp-1',
+    visitaLocalId: 'visita-1',
+    acompanhamentoUuid: 'acomp-1',
+    resposta: 'CONTINUA' as const,
+    registroLocalId,
+    status: 'PENDENTE' as const,
+    erro: null,
+    criadoEm: '2026-09-24T10:05:00.000Z',
+  });
+
+  it('espera o registro do formulário e não faz checkout antes', async () => {
+    const visita = visitaLocal({ servidorId: 'srv-1', status: 'FINALIZADA_LOCAL' });
+    mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visita]);
+    // Registro de "continua" falhou por rede: continua PENDENTE.
+    mockListarRegistrosLocais.mockResolvedValue([registroLocal({ id: 'reg-1', status: 'PENDENTE' })]);
+    mockCriarRegistro.mockRejectedValue(new Error('rede'));
+    mockEhErroTransitorio.mockReturnValue(true);
+    mockListarRespostasDaVisita.mockResolvedValue([resposta('reg-1')]);
+
+    await processarFilaEnvio('usuario-1');
+
+    expect(mockResponderAcompanhamento).not.toHaveBeenCalled();
+    expect(mockFinalizarVisita).not.toHaveBeenCalled();
+  });
+
+  it('manda a resposta com o registro do servidor e depois o checkout', async () => {
+    const visita = visitaLocal({ servidorId: 'srv-1', status: 'FINALIZADA_LOCAL' });
+    mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visita]);
+    mockListarRegistrosLocais.mockResolvedValue([registroLocal({ id: 'reg-1', status: 'ENVIADO', servidorId: 'reg-srv' })]);
+    mockListarRespostasDaVisita.mockResolvedValue([resposta('reg-1')]);
+    mockResponderAcompanhamento.mockResolvedValue();
+    mockFinalizarVisita.mockResolvedValue({} as never);
+
+    await processarFilaEnvio('usuario-1');
+
+    expect(mockResponderAcompanhamento).toHaveBeenCalledWith('srv-1', 'acomp-1', expect.objectContaining({ registro_uuid: 'reg-srv', idempotency_key: 'resp-1' }));
+    expect(mockMarcarRespostaEnviada).toHaveBeenCalledWith('resp-1');
+    expect(mockFinalizarVisita).toHaveBeenCalled();
+  });
+});
+

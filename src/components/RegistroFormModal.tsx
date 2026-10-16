@@ -79,6 +79,8 @@ export interface RegistroFormResultado {
   // Coleta guiada por lista de produtos: depois de salvar, o modal volta pra lista em vez de
   // fechar — o pai não deve fechar o modal no sucesso.
   permanecerAberto?: boolean;
+  // Registro de resposta a um "ainda está lá?" (docs/83) — o pai enfileira a resposta depois de salvar.
+  acompanhamentoUuid?: string;
 }
 
 interface RegistroFormModalProps {
@@ -106,6 +108,13 @@ interface RegistroFormModalProps {
   produtosColetados?: (tipoRegistroUuid: string) => ReadonlySet<string>;
   // Visita local — chave do rascunho da coleta guiada (lib/db/rascunhosColeta.ts).
   visitaLocalId?: string;
+  // Registro que responde a um "ainda está lá?" (docs/83 §5.4): abre com a última coleta (modo
+  // preenchido; null no cego) e com o vínculo do registro original travado.
+  respostaAcompanhamento?: {
+    acompanhamentoUuid: string;
+    valoresIniciais: Record<string, string> | null;
+    vinculo: { tipoVinculo: 'SECAO' | 'DEPARTAMENTO' | 'MARCA'; uuid: string; descricao: string; marcaUuid: string | null } | null;
+  } | null;
 }
 
 type Categoria = Extract<TipoVinculoRegistro, 'PRODUTO' | 'SECAO' | 'DEPARTAMENTO' | 'MARCA'>;
@@ -133,6 +142,7 @@ export function RegistroFormModal({
   onSubmit,
   produtosColetados,
   visitaLocalId,
+  respostaAcompanhamento = null,
 }: RegistroFormModalProps) {
   const insets = useSafeAreaInsets();
   const [tipo, setTipo] = useState<TipoRegistro | null>(null);
@@ -172,13 +182,26 @@ export function RegistroFormModal({
     if (visible) {
       submetidoRef.current = false;
       setTipo(tipoFixo ?? null);
-      setValoresCampos({});
+      // "Ainda está lá?" em modo preenchido: começa com a última coleta (docs/83 §3.1.4).
+      setValoresCampos(respostaAcompanhamento?.valoresIniciais ?? {});
       setProdutosSortimentoPorUuid({});
       setImagensUri([]);
       setRuptura(false);
       setVinculo(null);
-      setRecorte(null);
-      recorteJaEscolhidoRef.current = false;
+      // Resposta a um acompanhamento: o recorte do registro original já vem escolhido e travado.
+      const travado = respostaAcompanhamento?.vinculo;
+      if (travado) {
+        const [principal, marcaNome] = travado.descricao.split(' · ');
+        setRecorte({
+          tipo: travado.tipoVinculo,
+          uuid: travado.uuid,
+          descricao: principal,
+          marca: travado.marcaUuid && travado.tipoVinculo !== 'MARCA' ? { uuid: travado.marcaUuid, descricao: marcaNome ?? '' } : null,
+        });
+      } else {
+        setRecorte(null);
+      }
+      recorteJaEscolhidoRef.current = !!travado;
       setCategoriaAberta(null);
       setErroLocal(null);
       setProdutoLista(null);
@@ -546,6 +569,7 @@ export function RegistroFormModal({
       valoresCampos: Object.keys(valoresNormalizados).length > 0 ? valoresNormalizados : undefined,
       ruptura: ruptura || undefined,
       produtosAusentesConfirmaveis: produtosAusentesConfirmaveis.length > 0 ? produtosAusentesConfirmaveis : undefined,
+      acompanhamentoUuid: respostaAcompanhamento?.acompanhamentoUuid,
     });
 
     // Sempre trata a promise (o pai pode passar mutateAsync, que rejeita no erro — promise
@@ -697,9 +721,11 @@ export function RegistroFormModal({
                       </Text>
                       <Text style={styles.recorteFaixaNome} numberOfLines={1}>{descricaoRecorte(recorte)}</Text>
                     </View>
-                    <Pressable onPress={trocarRecorte} hitSlop={8} style={styles.recorteFaixaBotao}>
-                      <Text style={styles.recorteFaixaBotaoTexto}>Trocar</Text>
-                    </Pressable>
+                    {!respostaAcompanhamento?.vinculo && (
+                      <Pressable onPress={trocarRecorte} hitSlop={8} style={styles.recorteFaixaBotao}>
+                        <Text style={styles.recorteFaixaBotaoTexto}>Trocar</Text>
+                      </Pressable>
+                    )}
                   </View>
                 )}
                 <View style={styles.secaoForm}>
@@ -760,7 +786,7 @@ export function RegistroFormModal({
                 </View>
               </Pressable>
 
-              {!produtoEfetivo && !pedeRecorte && (tipo.permite_vincular_catalogo || exigeProduto) && (
+              {!produtoEfetivo && !pedeRecorte && !recorte && (tipo.permite_vincular_catalogo || exigeProduto) && (
                 <View style={styles.secaoForm}>
                   <Text style={styles.secaoLabel}>Vincular a {exigeProduto ? '(obrigatório)' : '(opcional)'}</Text>
                   <View style={styles.chipsLinha}>

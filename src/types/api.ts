@@ -489,3 +489,35 @@ export interface Visita {
   created_at: string;
   updated_at: string;
 }
+
+// "Ainda está lá?" (docs/83) — acompanhamento aberto da loja, da carga do detalhe do PDV.
+export type RespostaAcompanhamento = 'CONTINUA' | 'ACABOU' | 'NAO_CONSEGUI_VER';
+
+export interface AcompanhamentoAberto {
+  id: string;
+  tipo_registro: { id: string; descricao: string };
+  /** AAAA-MM-DD: a partir de quando volta a aparecer. */
+  proxima_verificacao_em: string | null;
+  ultima_resposta_em: string | null;
+  expira_em: string | null;
+  rotulo_continua: string;
+  rotulo_acabou: string;
+  ao_continuar: 'CONFIRMA' | 'FORMULARIO_PREENCHIDO' | 'FORMULARIO_CEGO';
+  formulario_acabou: { id: string; descricao: string } | null;
+  origem: {
+    id: string | null;
+    criado_em: string | null;
+    usuario_nome: string | null;
+    miniatura_url: string | null;
+    produto: { id: string; descricao: string } | null;
+    tipo_vinculo: TipoVinculoRegistro | null;
+    secao_uuid: string | null;
+    departamento_uuid: string | null;
+    marca_uuid: string | null;
+    vinculo_descricao: string | null;
+    /** Vazio no modo cego. */
+    resumo: { rotulo: string; valor: string }[];
+    /** Só no modo "preenchido": a última coleta, pra abrir o formulário com ela. */
+    valores_campos: Record<string, string> | null;
+  };
+}

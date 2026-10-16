@@ -99,6 +99,27 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       atualizado_em TEXT NOT NULL
     );
 
+    -- "Ainda está lá?" (docs/83): acompanhamentos abertos da loja, da carga do detalhe do PDV.
+    CREATE TABLE IF NOT EXISTS acompanhamentos_pdv (
+      ponto_venda_id TEXT PRIMARY KEY NOT NULL,
+      dados TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+
+    -- Respostas ao "ainda está lá?" esperando envio (docs/83 §5.4). id = idempotency_key. Saem
+    -- depois dos registros da visita (podem apontar pro registro do formulário) e antes do checkout.
+    CREATE TABLE IF NOT EXISTS fila_acompanhamentos (
+      id TEXT PRIMARY KEY NOT NULL,
+      visita_local_id TEXT NOT NULL,
+      acompanhamento_uuid TEXT NOT NULL,
+      resposta TEXT NOT NULL,
+      registro_local_id TEXT,
+      status TEXT NOT NULL,
+      erro TEXT,
+      criado_em TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS sortimento_ponto_venda (
       ponto_venda_id TEXT NOT NULL,
       item_uuid TEXT NOT NULL,
@@ -265,6 +286,13 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
   // Visita fora da agenda autorizada pelo gestor (docs/74) — o uuid da liberação vai no check-in.
   try {
     await db.execAsync('ALTER TABLE fila_visitas ADD COLUMN liberacao_id TEXT');
+  } catch {
+    // Coluna já existe — nada a fazer.
+  }
+
+  // Registro gerado ao responder um acompanhamento (docs/83).
+  try {
+    await db.execAsync('ALTER TABLE fila_registros ADD COLUMN acompanhamento_uuid TEXT');
   } catch {
     // Coluna já existe — nada a fazer.
   }

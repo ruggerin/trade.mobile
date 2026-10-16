@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { criarRegistro, finalizarVisita, iniciarVisita } from './api/visitas';
+import { criarRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
+import { listarRespostasDaVisita, marcarRespostaComErro, marcarRespostaEnviada } from './db/filaAcompanhamentos';
 import { ehErroDeRede, ehErroTransitorio } from './db/database';
 import { descartarRegistrosDaVisita, listarRegistrosLocais, marcarRegistroComErro, marcarRegistroEnviado, type RegistroLocal } from './db/filaRegistros';
 import { reportarRecusaFila } from './sentry';
@@ -233,9 +234,43 @@ async function processarVisita(visitaInicial: VisitaLocal, resultado: ResultadoF
     if (!continuar) return;
   }
 
+  // "Ainda está lá?" (docs/83): depois dos registros (a resposta pode apontar pro do formulário) e
+  // antes do checkout (que apaga a visita do aparelho).
+  if (!(await enviarRespostasAcompanhamento(visita))) return;
+
   if (visita.status === 'FINALIZADA_LOCAL') {
     if (await enviarCheckout(visita)) resultado.checkoutsConfirmados += 1;
   }
+}
+
+/** @returns false só com falha transitória — para a visita agora e tenta na próxima passada. */
+async function enviarRespostasAcompanhamento(visita: VisitaLocal): Promise<boolean> {
+  const respostas = (await listarRespostasDaVisita(visita.id)).filter((r) => r.status === 'PENDENTE');
+  if (respostas.length === 0) return true;
+  const registros = await listarRegistrosLocais(visita.id);
+
+  for (const r of respostas) {
+    const registro = r.registroLocalId ? registros.find((x) => x.id === r.registroLocalId) : undefined;
+    // Registro do formulário ainda não foi: espera ele (volta na próxima passada).
+    if (registro && registro.status === 'PENDENTE') return false;
+    try {
+      await responderAcompanhamento(visita.servidorId!, r.acompanhamentoUuid, {
+        resposta: r.resposta,
+        idempotency_key: r.id,
+        criado_em: r.criadoEm,
+        // Registro recusado pelo servidor (ERRO): a resposta vai sem ele.
+        registro_uuid: registro?.servidorId ?? undefined,
+      });
+      await marcarRespostaEnviada(r.id);
+    } catch (err) {
+      if (ehErroTransitorio(err)) return false;
+      // Recusa permanente (acompanhamento sumiu, outra loja...): não trava a visita nem o checkout.
+      reportarRecusaFila('registro', err);
+      await marcarRespostaComErro(r.id, mensagemDeErroServidor(err) ?? 'Resposta recusada pelo servidor.');
+      await marcarRespostaEnviada(r.id);
+    }
+  }
+  return true;
 }
 
 async function enviarCheckin(visita: VisitaLocal, resultado: ResultadoFilaEnvio): Promise<boolean> {
@@ -297,6 +332,7 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
       observacao: registro.observacao ?? undefined,
       // Hora em que foi salvo no celular (docs/51 Fase 2).
       criadoEm: registro.criadoEm,
+      acompanhamentoUuid: registro.acompanhamentoUuid ?? undefined,
     });
     await marcarRegistroEnviado(registro.id, registroServidor.id);
     console.log(`[fila] registro enviado (visita ${visita.id})`);

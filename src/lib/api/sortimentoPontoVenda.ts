@@ -1,4 +1,5 @@
-import type { SortimentoPontoVenda, TipoVinculoRegistro } from '../../types/api';
+import type { AcompanhamentoAberto, SortimentoPontoVenda, TipoVinculoRegistro } from '../../types/api';
+import { salvarAcompanhamentosCache } from '../db/filaAcompanhamentos';
 import { ehErroDeRede } from '../db/database';
 import { lerSortimentoCache, salvarSortimentoCache } from '../db/sortimentoCache';
 import { salvarUltimosRegistrosCache, type UltimosRegistros } from '../db/ultimosRegistrosCache';
@@ -12,6 +13,7 @@ export async function buscarSortimento(pontoVendaUuid: string): Promise<Sortimen
     const { data } = await apiClient.get<{
       ponto_venda: { sortimento?: SortimentoPontoVenda[] };
       ultimos_registros_formulario?: UltimosRegistros | [];
+      acompanhamentos_abertos?: AcompanhamentoAberto[];
     }>(`/pontos-venda/${pontoVendaUuid}`);
     const itens = data.ponto_venda.sortimento ?? [];
     void salvarSortimentoCache(pontoVendaUuid, itens).catch(() => {});
@@ -19,6 +21,8 @@ export async function buscarSortimento(pontoVendaUuid: string): Promise<Sortimen
     // `[]` quando vazio.
     const ultimos = data.ultimos_registros_formulario;
     void salvarUltimosRegistrosCache(pontoVendaUuid, Array.isArray(ultimos) ? {} : (ultimos ?? {})).catch(() => {});
+    // "Ainda está lá?" (docs/83 §5.4): o que conferir nas próximas visitas, guardado offline.
+    void salvarAcompanhamentosCache(pontoVendaUuid, data.acompanhamentos_abertos ?? []).catch(() => {});
     return itens;
   } catch (err) {
     if (!ehErroDeRede(err)) throw err;
