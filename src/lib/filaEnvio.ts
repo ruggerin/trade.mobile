@@ -333,6 +333,9 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
       // Hora em que foi salvo no celular (docs/51 Fase 2).
       criadoEm: registro.criadoEm,
       acompanhamentoUuid: registro.acompanhamentoUuid ?? undefined,
+      marcaNovaDescricao: registro.marcaNovaDescricao ?? undefined,
+      embalagemQuantidade: registro.embalagemQuantidade ?? undefined,
+      embalagemUnidade: registro.embalagemUnidade ?? undefined,
     });
     await marcarRegistroEnviado(registro.id, registroServidor.id);
     console.log(`[fila] registro enviado (visita ${visita.id})`);

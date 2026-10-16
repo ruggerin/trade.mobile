@@ -18,6 +18,10 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconeTipoRegistro } from './IconeTipoRegistro';
+import { CampoEmbalagem, ListaMarcasColeta, type MarcaDaColeta } from './ColetaPorMarca';
+import { produtosDaListaGuiada } from '../lib/acaoObrigatoria';
+import { descreverEmbalagem, precoPorReferencia, quantidadeDigitada, type UnidadeEmbalagem } from '../lib/embalagem';
+import { gerarUuidLocal } from '../lib/uuid';
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
 import { buscarSortimentoCampo, type ProdutoSortimento, type RecortesDoMix } from '../lib/api/campoSortimento';
 import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
@@ -81,6 +85,11 @@ export interface RegistroFormResultado {
   permanecerAberto?: boolean;
   // Registro de resposta a um "ainda está lá?" (docs/83) — o pai enfileira a resposta depois de salvar.
   acompanhamentoUuid?: string;
+  // Concorrente por marca (docs/85): marca nova cadastrada aqui (marcaUuid gerado no celular) e a
+  // embalagem — quantidade + unidade (ML, L, G, KG, UN).
+  marcaNovaDescricao?: string;
+  embalagemQuantidade?: number;
+  embalagemUnidade?: string;
 }
 
 interface RegistroFormModalProps {
@@ -108,6 +117,9 @@ interface RegistroFormModalProps {
   produtosColetados?: (tipoRegistroUuid: string) => ReadonlySet<string>;
   // Visita local — chave do rascunho da coleta guiada (lib/db/rascunhosColeta.ts).
   visitaLocalId?: string;
+  // Concorrente por marca (docs/85): embalagens já salvas NESTA visita pra um formulário — a lista
+  // de marcas mostra "500 ml · 1,5 L" e conta. Sem isso, toda marca aparece vazia.
+  embalagensColetadas?: (tipoRegistroUuid: string) => { marcaUuid: string; marcaDescricao: string; embalagem: string }[];
   // Registro que responde a um "ainda está lá?" (docs/83 §5.4): abre com a última coleta (modo
   // preenchido; null no cego) e com o vínculo do registro original travado.
   respostaAcompanhamento?: {
@@ -142,6 +154,7 @@ export function RegistroFormModal({
   onSubmit,
   produtosColetados,
   visitaLocalId,
+  embalagensColetadas,
   respostaAcompanhamento = null,
 }: RegistroFormModalProps) {
   const insets = useSafeAreaInsets();
@@ -163,6 +176,12 @@ export function RegistroFormModal({
   // Rascunho da coleta guiada — produto por produto, só vira registro no "Salvar" final da lista.
   const [rascunhos, setRascunhos] = useState<RascunhosColeta>({});
   const [salvandoColeta, setSalvandoColeta] = useState(false);
+  // Concorrente por marca (docs/85): marca aberta agora (null = na lista de marcas), marcas
+  // cadastradas nesta abertura e a embalagem que está sendo preenchida.
+  const [marcaAtual, setMarcaAtual] = useState<MarcaDaColeta | null>(null);
+  const [marcasNovas, setMarcasNovas] = useState<MarcaDaColeta[]>([]);
+  const [embalagemQuantidade, setEmbalagemQuantidade] = useState('');
+  const [embalagemUnidade, setEmbalagemUnidade] = useState<UnidadeEmbalagem | null>(null);
   const [erroColeta, setErroColeta] = useState<string | null>(null);
   // Fotos que já pertencem ao rascunho do produto aberto — nunca apagar o arquivo delas por causa
   // de uma edição abandonada (voltar/fechar sem salvar), só quando o rascunho deixar de usá-las.
@@ -205,6 +224,10 @@ export function RegistroFormModal({
       setCategoriaAberta(null);
       setErroLocal(null);
       setProdutoLista(null);
+      setMarcaAtual(null);
+      setMarcasNovas([]);
+      setEmbalagemQuantidade('');
+      setEmbalagemUnidade(null);
     } else if (!submetidoRef.current && imagensUriRef.current.some((uri) => !imagensDoRascunhoRef.current.includes(uri))) {
       // Modal fechado sem confirmar (botão Fechar, back do Android, ou o pai desmontou por
       // outro motivo) com fotos já copiadas pro armazenamento persistente (ver capturarFoto) —
@@ -254,8 +277,11 @@ export function RegistroFormModal({
   const mixDaLojaQuery = useQuery({
     queryKey: ['sortimento', pontoVendaUuid],
     queryFn: () => buscarSortimento(pontoVendaUuid!),
-    enabled: pedeRecorte && !!pontoVendaUuid,
+    enabled: (pedeRecorte || tipo?.lista_produtos_origem === 'MIX_LOJA') && !!pontoVendaUuid,
   });
+  // Lista guiada de "Cada produto": a fixa do admin, ou os nossos produtos do Mix desta loja
+  // (checklist de presença, docs/85 §7).
+  const listaGuiada = useMemo(() => (tipo ? produtosDaListaGuiada(tipo, mixDaLojaQuery.data) : []), [tipo, mixDaLojaQuery.data]);
   // Já escolheu uma vez neste registro: depois de "Trocar", a escolha automática não volta.
   const recorteJaEscolhidoRef = useRef(false);
   function escolherRecorte(r: RecorteEscolhido) {
@@ -340,8 +366,41 @@ export function RegistroFormModal({
   // Formulário com lista predefinida de produtos (admin) → coleta guiada: o modal abre numa lista
   // com o status de cada produto (coletado nesta visita ou não), e cada toque abre as perguntas
   // já amarradas àquele produto. Ver docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md.
-  const modoLista =
-    !!tipo && !produtoContexto && tipo.granularidade_padrao === 'PRODUTO' && (tipo.produtos_predefinidos?.length ?? 0) > 0;
+  const modoLista = !!tipo && !produtoContexto && tipo.granularidade_padrao === 'PRODUTO' && listaGuiada.length > 0;
+  // Cada marca concorrente (docs/85 §3.3): lista de marcas → marca → uma embalagem por registro.
+  const modoMarca = !!tipo && !produtoContexto && tipo.granularidade_padrao === 'MARCA';
+  const embalagensDoTipo = useMemo(
+    () => (modoMarca && tipo ? (embalagensColetadas?.(tipo.id) ?? []) : []),
+    [modoMarca, tipo, embalagensColetadas],
+  );
+  const embalagensPorMarca = useMemo(() => {
+    const mapa = new Map<string, string[]>();
+    for (const e of embalagensDoTipo) mapa.set(e.marcaUuid, [...(mapa.get(e.marcaUuid) ?? []), e.embalagem]);
+    return mapa;
+  }, [embalagensDoTipo]);
+  // Lista do formulário + as cadastradas aqui + as que já têm registro nesta visita (ex.: marca
+  // nova de uma abertura anterior), sem repetir.
+  const marcasDaColeta = useMemo<MarcaDaColeta[]>(() => {
+    if (!modoMarca || !tipo) return [];
+    const lista: MarcaDaColeta[] = (tipo.marcas_predefinidas ?? []).map((m) => ({ uuid: m.id, descricao: m.descricao, aAprovar: m.a_aprovar, nova: false }));
+    const vistos = new Set(lista.map((m) => m.uuid));
+    for (const e of embalagensDoTipo) {
+      if (vistos.has(e.marcaUuid)) continue;
+      vistos.add(e.marcaUuid);
+      lista.push({ uuid: e.marcaUuid, descricao: e.marcaDescricao, aAprovar: true, nova: true });
+    }
+    for (const m of marcasNovas) if (!vistos.has(m.uuid)) lista.push(m);
+    return lista;
+  }, [modoMarca, tipo, embalagensDoTipo, marcasNovas]);
+  const embalagemTexto = descreverEmbalagem(quantidadeDigitada(embalagemQuantidade), embalagemUnidade);
+  // R$ por litro/kg na hora, a partir da primeira pergunta em R$ (docs/85 §3.3).
+  const campoPreco = camposOrdenados.find((c) => c.tipo_campo === 'MOEDA');
+  const precoDigitado = campoPreco && valoresCampos[campoPreco.chave] ? Number(moedaParaApi(valoresCampos[campoPreco.chave])) : null;
+  const porReferencia = precoPorReferencia(
+    precoDigitado !== null && Number.isFinite(precoDigitado) ? precoDigitado : null,
+    quantidadeDigitada(embalagemQuantidade),
+    embalagemUnidade,
+  );
   const produtoEfetivo = produtoContexto ?? produtoLista;
 
   useEffect(() => {
@@ -358,12 +417,44 @@ export function RegistroFormModal({
     };
   }, [visible, modoLista, tipo, visitaLocalId]);
   const exigeProduto = !produtoEfetivo && tipo?.granularidade_padrao === 'PRODUTO';
+
+  function abrirMarca(marca: MarcaDaColeta) {
+    if (tipo && !tipo.varias_embalagens && (embalagensPorMarca.get(marca.uuid)?.length ?? 0) > 0) {
+      Alert.alert('Já registrada', `Este formulário aceita uma embalagem por marca, e ${marca.descricao} já foi registrada nesta visita.`);
+      return;
+    }
+    limparFormulario();
+    setMarcaAtual(marca);
+  }
+
+  function voltarParaMarcas() {
+    for (const uri of imagensUri) void apagarImagemPersistente(uri);
+    limparFormulario();
+    setMarcaAtual(null);
+  }
+
+  // "+ Outra marca": uuid gerado aqui, a marca nasce no servidor junto do primeiro registro, "a aprovar".
+  function cadastrarMarca(descricao: string) {
+    const existente = marcasDaColeta.find((m) => m.descricao.trim().toLowerCase() === descricao.trim().toLowerCase());
+    if (existente) {
+      abrirMarca(existente);
+      return;
+    }
+    const nova: MarcaDaColeta = { uuid: gerarUuidLocal(), descricao: descricao.trim(), aAprovar: true, nova: true };
+    setMarcasNovas((atual) => [...atual, nova]);
+    abrirMarca(nova);
+  }
   const categoriasDisponiveis = exigeProduto ? CATEGORIAS.filter((c) => c.valor === 'PRODUTO') : CATEGORIAS;
 
   function validar(): string | null {
     if (!tipo) return 'Escolha um tipo de registro.';
     if (pedeRecorte && !recorte) return 'Escolha onde é este registro.';
     if (tipo.exige_foto && imagensUri.length === 0) return `O tipo "${tipo.descricao}" exige uma foto.`;
+    if (modoMarca) {
+      if (!marcaAtual) return 'Escolha a marca.';
+      if (!quantidadeDigitada(embalagemQuantidade)) return 'Informe a quantidade da embalagem.';
+      if (!embalagemUnidade) return 'Escolha a unidade da embalagem (ml, L, g, kg ou un).';
+    }
     if (exigeProduto && vinculo?.categoria !== 'PRODUTO') {
       return `O tipo "${tipo.descricao}" exige vincular um produto específico.`;
     }
@@ -396,6 +487,8 @@ export function RegistroFormModal({
     setVinculo(null);
     setCategoriaAberta(null);
     setErroLocal(null);
+    setEmbalagemQuantidade('');
+    setEmbalagemUnidade(null);
   }
 
   function abrirProdutoDaLista(produto: { uuid: string; descricao: string }) {
@@ -466,7 +559,7 @@ export function RegistroFormModal({
   // foi continua enviado e o resto fica no rascunho pra tentar de novo, sem duplicar nada.
   async function salvarColeta() {
     if (!tipo || !visitaLocalId) return;
-    const lista = tipo.produtos_predefinidos ?? [];
+    const lista = listaGuiada;
     const jaEnviados = produtosColetados?.(tipo.id) ?? new Set<string>();
     const pendentes = lista.filter((p) => !jaEnviados.has(p.id) && rascunhos[p.id]);
 
@@ -570,6 +663,19 @@ export function RegistroFormModal({
       ruptura: ruptura || undefined,
       produtosAusentesConfirmaveis: produtosAusentesConfirmaveis.length > 0 ? produtosAusentesConfirmaveis : undefined,
       acompanhamentoUuid: respostaAcompanhamento?.acompanhamentoUuid,
+      // Por marca (docs/85): o vínculo é a marca + embalagem; o servidor completa com a linha do escopo.
+      ...(modoMarca && marcaAtual
+        ? {
+            tipoVinculo: undefined,
+            marcaUuid: marcaAtual.uuid,
+            marcaNovaDescricao: marcaAtual.nova ? marcaAtual.descricao : undefined,
+            embalagemQuantidade: quantidadeDigitada(embalagemQuantidade) ?? undefined,
+            embalagemUnidade: embalagemUnidade ?? undefined,
+            vinculoLabel: `${marcaAtual.descricao} · ${embalagemTexto ?? ''}`,
+            permanecerAberto: true,
+            ruptura: undefined,
+          }
+        : {}),
     });
 
     // Sempre trata a promise (o pai pode passar mutateAsync, que rejeita no erro — promise
@@ -578,6 +684,13 @@ export function RegistroFormModal({
     // o pai mostra a mensagem em `erro`, e a foto volta a ser "não enviada" pra limpeza ao fechar.
     void Promise.resolve(resultado).then(
       () => {
+        // Por marca: salvou a embalagem → fica na marca pra adicionar outra (ou volta pra lista
+        // quando o formulário aceita uma só).
+        if (modoMarca) {
+          limparFormulario();
+          if (tipo && !tipo.varias_embalagens) setMarcaAtual(null);
+          return;
+        }
         if (!modoLista) return;
         limparFormulario();
         setProdutoLista(null);
@@ -592,8 +705,8 @@ export function RegistroFormModal({
     if (categoria === 'PRODUTO') {
       // Formulário com lista predefinida (admin) — só esses produtos, em qualquer loja, estejam no
       // mix dela ou não (ex.: pesquisa de preço de concorrente). Sem lista: mix/campanha da visita.
-      if (exigeProduto && tipo?.produtos_predefinidos?.length) {
-        return tipo.produtos_predefinidos.map((p) => ({ uuid: p.id, label: p.descricao }));
+      if (exigeProduto && listaGuiada.length) {
+        return listaGuiada.map((p) => ({ uuid: p.id, label: p.descricao }));
       }
       return produtosDisponiveis.map((p) => ({ uuid: p.produto_uuid, label: p.descricao }));
     }
@@ -618,7 +731,11 @@ export function RegistroFormModal({
             <View style={styles.alca} />
           </View>
           <View style={styles.cabecalho}>
-            {produtoLista ? (
+            {marcaAtual ? (
+              <Pressable onPress={voltarParaMarcas} hitSlop={12} style={styles.cabecalhoIconeBotao} accessibilityLabel="Voltar para as marcas">
+                <MaterialCommunityIcons name="chevron-left" size={24} color={cores.primaria} />
+              </Pressable>
+            ) : produtoLista ? (
               <Pressable onPress={voltarParaLista} hitSlop={12} style={styles.cabecalhoIconeBotao}>
                 <MaterialCommunityIcons name="chevron-left" size={24} color={cores.primaria} />
               </Pressable>
@@ -639,9 +756,9 @@ export function RegistroFormModal({
               <Text style={styles.cabecalhoTitulo} numberOfLines={1}>
                 {tipo ? tipo.descricao : 'Tipo de registro'}
               </Text>
-              {!!produtoEfetivo && (
+              {!!(produtoEfetivo ?? marcaAtual) && (
                 <Text style={styles.cabecalhoSubtitulo} numberOfLines={1}>
-                  {produtoEfetivo.descricao}
+                  {(produtoEfetivo ?? marcaAtual)!.descricao}
                 </Text>
               )}
             </View>
@@ -676,7 +793,7 @@ export function RegistroFormModal({
 
           {tipo && modoLista && !produtoLista && (
             <ListaProdutosColeta
-              produtos={tipo.produtos_predefinidos ?? []}
+              produtos={listaGuiada}
               enviados={produtosColetados?.(tipo.id) ?? new Set<string>()}
               preenchidos={new Set(Object.keys(rascunhos))}
               paddingInferior={espaco.lg + insets.bottom}
@@ -684,6 +801,18 @@ export function RegistroFormModal({
               erro={erroColeta}
               onAbrir={abrirProdutoDaLista}
               onSalvar={() => void salvarColeta()}
+            />
+          )}
+
+          {tipo && modoMarca && !marcaAtual && (
+            <ListaMarcasColeta
+              marcas={marcasDaColeta}
+              embalagensPorMarca={embalagensPorMarca}
+              permiteNova={tipo.permite_marca_nova ?? true}
+              paddingInferior={espaco.lg + insets.bottom}
+              onAbrir={abrirMarca}
+              onNova={cadastrarMarca}
+              onConcluir={onClose}
             />
           )}
 
@@ -709,9 +838,23 @@ export function RegistroFormModal({
             />
           )}
 
-          {tipo && !(modoLista && !produtoLista) && !(pedeRecorte && !recorte) && (
+          {tipo && !(modoLista && !produtoLista) && !(modoMarca && !marcaAtual) && !(pedeRecorte && !recorte) && (
             <>
               <ScrollView contentContainerStyle={styles.lista}>
+                {modoMarca && marcaAtual && (
+                  <CampoEmbalagem
+                    quantidade={embalagemQuantidade}
+                    unidade={embalagemUnidade}
+                    onQuantidade={setEmbalagemQuantidade}
+                    onUnidade={setEmbalagemUnidade}
+                    precoPorLitro={
+                      porReferencia
+                        ? `${porReferencia.valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} por ${porReferencia.referencia}`
+                        : null
+                    }
+                    jaRegistradas={embalagensPorMarca.get(marcaAtual.uuid) ?? []}
+                  />
+                )}
                 {recorte && (
                   <View style={styles.recorteFaixa}>
                     <View style={{ flex: 1 }}>
@@ -773,6 +916,7 @@ export function RegistroFormModal({
                 </View>
               ))}
 
+              {!modoMarca && (
               <Pressable
                 style={[styles.rupturaLinha, ruptura && styles.rupturaLinhaMarcada]}
                 onPress={() => setRuptura((r) => !r)}
@@ -785,8 +929,9 @@ export function RegistroFormModal({
                   <View style={[styles.toggleBola, ruptura && styles.toggleBolaLigada]} />
                 </View>
               </Pressable>
+              )}
 
-              {!produtoEfetivo && !pedeRecorte && !recorte && (tipo.permite_vincular_catalogo || exigeProduto) && (
+              {!produtoEfetivo && !modoMarca && !pedeRecorte && !recorte && (tipo.permite_vincular_catalogo || exigeProduto) && (
                 <View style={styles.secaoForm}>
                   <Text style={styles.secaoLabel}>Vincular a {exigeProduto ? '(obrigatório)' : '(opcional)'}</Text>
                   <View style={styles.chipsLinha}>
@@ -853,7 +998,15 @@ export function RegistroFormModal({
                   <ActivityIndicator color={cores.branco} />
                 ) : (
                   <Text style={styles.botaoPrimarioTexto}>
-                    {fotoObrigatoriaFaltando ? 'Adicione uma foto' : produtoLista ? 'Salvar produto' : 'Salvar registro'}
+                    {fotoObrigatoriaFaltando
+                      ? 'Adicione uma foto'
+                      : modoMarca
+                        ? embalagemTexto
+                          ? `Salvar ${embalagemTexto}`
+                          : 'Salvar embalagem'
+                        : produtoLista
+                          ? 'Salvar produto'
+                          : 'Salvar registro'}
                   </Text>
                 )}
               </Pressable>

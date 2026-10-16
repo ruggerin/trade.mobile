@@ -123,6 +123,9 @@ export async function criarRegistroVisitaLocal(params: CriarRegistroLocalParams)
       ruptura: params.resultado.ruptura,
       imagensLocais: params.resultado.imagensUri ?? [],
       acompanhamentoUuid: params.resultado.acompanhamentoUuid ?? null,
+      marcaNovaDescricao: params.resultado.marcaNovaDescricao ?? null,
+      embalagemQuantidade: params.resultado.embalagemQuantidade ?? null,
+      embalagemUnidade: params.resultado.embalagemUnidade ?? null,
     });
 
     sincronizarEmSegundoPlano(params.usuarioId);

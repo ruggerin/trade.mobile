@@ -122,6 +122,10 @@ export interface CriarRegistroPayload {
   criadoEm?: string;
   // Resposta a um "ainda está lá?" (docs/83): não abre acompanhamento novo.
   acompanhamentoUuid?: string;
+  // Concorrentes por marca (docs/85): marca cadastrada offline (marcaUuid gerado no celular) e embalagem.
+  marcaNovaDescricao?: string;
+  embalagemQuantidade?: number;
+  embalagemUnidade?: string;
 }
 
 export async function criarRegistro(payload: CriarRegistroPayload): Promise<VisitaRegistro> {
@@ -155,6 +159,13 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
   }
   if (payload.acompanhamentoUuid) {
     form.append('acompanhamento_uuid', payload.acompanhamentoUuid);
+  }
+  if (payload.marcaNovaDescricao) {
+    form.append('marca_nova_descricao', payload.marcaNovaDescricao);
+  }
+  if (payload.embalagemQuantidade !== undefined && payload.embalagemUnidade) {
+    form.append('embalagem_quantidade', String(payload.embalagemQuantidade));
+    form.append('embalagem_unidade', payload.embalagemUnidade);
   }
   // Laravel entende a notação `campo[chave]` em multipart/form-data como array associativo —
   // não dá pra mandar um objeto direto num FormData.

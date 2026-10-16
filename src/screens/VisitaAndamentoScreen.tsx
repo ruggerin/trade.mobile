@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useEspacoInferior } from '../lib/useEspacoInferior';
 import { AdicionarProdutoSortimentoModal } from '../components/AdicionarProdutoSortimentoModal';
 import { AbasLoja, type AbaLoja } from '../components/AbasLoja';
 import { ComentariosRegistroModal } from '../components/ComentariosRegistroModal';
@@ -63,6 +64,7 @@ import {
   tentarEnviarAgora,
 } from '../lib/visitaLocal';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
+import { descreverEmbalagem } from '../lib/embalagem';
 import { useDescarteVisita } from '../lib/useDescarteVisita';
 import { IconeTipoRegistro } from '../components/IconeTipoRegistro';
 import { amber, cores, espaco, indigo, neutro, raio, sombraCard, sombraFlutuante, tipografia } from '../theme';
@@ -136,6 +138,8 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const queryClient = useQueryClient();
   const online = useEstaOnline();
   const insets = useSafeAreaInsets();
+  // Dentro das abas a barra já cuida da área segura de baixo (ver useEspacoInferior).
+  const espacoInferior = useEspacoInferior();
   const [erroRegistro, setErroRegistro] = useState<string | null>(null);
   const [modalAberto, setModalAberto] = useState(false);
   // Só preenchido quando o formulário abre a partir da aba Ações — pula a etapa de escolher o
@@ -233,6 +237,20 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           .filter((r) => r.tipoRegistroUuid === tipoRegistroUuid && r.produtoAuditoriaUuid)
           .map((r) => r.produtoAuditoriaUuid as string),
       ),
+    [registrosLocais],
+  );
+
+  // Concorrente por marca (docs/85): embalagens já salvas nesta visita, por formulário — a lista de
+  // marcas do formulário mostra "500 ml · 1,5 L" em cada marca.
+  const embalagensColetadasPorTipo = useCallback(
+    (tipoRegistroUuid: string) =>
+      registrosLocais
+        .filter((r) => r.tipoRegistroUuid === tipoRegistroUuid && r.marcaUuid && r.embalagemUnidade)
+        .map((r) => ({
+          marcaUuid: r.marcaUuid as string,
+          marcaDescricao: (r.vinculoDescricao ?? '').split(' · ')[0] || 'Marca',
+          embalagem: descreverEmbalagem(r.embalagemQuantidade, r.embalagemUnidade) ?? '',
+        })),
     [registrosLocais],
   );
 
@@ -489,7 +507,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   );
   const totalObrigatorias = acoesPendentes.length + formulariosObrigatoriosOS.length;
   const feitasObrigatorias =
-    acoesPendentes.filter((a) => acaoConcluida(a, registrosPorTipoRegistro.get(a.id) ?? [])).length +
+    acoesPendentes.filter((a) => acaoConcluida(a, registrosPorTipoRegistro.get(a.id) ?? [], sortimentoQuery.data)).length +
     formulariosObrigatoriosOS.filter((f) => f.respondido_em || (registrosPorTipoRegistro.get(f.tipo_registro.id)?.length ?? 0) > 0)
       .length;
 
@@ -820,10 +838,10 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const faltandoFinalizar = useMemo(
     () => [
       ...acoesPendentes
-        .filter((a) => !acaoConcluida(a, registrosPorTipoRegistro.get(a.id) ?? []))
+        .filter((a) => !acaoConcluida(a, registrosPorTipoRegistro.get(a.id) ?? [], sortimentoQuery.data))
         .map((a) => {
           // Lista de produtos: nomeia quanto falta ("Pesquisa de Preço (2 de 4)").
-          const progresso = progressoLista(a, (registrosPorTipoRegistro.get(a.id) ?? []).map((r) => r.produtoAuditoriaUuid));
+          const progresso = progressoLista(a, (registrosPorTipoRegistro.get(a.id) ?? []).map((r) => r.produtoAuditoriaUuid), sortimentoQuery.data);
           return progresso ? `${a.descricao} (${progresso.feitos} de ${progresso.total})` : a.descricao;
         }),
       ...formulariosPendentesOS
@@ -1064,7 +1082,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
                   nome={acao.descricao}
                   sub={acao.exige_foto ? 'Exige foto' : undefined}
                   registros={registrosPorTipoRegistro.get(acao.id) ?? []}
-                  progresso={progressoLista(acao, (registrosPorTipoRegistro.get(acao.id) ?? []).map((r) => r.produtoAuditoriaUuid))}
+                  progresso={progressoLista(acao, (registrosPorTipoRegistro.get(acao.id) ?? []).map((r) => r.produtoAuditoriaUuid), sortimentoQuery.data)}
                   onPress={() => abrirModalAcao(acao)}
                 />
               ))
@@ -1271,7 +1289,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         </ScrollView>
       )}
 
-      <View style={[styles.rodape, { paddingBottom: espaco.lg + insets.bottom }]}>
+      <View style={[styles.rodape, { paddingBottom: espaco.lg + espacoInferior }]}>
         <Pressable
           style={({ pressed }) => [styles.botaoSecundario, pressed && styles.botaoPressionado]}
           onPress={abrirModalGeral}
@@ -1336,6 +1354,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         onSubmit={(resultado) => criarRegistroMutation.mutateAsync(resultado)}
         respostaAcompanhamento={respostaPendente}
         produtosColetados={produtosColetadosPorTipo}
+        embalagensColetadas={embalagensColetadasPorTipo}
         visitaLocalId={visitaLocalId}
       />
 

@@ -240,7 +240,8 @@ export interface CampoTipoRegistro {
 // LOJA_REDE = só nas lojas/redes escolhidas no tipo (docs/40-ACAO-OBRIGATORIA-LOJA-REDE.md).
 // LINHA_AUSENTE: onde o Mix do PDV não cobre o recorte do tipo (docs/80-MONITORAMENTO-LINHA-AUSENTE.md).
 export type EscopoAcaoTipoRegistro = 'SEMPRE' | 'CAMPANHA' | 'CONTRATO' | 'LOJA_REDE' | 'LINHA_AUSENTE';
-export type GranularidadeResposta = 'LINHA' | 'PRODUTO';
+// MARCA = cada marca concorrente, com embalagem (docs/85).
+export type GranularidadeResposta = 'LINHA' | 'PRODUTO' | 'MARCA';
 
 export interface TipoRegistro {
   id: string;
@@ -278,6 +279,13 @@ export interface TipoRegistro {
   // Lista predefinida de produtos (granularidade PRODUTO) — com ela, as opções de vínculo são só
   // estes produtos, em qualquer loja. Opcional: cache antigo não tem o campo.
   produtos_predefinidos?: { id: string; descricao: string; codigo_barras: string | null; codigo_externo: string | null }[];
+  // Lista guiada de "Cada produto": FIXA = produtos_predefinidos; MIX_LOJA = nossos produtos do
+  // Mix de cada loja, checklist de presença (docs/85 §7). Opcional: cache antigo não tem.
+  lista_produtos_origem?: 'FIXA' | 'MIX_LOJA';
+  // Concorrentes por marca e embalagem (docs/85).
+  marcas_predefinidas?: { id: string; descricao: string; a_aprovar: boolean }[];
+  permite_marca_nova?: boolean;
+  varias_embalagens?: boolean;
   // Granularidade da resposta (linha/seção vs. produto individual) — ver
   // docs/16-GRANULARIDADE-CHECKLIST-AUDITORIA.md §4. `null` = sem regra, vínculo livre (atual).
   // O backend continua sendo a autoridade final (StoreVisitaRegistroRequest); o app usa isto só

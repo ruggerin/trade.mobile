@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useEspacoInferior } from '../lib/useEspacoInferior';
 import {
   acaoPedidoVenda,
   atualizarPedidoVenda,
@@ -78,6 +79,8 @@ function linhasDoPedido(pedido: PedidoVenda): LinhaItem[] {
 export function PedidoVendaScreen({ route, navigation }: Props) {
   const params = route.params ?? {};
   const insets = useSafeAreaInsets();
+  // Dentro das abas a barra já cuida da área segura de baixo (ver useEspacoInferior).
+  const espacoInferior = useEspacoInferior();
   const queryClient = useQueryClient();
   const [pedidoId, setPedidoId] = useState<string | undefined>(params.pedidoId);
   const [pontoVenda, setPontoVenda] = useState(params.pontoVenda ?? null);
@@ -419,7 +422,7 @@ export function PedidoVendaScreen({ route, navigation }: Props) {
         )}
       </ScrollView>
 
-      <View style={[styles.rodape, { paddingBottom: Math.max(insets.bottom, espaco.md) }]}>
+      <View style={[styles.rodape, { paddingBottom: Math.max(espacoInferior, espaco.md) }]}>
         <View style={styles.rodapeTotal}>
           <Text style={styles.textoSecundario}>
             {linhas.length} {linhas.length === 1 ? 'item' : 'itens'}

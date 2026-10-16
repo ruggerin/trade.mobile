@@ -297,6 +297,15 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     // Coluna já existe — nada a fazer.
   }
 
+  // Concorrentes por marca e embalagem (docs/85): marca cadastrada offline e a embalagem.
+  for (const coluna of ['marca_nova_descricao TEXT', 'embalagem_quantidade REAL', 'embalagem_unidade TEXT']) {
+    try {
+      await db.execAsync(`ALTER TABLE fila_registros ADD COLUMN ${coluna}`);
+    } catch {
+      // Coluna já existe — nada a fazer.
+    }
+  }
+
   return db;
 }
 

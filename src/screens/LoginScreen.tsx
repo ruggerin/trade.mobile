@@ -14,6 +14,7 @@ import axios from 'axios';
 import { useAuth } from '../lib/auth/AuthContext';
 import { abrirDocumento } from '../lib/api/documentosLegais';
 import { credenciaisStorage } from '../lib/auth/credentialsStorage';
+import { textoVersaoApp } from '../lib/versao';
 import { cores, espaco, raio, sombraFlutuante, tipografia } from '../theme';
 
 // docs/05-APP-MOBILE-UX.md §3.2 — campo e-mail, campo senha (toggle mostrar/ocultar), botão
@@ -180,6 +181,9 @@ export function LoginScreen() {
           </Text>
           .
         </Text>
+
+        {/* Versão do app — pra o suporte saber qual build está no celular (problema de integração). */}
+        <Text style={styles.versao}>{textoVersaoApp()}</Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -319,6 +323,12 @@ const styles = StyleSheet.create({
   legalLink: {
     color: cores.primaria,
     fontWeight: '600',
+  },
+  versao: {
+    fontSize: 12,
+    color: cores.textoTerciario,
+    textAlign: 'center',
+    marginTop: espaco.md,
   },
   erroTexto: {
     color: cores.erro,

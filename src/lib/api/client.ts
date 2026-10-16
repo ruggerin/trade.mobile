@@ -2,6 +2,7 @@ import Constants from 'expo-constants';
 import axios from 'axios';
 import { tokenStorage } from '../auth/tokenStorage';
 import { assinarRequisicao, caminhoDaRequisicao, registrarHorarioServidor } from '../seguranca/chaveAparelho';
+import { registrarVersaoApi, VERSAO_APP } from '../versao';
 
 // Disparado quando a API responde 401 — o AuthContext escuta isso pra limpar a sessão e
 // voltar pro Login. Mesmo padrão do admin (admin/src/lib/api/client.ts), só que aqui não tem
@@ -17,8 +18,6 @@ export class SessaoEncerradaEvent extends Event {
     super(UNAUTHORIZED_EVENT);
   }
 }
-
-const VERSAO_APP = Constants.expoConfig?.version ?? '0.0.0';
 
 // Prioridade: EXPO_PUBLIC_API_URL (definido em .env.local) > auto-detect via Metro.
 // Precisa disso pra apontar pra um túnel (Cloudflare, ngrok) ou IP fixo quando o celular não
@@ -89,6 +88,7 @@ apiClient.interceptors.response.use(
   (response) => {
     if (__DEV__) console.log('[api] <-', response.status, response.config.url);
     registrarHorarioServidor(response.headers.date as string | undefined);
+    registrarVersaoApi(response.headers['x-api-version'] as string | undefined);
     return response;
   },
   async (error) => {
@@ -111,6 +111,7 @@ apiClient.interceptors.response.use(
       }
 
       registrarHorarioServidor(error.response?.headers?.date as string | undefined);
+      registrarVersaoApi(error.response?.headers?.['x-api-version'] as string | undefined);
 
       if (error.response?.status === 401) {
         await tokenStorage.clear();

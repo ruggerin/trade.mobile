@@ -1,5 +1,5 @@
 import type { SortimentoPontoVenda, TipoRegistro } from '../types/api';
-import { acaoConcluida, acaoValeNestaVisita, progressoLista, juntarUltimosRegistros } from './acaoObrigatoria';
+import { acaoConcluida, acaoValeNestaVisita, produtosDaListaGuiada, progressoLista, juntarUltimosRegistros } from './acaoObrigatoria';
 
 // docs/40-ACAO-OBRIGATORIA-LOJA-REDE.md §4.
 const tipo = (over: Partial<TipoRegistro>) =>
@@ -173,5 +173,38 @@ describe('juntarUltimosRegistros', () => {
         undefined,
       ),
     ).toEqual({ a: '2026-10-09T10:00:00Z', b: '2026-10-10T10:00:00Z', c: '2026-10-05T10:00:00Z' });
+  });
+});
+
+// docs/85 §7 — "Cada produto" com a lista vinda do Mix da loja (checklist de presença).
+describe('lista guiada pelo Mix da loja', () => {
+  const item = (id: string, propriedade: string | null, extra: Partial<SortimentoPontoVenda> = {}): SortimentoPontoVenda =>
+    ({
+      id: `s-${id}`,
+      tipo_item: 'PRODUTO',
+      produto: { id, descricao: `Produto ${id}`, imagem_url: null, codigo_barras: null, propriedade, produto_chave: false, secao_uuid: null, secao_descricao: null, departamento_uuid: null, departamento_descricao: null },
+      usuario: null,
+      status_aprovacao: null,
+      ...extra,
+    }) as SortimentoPontoVenda;
+  const mix = [
+    item('b', 'PROPRIA'),
+    item('a', null),
+    item('c', 'CONCORRENTE'),
+    item('d', 'PROPRIA', { status_aprovacao: 'PENDENTE' } as Partial<SortimentoPontoVenda>),
+    { ...item('x', 'PROPRIA'), tipo_item: 'SECAO', produto: null } as SortimentoPontoVenda,
+  ];
+  const presenca = { granularidade_padrao: 'PRODUTO' as const, produtos_predefinidos: [{ id: 'fixo', descricao: 'Fixo', codigo_barras: null, codigo_externo: null }], lista_produtos_origem: 'MIX_LOJA' as const };
+
+  it('usa só os nossos produtos do Mix (sem concorrente nem pendente), ignorando a lista fixa', () => {
+    expect(produtosDaListaGuiada(presenca, mix).map((p) => p.id)).toEqual(['a', 'b']);
+    expect(produtosDaListaGuiada({ ...presenca, lista_produtos_origem: 'FIXA' }, mix).map((p) => p.id)).toEqual(['fixo']);
+    expect(produtosDaListaGuiada({ ...presenca, granularidade_padrao: 'MARCA' }, mix)).toEqual([]);
+  });
+
+  it('a Ação só fica feita com todo o Mix conferido; sem Mix, um registro basta', () => {
+    expect(progressoLista(presenca, ['a'], mix)).toEqual({ feitos: 1, total: 2 });
+    expect(acaoConcluida(presenca, [{ produtoAuditoriaUuid: 'a' }, { produtoAuditoriaUuid: 'b' }], mix)).toBe(true);
+    expect(acaoConcluida(presenca, [{ produtoAuditoriaUuid: 'a' }], [])).toBe(true);
   });
 });

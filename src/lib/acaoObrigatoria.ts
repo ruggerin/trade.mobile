@@ -134,15 +134,41 @@ export function cobreRecorte(
   return false;
 }
 
+type TipoComLista = Pick<TipoRegistro, 'granularidade_padrao' | 'produtos_predefinidos' | 'lista_produtos_origem'>;
+
 /**
- * Quantos produtos da lista predefinida já têm registro, e quantos a lista tem — null quando o
+ * Lista guiada de "Cada produto": a fixa do admin, ou os NOSSOS produtos do Mix da loja (sem
+ * concorrente e sem o que ainda espera aprovação) — checklist de presença, docs/85 §7. Vazia fora
+ * de PRODUTO, ou Mix da loja sem Mix em cache.
+ */
+export function produtosDaListaGuiada(
+  tipo: TipoComLista,
+  sortimento: SortimentoPontoVenda[] | undefined,
+): { id: string; descricao: string; codigo_barras: string | null; codigo_externo: string | null }[] {
+  if (tipo.granularidade_padrao !== 'PRODUTO') return [];
+  if (tipo.lista_produtos_origem !== 'MIX_LOJA') return tipo.produtos_predefinidos ?? [];
+  const vistos = new Set<string>();
+  const lista: { id: string; descricao: string; codigo_barras: string | null; codigo_externo: string | null }[] = [];
+  for (const item of sortimento ?? []) {
+    const p = item.produto;
+    if (item.tipo_item !== 'PRODUTO' || !p || p.propriedade === 'CONCORRENTE' || item.status_aprovacao === 'PENDENTE') continue;
+    if (vistos.has(p.id)) continue;
+    vistos.add(p.id);
+    lista.push({ id: p.id, descricao: p.descricao, codigo_barras: p.codigo_barras, codigo_externo: null });
+  }
+  return lista.sort((a, b) => a.descricao.localeCompare(b.descricao));
+}
+
+/**
+ * Quantos produtos da lista guiada já têm registro, e quantos a lista tem — null quando o
  * formulário não tem lista (aí vale a regra de sempre: um registro basta).
  */
 export function progressoLista(
-  tipo: Pick<TipoRegistro, 'granularidade_padrao' | 'produtos_predefinidos'>,
+  tipo: TipoComLista,
   produtosRegistrados: Iterable<string | null>,
+  sortimento?: SortimentoPontoVenda[],
 ): { feitos: number; total: number } | null {
-  const lista = tipo.granularidade_padrao === 'PRODUTO' ? (tipo.produtos_predefinidos ?? []) : [];
+  const lista = produtosDaListaGuiada(tipo, sortimento);
   if (lista.length === 0) return null;
   const registrados = new Set(produtosRegistrados);
   return { feitos: lista.filter((p) => registrados.has(p.id)).length, total: lista.length };
@@ -151,9 +177,10 @@ export function progressoLista(
 // Ação feita: com lista predefinida, TODOS os produtos dela coletados (senão uma pesquisa de preço
 // de 20 produtos contaria como feita no primeiro); sem lista, um registro basta.
 export function acaoConcluida(
-  tipo: Pick<TipoRegistro, 'granularidade_padrao' | 'produtos_predefinidos'>,
+  tipo: TipoComLista,
   registros: { produtoAuditoriaUuid: string | null }[],
+  sortimento?: SortimentoPontoVenda[],
 ): boolean {
-  const progresso = progressoLista(tipo, registros.map((r) => r.produtoAuditoriaUuid));
+  const progresso = progressoLista(tipo, registros.map((r) => r.produtoAuditoriaUuid), sortimento);
   return progresso ? progresso.feitos === progresso.total : registros.length > 0;
 }

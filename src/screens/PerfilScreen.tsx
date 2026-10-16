@@ -17,6 +17,8 @@ import { sincronizarAgora } from '../lib/sync';
 import { dispararTesteSentry } from '../lib/sentry';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import { listarVisitasLocaisPendentesOuRejeitadas } from '../lib/visitaLocal';
+import { buscarVersaoApi } from '../lib/api/versao';
+import { obterUltimaVersaoApi, textoVersaoApp } from '../lib/versao';
 import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
 
 // docs/05-APP-MOBILE-UX.md §3.8 — nome/e-mail do usuário, empresa (tenant), botão Sair com
@@ -53,6 +55,11 @@ export function PerfilScreen() {
   const headersFoto = useHeadersAutenticados(usuario?.foto_url);
   const queryClient = useQueryClient();
   const [ultimaSincronizacao, setUltimaSincronizacao] = useState<string | null>(null);
+
+  // Versão da API que está respondendo agora — sem sinal, a última que o app viu num cabeçalho.
+  const versaoApiQuery = useQuery({ queryKey: ['versao-api'], queryFn: buscarVersaoApi, retry: false, staleTime: 60_000 });
+  const versaoApi = versaoApiQuery.data?.versao ?? obterUltimaVersaoApi();
+  const ambienteApi = versaoApiQuery.data?.ambiente;
 
   // Switch de compartilhar localização (docs/11-RASTREAMENTO-TEMPO-REAL.md) — só PROMOTOR, e só
   // aparece quando a empresa habilitou o rastreamento (situacao !== INDISPONIVEL).
@@ -249,6 +256,59 @@ export function PerfilScreen() {
         </View>
       )}
 
+      {/* Sincronizar logo abaixo da empresa — não precisa rolar a tela pra achar. */}
+      <View style={styles.syncBox}>
+        <Pressable
+          style={({ pressed }) => [styles.botaoSync, pressed && styles.botaoPressionado]}
+          onPress={() => sincronizarMutation.mutate()}
+          disabled={sincronizarMutation.isPending}
+        >
+          {sincronizarMutation.isPending ? (
+            <ActivityIndicator color={cores.primaria} />
+          ) : (
+            <>
+              <MaterialCommunityIcons name="sync" size={18} color={cores.primaria} />
+              <Text style={styles.botaoSyncTexto}>Sincronizar agora</Text>
+            </>
+          )}
+        </Pressable>
+        <Text style={styles.syncTexto}>
+          {ultimaSincronizacao
+            ? `Última sincronização: ${new Date(ultimaSincronizacao).toLocaleString('pt-BR')}`
+            : 'Ainda não sincronizado neste aparelho'}
+        </Text>
+      </View>
+
+      {(pendentes.length > 0 || rejeitadas.length > 0) && (
+        <View style={styles.filaBox}>
+          <View style={styles.filaTituloLinha}>
+            <MaterialCommunityIcons name="tray-full" size={16} color={cores.acentoTexto} />
+            <Text style={styles.filaTitulo}>Fila de envio</Text>
+          </View>
+          {pendentes.length > 0 && (
+            <Text style={styles.filaTexto}>
+              {pendentes.length} visita(s) aguardando envio pro servidor.
+            </Text>
+          )}
+          {rejeitadas.length > 0 && (
+            <Text style={styles.filaTextoErro}>
+              {rejeitadas.length} visita(s) recusada(s) — veja e descarte na aba Histórico.
+            </Text>
+          )}
+          <Pressable
+            style={({ pressed }) => [styles.botaoFila, pressed && styles.botaoPressionado]}
+            onPress={() => enviarFilaMutation.mutate()}
+            disabled={enviarFilaMutation.isPending}
+          >
+            {enviarFilaMutation.isPending ? (
+              <ActivityIndicator color={cores.primaria} />
+            ) : (
+              <Text style={styles.botaoFilaTexto}>Tentar enviar agora</Text>
+            )}
+          </Pressable>
+        </View>
+      )}
+
       {mostrarRastreamento && (
         <View style={styles.rastreamentoBox}>
           <View style={styles.rastreamentoTextos}>
@@ -312,58 +372,6 @@ export function PerfilScreen() {
         podePausar={rastreamento.exigencia === 'OPCIONAL'}
       />
 
-      <View style={styles.syncBox}>
-        <Pressable
-          style={({ pressed }) => [styles.botaoSync, pressed && styles.botaoPressionado]}
-          onPress={() => sincronizarMutation.mutate()}
-          disabled={sincronizarMutation.isPending}
-        >
-          {sincronizarMutation.isPending ? (
-            <ActivityIndicator color={cores.primaria} />
-          ) : (
-            <>
-              <MaterialCommunityIcons name="sync" size={18} color={cores.primaria} />
-              <Text style={styles.botaoSyncTexto}>Sincronizar agora</Text>
-            </>
-          )}
-        </Pressable>
-        <Text style={styles.syncTexto}>
-          {ultimaSincronizacao
-            ? `Última sincronização: ${new Date(ultimaSincronizacao).toLocaleString('pt-BR')}`
-            : 'Ainda não sincronizado neste aparelho'}
-        </Text>
-      </View>
-
-      {(pendentes.length > 0 || rejeitadas.length > 0) && (
-        <View style={styles.filaBox}>
-          <View style={styles.filaTituloLinha}>
-            <MaterialCommunityIcons name="tray-full" size={16} color={cores.acentoTexto} />
-            <Text style={styles.filaTitulo}>Fila de envio</Text>
-          </View>
-          {pendentes.length > 0 && (
-            <Text style={styles.filaTexto}>
-              {pendentes.length} visita(s) aguardando envio pro servidor.
-            </Text>
-          )}
-          {rejeitadas.length > 0 && (
-            <Text style={styles.filaTextoErro}>
-              {rejeitadas.length} visita(s) recusada(s) — veja e descarte na aba Histórico.
-            </Text>
-          )}
-          <Pressable
-            style={({ pressed }) => [styles.botaoFila, pressed && styles.botaoPressionado]}
-            onPress={() => enviarFilaMutation.mutate()}
-            disabled={enviarFilaMutation.isPending}
-          >
-            {enviarFilaMutation.isPending ? (
-              <ActivityIndicator color={cores.primaria} />
-            ) : (
-              <Text style={styles.botaoFilaTexto}>Tentar enviar agora</Text>
-            )}
-          </Pressable>
-        </View>
-      )}
-
       {/* docs/58 §6 — os textos que ele aceitou no primeiro acesso, sempre à mão. */}
       <View style={styles.documentos}>
         <Text style={styles.documentosTitulo}>Documentos</Text>
@@ -396,8 +404,12 @@ export function PerfilScreen() {
         <Text style={styles.botaoSairTexto}>Sair</Text>
       </Pressable>
 
+      {/* Versões do app e da API (+ ambiente) — o suporte pede isso quando algo não bate. */}
       <Text style={styles.versao} onPress={aoTocarNaVersao}>
-        v1.0.0
+        {textoVersaoApp()}
+      </Text>
+      <Text style={styles.versaoApi}>
+        {versaoApi ? `API ${versaoApi}${ambienteApi ? ` · ${ambienteApi}` : ''}` : 'API: sem conexão'}
       </Text>
     </ScrollView>
   );
@@ -627,8 +639,13 @@ const styles = StyleSheet.create({
   },
   versao: {
     marginTop: 'auto',
-    marginBottom: espaco.xl,
     fontSize: 12,
-    color: cores.bordaForte,
+    color: cores.textoTerciario,
+  },
+  versaoApi: {
+    marginTop: 2,
+    marginBottom: espaco.xl,
+    fontSize: 11,
+    color: cores.textoTerciario,
   },
 });

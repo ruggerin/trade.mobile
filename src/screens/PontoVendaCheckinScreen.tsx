@@ -10,6 +10,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useEspacoInferior } from '../lib/useEspacoInferior';
 import { useAuth } from '../lib/auth/AuthContext';
 import { liberarVisita, type LiberacaoVisita } from '../lib/api/visitas';
 import { exigeAgenda, exigeSequencia } from '../lib/rotaObrigatoria';
@@ -58,6 +59,8 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   const { usuario } = useAuth();
   const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
+  // Dentro das abas a barra já cuida da área segura de baixo (ver useEspacoInferior).
+  const espacoInferior = useEspacoInferior();
 
   // A OS que veio pela rota foi escolhida na lista de lojas com a pendência que estava em cache
   // NAQUELE momento — um Direcionamento criado depois (o gestor gera as OS na hora) não estava
@@ -491,7 +494,7 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
         )}
       </ScrollView>
 
-      <View style={[styles.rodapeCheckin, { paddingBottom: espaco.lg + insets.bottom }]}>
+      <View style={[styles.rodapeCheckin, { paddingBottom: espaco.lg + espacoInferior }]}>
         {erroCheckin && (
           <View style={styles.erroBox}>
             <Text style={styles.erroTexto}>{erroCheckin}</Text>

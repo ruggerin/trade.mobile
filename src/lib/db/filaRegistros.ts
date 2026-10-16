@@ -39,6 +39,11 @@ export interface RegistroLocal {
   imagensLocais: string[];
   /** Registro de resposta a um "ainda está lá?" (docs/83). */
   acompanhamentoUuid?: string | null;
+  /** Marca cadastrada pelo promotor nesta visita (docs/85) — `marcaUuid` foi gerado no celular. */
+  marcaNovaDescricao?: string | null;
+  /** Embalagem do registro por marca concorrente (docs/85). */
+  embalagemQuantidade?: number | null;
+  embalagemUnidade?: string | null;
   erro: string | null;
   criadoEm: string;
   atualizadoEm: string;
@@ -63,6 +68,9 @@ interface LinhaFilaRegistro {
   imagem_local_path: string | null;
   imagens_locais_json: string | null;
   acompanhamento_uuid?: string | null;
+  marca_nova_descricao?: string | null;
+  embalagem_quantidade?: number | null;
+  embalagem_unidade?: string | null;
   erro: string | null;
   criado_em: string;
   atualizado_em: string;
@@ -94,6 +102,9 @@ function paraRegistroLocal(linha: LinhaFilaRegistro): RegistroLocal {
         ? [linha.imagem_local_path]
         : [],
     acompanhamentoUuid: linha.acompanhamento_uuid ?? null,
+    marcaNovaDescricao: linha.marca_nova_descricao ?? null,
+    embalagemQuantidade: linha.embalagem_quantidade ?? null,
+    embalagemUnidade: linha.embalagem_unidade ?? null,
     erro: linha.erro,
     criadoEm: linha.criado_em,
     atualizadoEm: linha.atualizado_em,
@@ -116,6 +127,9 @@ export interface NovoRegistroLocal {
   /** Caminhos já persistentes (copiados pro FileSystem.documentDirectory) — nunca a uri transitória do image picker. */
   imagensLocais?: string[];
   acompanhamentoUuid?: string | null;
+  marcaNovaDescricao?: string | null;
+  embalagemQuantidade?: number | null;
+  embalagemUnidade?: string | null;
 }
 
 export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<RegistroLocal> {
@@ -127,9 +141,9 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
     `INSERT INTO fila_registros (
       id, visita_local_id, status, tipo_registro_uuid, produto_auditoria_uuid, produto_descricao,
       tipo_vinculo, secao_uuid, departamento_uuid, marca_uuid, vinculo_descricao,
-      valores_campos_json, ruptura, observacao, imagens_locais_json, acompanhamento_uuid, erro, criado_em,
-      atualizado_em
-    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      valores_campos_json, ruptura, observacao, imagens_locais_json, acompanhamento_uuid,
+      marca_nova_descricao, embalagem_quantidade, embalagem_unidade, erro, criado_em, atualizado_em
+    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     [
       id,
       dados.visitaLocalId,
@@ -146,6 +160,9 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
       dados.observacao ?? null,
       JSON.stringify(dados.imagensLocais ?? []),
       dados.acompanhamentoUuid ?? null,
+      dados.marcaNovaDescricao ?? null,
+      dados.embalagemQuantidade ?? null,
+      dados.embalagemUnidade ?? null,
       agora,
       agora,
     ],
