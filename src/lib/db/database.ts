@@ -91,6 +91,14 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     -- Sortimento do PDV (produtos que a loja compra, ver docs/14-SORTIMENTO-PONTO-VENDA.md) —
     -- mesmo padrão de cache de produtos_disponiveis, só que a fonte é o cadastro de sortimento
     -- em vez da resolução por campanha.
+    -- Último registro de cada formulário com intervalo, por loja (docs/80 §5.2) — vem junto do
+    -- detalhe do PDV (lib/api/sortimentoPontoVenda.ts) e decide offline se a Ação já voltou.
+    CREATE TABLE IF NOT EXISTS ultimos_registros_pdv (
+      ponto_venda_id TEXT PRIMARY KEY NOT NULL,
+      dados TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS sortimento_ponto_venda (
       ponto_venda_id TEXT NOT NULL,
       item_uuid TEXT NOT NULL,

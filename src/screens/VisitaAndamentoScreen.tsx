@@ -25,6 +25,7 @@ import {
   buscarCancelamentoVisitaPermitido,
 } from '../lib/api/parametros';
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
+import { lerUltimosRegistrosCache } from '../lib/db/ultimosRegistrosCache';
 import { listarTiposRegistro } from '../lib/api/tiposRegistro';
 import { useAuth } from '../lib/auth/AuthContext';
 import { acaoConcluida, acaoValeNestaVisita, progressoLista } from '../lib/acaoObrigatoria';
@@ -390,12 +391,25 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // quando alguma campanha desta visita bate com a campanha configurada no tipo; CONTRATO só
   // quando o PDV tem contrato ativo (booleano vindo pronto do backend, o app nunca lida com
   // dado de contrato em si — ver docs/04-APP-MOBILE.md); LOJA_REDE só nas lojas/redes escolhidas
-  // no tipo (docs/40). Regra em lib/acaoObrigatoria.ts.
+  // no tipo (docs/40); LINHA_AUSENTE onde o Mix desta loja não tem a linha (docs/80). Regra em
+  // lib/acaoObrigatoria.ts.
   const campanhasDaVisita = useMemo(() => new Set(gruposPorCampanha.map((g) => g.campanhaUuid)), [gruposPorCampanha]);
+  // Último registro por formulário com intervalo (docs/80 §5.2) — gravado junto do Mix pelo
+  // buscarSortimento; relê o cache sempre que o Mix atualiza.
+  const ultimosRegistrosQuery = useQuery({
+    queryKey: ['ultimos-registros', pontoVendaUuid, sortimentoQuery.dataUpdatedAt],
+    queryFn: () => lerUltimosRegistrosCache(pontoVendaUuid as string),
+    enabled: Boolean(pontoVendaUuid) && !sortimentoQuery.isLoading,
+  });
   const acoesPendentes = useMemo(
     () =>
-      tiposRegistro.filter((t) => acaoValeNestaVisita(t, pontoVenda, campanhasDaVisita)),
-    [tiposRegistro, campanhasDaVisita, pontoVenda],
+      tiposRegistro.filter((t) =>
+        acaoValeNestaVisita(t, pontoVenda, campanhasDaVisita, sortimentoQuery.data, {
+          ultimosRegistros: ultimosRegistrosQuery.data,
+          inicioVisita: visita?.inicioEm,
+        }),
+      ),
+    [tiposRegistro, campanhasDaVisita, pontoVenda, sortimentoQuery.data, ultimosRegistrosQuery.data, visita?.inicioEm],
   );
 
   // Formulários da Ordem de Serviço ainda não respondidos — soma "de servidor" (respondido_em)

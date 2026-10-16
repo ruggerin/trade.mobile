@@ -229,13 +229,17 @@ export interface CampoTipoRegistro {
   // saber SE ausência vira ruptura confirmável; a lista de produtos em si vem de
   // lib/api/campoSortimento.ts (o backend resolve o resto — origem/recorte não importam aqui).
   confirmar_ruptura_ausentes: boolean;
+  // true = o checklist segue a marca/departamento/seção escolhida no início do formulário
+  // (docs/79). Opcional: cache antigo não tem.
+  sortimento_segue_escolha?: boolean;
 }
 
 // Catálogo customizável por empresa do que o promotor pode registrar numa visita — substitui o
 // antigo enum fixo FOTO/RUPTURA/OBSERVACAO. Toda empresa nasce com esses 3 como padrão, mas
 // pode criar outros (ex.: "Ponto extra") com campos próprios.
 // LOJA_REDE = só nas lojas/redes escolhidas no tipo (docs/40-ACAO-OBRIGATORIA-LOJA-REDE.md).
-export type EscopoAcaoTipoRegistro = 'SEMPRE' | 'CAMPANHA' | 'CONTRATO' | 'LOJA_REDE';
+// LINHA_AUSENTE: onde o Mix do PDV não cobre o recorte do tipo (docs/80-MONITORAMENTO-LINHA-AUSENTE.md).
+export type EscopoAcaoTipoRegistro = 'SEMPRE' | 'CAMPANHA' | 'CONTRATO' | 'LOJA_REDE' | 'LINHA_AUSENTE';
 export type GranularidadeResposta = 'LINHA' | 'PRODUTO';
 
 export interface TipoRegistro {
@@ -261,6 +265,16 @@ export interface TipoRegistro {
   // cache antigo (antes da doc 40) não tem esses campos.
   pontos_venda_uuids?: string[];
   redes_lojas_uuids?: string[];
+  // Escopo LINHA_AUSENTE (docs/80 §5.1) — recorte que não pode estar no Mix. A seção traz o
+  // departamento dela (item DEPARTAMENTO do Mix cobre a seção). Opcional: cache antigo não tem.
+  escopo_tipo_vinculo?: 'SECAO' | 'DEPARTAMENTO' | 'MARCA' | null;
+  escopo_secao?: { id: string; descricao: string; departamento_uuid: string | null } | null;
+  escopo_departamento?: { id: string; descricao: string } | null;
+  escopo_marca?: { id: string; descricao: string } | null;
+  // Filtro da Ação por ramo de atividade da loja (docs/80 §5.4) — vazio = todos os ramos.
+  ramos_atividade_uuids?: string[];
+  // Intervalo entre cobranças da Ação, em dias (docs/80 §5.2) — 0/ausente = toda visita.
+  intervalo_dias?: number;
   // Lista predefinida de produtos (granularidade PRODUTO) — com ela, as opções de vínculo são só
   // estes produtos, em qualquer loja. Opcional: cache antigo não tem o campo.
   produtos_predefinidos?: { id: string; descricao: string; codigo_barras: string | null; codigo_externo: string | null }[];
@@ -270,6 +284,11 @@ export interface TipoRegistro {
   // pra restringir "Vincular a" (RegistroFormModal.exigeProduto) — o checklist em grade que
   // também lia isto foi removido do mobile (22/09/2026, doc 16 §9 descontinuada nesse ponto).
   granularidade_padrao: GranularidadeResposta | null;
+  // Promotor escolhe onde é o registro (marca/departamento/seção) antes das perguntas — docs/79.
+  // Opcionais: cache antigo não tem.
+  escolhe_marca?: boolean;
+  escolhe_departamento?: boolean;
+  escolhe_secao?: boolean;
   eh_ruptura: boolean;
   // Controla se o tipo aparece solto no dropdown de "criar registro" do promotor — decisão 8 de
   // docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. `false` pra tipos nascidos dentro de uma campanha
@@ -356,7 +375,14 @@ export interface SortimentoPontoVenda {
     secao_descricao: string | null;
     departamento_uuid: string | null;
     departamento_descricao: string | null;
+    // Escopo LINHA_AUSENTE por marca (docs/80). Opcional: cache antigo não tem.
+    marca_uuid?: string | null;
   } | null;
+  // Item cadastrado como recorte inteiro (tipo_item SECAO/DEPARTAMENTO/MARCA). A seção traz o
+  // departamento dela — usado pelo escopo LINHA_AUSENTE (docs/80). Opcionais: cache antigo.
+  secao?: { id: string; descricao: string; departamento_uuid?: string | null } | null;
+  departamento?: { id: string; descricao: string } | null;
+  marca?: { id: string; descricao: string } | null;
   // null = cadastrado pelo admin web; preenchido = adicionado pelo próprio promotor na visita.
   usuario: { id: string; nome: string } | null;
   status_aprovacao: StatusAprovacao;

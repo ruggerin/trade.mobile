@@ -18,11 +18,20 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconeTipoRegistro } from './IconeTipoRegistro';
-import { buscarSortimentoCampo, type ProdutoSortimento } from '../lib/api/campoSortimento';
+import { buscarSortimentoCampo, type ProdutoSortimento, type RecortesDoMix } from '../lib/api/campoSortimento';
 import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
+import { listarProdutosCatalogo } from '../lib/api/produtosAuditoria';
 import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } from '../lib/db/filaRegistros';
 import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type RascunhosColeta } from '../lib/db/rascunhosColeta';
 import { mascararMoeda, moedaParaApi } from '../lib/mascaraMoeda';
+import {
+  ROTULO_RECORTE,
+  agruparChecklist,
+  produtosDoRecorte,
+  recortesPermitidos,
+  type RecorteEscolhido,
+  type TipoRecorte,
+} from '../lib/recorteEscolhido';
 import type { CampoTipoRegistro, CatalogoItem, ProdutoDisponivel, TipoRegistro, TipoVinculoRegistro } from '../types/api';
 import { cores, espaco, indigo, neutro, raio, sombraCard, tipografia } from '../theme';
 
@@ -30,6 +39,8 @@ import { cores, espaco, indigo, neutro, raio, sombraCard, tipografia } from '../
 export interface EstadoSortimento {
   presentes: string[];
   ausentes: string[];
+  // Adicionados pelo promotor de fora do mix da loja, sempre entre os presentes (docs/79 decisão 8).
+  fora_do_mix?: string[];
 }
 
 export interface RegistroFormResultado {
@@ -126,6 +137,8 @@ export function RegistroFormModal({
   const [imagensUri, setImagensUri] = useState<string[]>([]);
   const [ruptura, setRuptura] = useState(false);
   const [vinculo, setVinculo] = useState<{ categoria: Categoria; uuid: string; label: string } | null>(null);
+  // Onde é o registro, quando o formulário pede essa escolha antes das perguntas (docs/79).
+  const [recorte, setRecorte] = useState<RecorteEscolhido | null>(null);
   const [categoriaAberta, setCategoriaAberta] = useState<Categoria | null>(null);
   const [erroLocal, setErroLocal] = useState<string | null>(null);
   // Coleta guiada: produto da lista predefinida que está sendo respondido agora (null = na lista).
@@ -157,6 +170,7 @@ export function RegistroFormModal({
       setImagensUri([]);
       setRuptura(false);
       setVinculo(null);
+      setRecorte(null);
       setCategoriaAberta(null);
       setErroLocal(null);
       setProdutoLista(null);
@@ -171,21 +185,6 @@ export function RegistroFormModal({
     }
   }, [visible, tipoFixo]);
 
-  const secoesQuery = useQuery({
-    queryKey: ['secoes-auditoria'],
-    queryFn: listarSecoes,
-    enabled: categoriaAberta === 'SECAO',
-  });
-  const departamentosQuery = useQuery({
-    queryKey: ['departamentos-auditoria'],
-    queryFn: listarDepartamentos,
-    enabled: categoriaAberta === 'DEPARTAMENTO',
-  });
-  const marcasQuery = useQuery({
-    queryKey: ['marcas-auditoria'],
-    queryFn: listarMarcas,
-    enabled: categoriaAberta === 'MARCA',
-  });
 
   const camposOrdenados = useMemo(
     () => (tipo ? [...tipo.campos].sort((a, b) => a.ordem - b.ordem) : []),
@@ -207,6 +206,45 @@ export function RegistroFormModal({
   function definirValorCampo(chave: string, valor: string) {
     setValoresCampos((atual) => ({ ...atual, [chave]: valor }));
   }
+
+  // docs/79: o formulário pede "onde é" (marca/departamento/seção) antes das perguntas. As opções
+  // saem do mix da loja (resposta do Mix que segue a escolha); sem esse campo, do catálogo.
+  const permitidos = useMemo(() => (tipo ? recortesPermitidos(tipo) : []), [tipo]);
+  const pedeRecorte = permitidos.length > 0;
+  const campoQueSegue = camposOrdenados.find((c) => c.tipo_campo === 'SORTIMENTO' && c.sortimento_segue_escolha);
+  const mixQueSegueQuery = useQuery({
+    queryKey: ['sortimento-campo', campoQueSegue?.id, pontoVendaUuid],
+    queryFn: () => buscarSortimentoCampo(campoQueSegue!.id, pontoVendaUuid!),
+    enabled: pedeRecorte && !!campoQueSegue && !!pontoVendaUuid,
+  });
+  const recortesDoMix = mixQueSegueQuery.data?.recortes;
+  const usarCatalogoNaEscolha = pedeRecorte && !campoQueSegue;
+
+  // Trocar o recorte muda os produtos do checklist — as marcações anteriores não valem mais.
+  function trocarRecorte() {
+    setRecorte(null);
+    setValoresCampos((atual) => {
+      const novo = { ...atual };
+      for (const c of camposOrdenados) if (c.sortimento_segue_escolha) delete novo[c.chave];
+      return novo;
+    });
+  }
+
+  const secoesQuery = useQuery({
+    queryKey: ['secoes-auditoria'],
+    queryFn: listarSecoes,
+    enabled: categoriaAberta === 'SECAO' || (usarCatalogoNaEscolha && permitidos.includes('SECAO')),
+  });
+  const departamentosQuery = useQuery({
+    queryKey: ['departamentos-auditoria'],
+    queryFn: listarDepartamentos,
+    enabled: categoriaAberta === 'DEPARTAMENTO' || (usarCatalogoNaEscolha && permitidos.includes('DEPARTAMENTO')),
+  });
+  const marcasQuery = useQuery({
+    queryKey: ['marcas-auditoria'],
+    queryFn: listarMarcas,
+    enabled: categoriaAberta === 'MARCA' || (usarCatalogoNaEscolha && permitidos.includes('MARCA')),
+  });
 
   // Foto de registro é evidência de campo: só câmera, na hora — nunca da galeria (uma foto
   // antiga/de outra loja passaria como coleta de agora). A foto de perfil (PerfilScreen) é outra
@@ -281,6 +319,7 @@ export function RegistroFormModal({
 
   function validar(): string | null {
     if (!tipo) return 'Escolha um tipo de registro.';
+    if (pedeRecorte && !recorte) return 'Escolha onde é este registro.';
     if (tipo.exige_foto && imagensUri.length === 0) return `O tipo "${tipo.descricao}" exige uma foto.`;
     if (exigeProduto && vinculo?.categoria !== 'PRODUTO') {
       return `O tipo "${tipo.descricao}" exige vincular um produto específico.`;
@@ -470,13 +509,17 @@ export function RegistroFormModal({
       tipoRegistroUuid: tipo.id,
       imagensUri: imagensUri.length > 0 ? imagensUri : undefined,
       produtoAuditoriaUuid: produtoEfetivo?.uuid ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.uuid : undefined),
-      tipoVinculo: produtoLista ? 'PRODUTO' : !produtoContexto && vinculo ? vinculo.categoria : undefined,
+      tipoVinculo: recorte ? recorte.tipo : produtoLista ? 'PRODUTO' : !produtoContexto && vinculo ? vinculo.categoria : undefined,
       produtoDescricao: produtoEfetivo?.descricao ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.label : undefined),
       permanecerAberto: modoLista || undefined,
-      secaoUuid: vinculo?.categoria === 'SECAO' ? vinculo.uuid : undefined,
-      departamentoUuid: vinculo?.categoria === 'DEPARTAMENTO' ? vinculo.uuid : undefined,
-      marcaUuid: vinculo?.categoria === 'MARCA' ? vinculo.uuid : undefined,
-      vinculoLabel: !produtoContexto && vinculo && vinculo.categoria !== 'PRODUTO' ? vinculo.label : undefined,
+      secaoUuid: recorte ? (recorte.tipo === 'SECAO' ? recorte.uuid : undefined) : vinculo?.categoria === 'SECAO' ? vinculo.uuid : undefined,
+      departamentoUuid: recorte
+        ? recorte.tipo === 'DEPARTAMENTO' ? recorte.uuid : undefined
+        : vinculo?.categoria === 'DEPARTAMENTO' ? vinculo.uuid : undefined,
+      marcaUuid: recorte ? (recorte.tipo === 'MARCA' ? recorte.uuid : undefined) : vinculo?.categoria === 'MARCA' ? vinculo.uuid : undefined,
+      vinculoLabel: recorte
+        ? `${ROTULO_RECORTE[recorte.tipo]}: ${recorte.descricao}`
+        : !produtoContexto && vinculo && vinculo.categoria !== 'PRODUTO' ? vinculo.label : undefined,
       valoresCampos: Object.keys(valoresNormalizados).length > 0 ? valoresNormalizados : undefined,
       ruptura: ruptura || undefined,
       produtosAusentesConfirmaveis: produtosAusentesConfirmaveis.length > 0 ? produtosAusentesConfirmaveis : undefined,
@@ -597,9 +640,31 @@ export function RegistroFormModal({
             />
           )}
 
-          {tipo && !(modoLista && !produtoLista) && (
+          {tipo && pedeRecorte && !recorte && (
+            <EscolhaRecorte
+              permitidos={permitidos}
+              recortesDoMix={recortesDoMix}
+              carregando={campoQueSegue ? mixQueSegueQuery.isLoading : secoesQuery.isLoading || departamentosQuery.isLoading || marcasQuery.isLoading}
+              catalogo={{ SECAO: secoesQuery.data ?? [], DEPARTAMENTO: departamentosQuery.data ?? [], MARCA: marcasQuery.data ?? [] }}
+              paddingInferior={espaco.lg + insets.bottom}
+              onEscolher={setRecorte}
+            />
+          )}
+
+          {tipo && !(modoLista && !produtoLista) && !(pedeRecorte && !recorte) && (
             <>
               <ScrollView contentContainerStyle={styles.lista}>
+                {recorte && (
+                  <View style={styles.recorteFaixa}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recorteFaixaTipo}>{ROTULO_RECORTE[recorte.tipo]}</Text>
+                      <Text style={styles.recorteFaixaNome} numberOfLines={1}>{recorte.descricao}</Text>
+                    </View>
+                    <Pressable onPress={trocarRecorte} hitSlop={8} style={styles.recorteFaixaBotao}>
+                      <Text style={styles.recorteFaixaBotaoTexto}>Trocar</Text>
+                    </Pressable>
+                  </View>
+                )}
                 <View style={styles.secaoForm}>
                   <Text style={styles.secaoLabel}>
                     Fotos <Text style={styles.secaoLabelFraco}>· {imagensUri.length > 0 ? `${imagensUri.length} adicionada${imagensUri.length > 1 ? 's' : ''}` : tipo.exige_foto ? 'obrigatória' : 'opcional'}</Text>
@@ -633,6 +698,8 @@ export function RegistroFormModal({
                     valor={valoresCampos[campo.chave] ?? ''}
                     onChange={(valor) => definirValorCampo(campo.chave, valor)}
                     pontoVendaUuid={pontoVendaUuid}
+                    recorte={campo.sortimento_segue_escolha ? recorte : null}
+                    nomesPorUuid={produtosSortimentoPorUuid}
                     onProdutosResolvidos={(produtos) =>
                       setProdutosSortimentoPorUuid((atual) => ({
                         ...atual,
@@ -656,7 +723,7 @@ export function RegistroFormModal({
                 </View>
               </Pressable>
 
-              {!produtoEfetivo && (tipo.permite_vincular_catalogo || exigeProduto) && (
+              {!produtoEfetivo && !pedeRecorte && (tipo.permite_vincular_catalogo || exigeProduto) && (
                 <View style={styles.secaoForm}>
                   <Text style={styles.secaoLabel}>Vincular a {exigeProduto ? '(obrigatório)' : '(opcional)'}</Text>
                   <View style={styles.chipsLinha}>
@@ -741,12 +808,16 @@ function CampoInput({
   valor,
   onChange,
   pontoVendaUuid,
+  recorte,
+  nomesPorUuid,
   onProdutosResolvidos,
 }: {
   campo: CampoTipoRegistro;
   valor: string;
   onChange: (valor: string) => void;
   pontoVendaUuid?: string;
+  recorte: RecorteEscolhido | null;
+  nomesPorUuid: Record<string, string>;
   onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
 }) {
   const situacao = campo.tipo_campo === 'DATA' ? situacaoData(valor) : null;
@@ -763,6 +834,8 @@ function CampoInput({
           valor={valor}
           onChange={onChange}
           pontoVendaUuid={pontoVendaUuid}
+          recorte={recorte}
+          nomesPorUuid={nomesPorUuid}
           onProdutosResolvidos={onProdutosResolvidos}
         />
       </View>
@@ -826,18 +899,26 @@ function CampoInput({
  * — busca o recorte já resolvido pro PDV (backend decide origem dinâmica/fixa, ver
  * App\Support\ResolverSortimentoCampo), nasce com tudo pré-marcado como presente (decisão 3), o
  * promotor só desmarca o que está faltando.
+ *
+ * Mix que segue a escolha do promotor (docs/79): `recorte` filtra o mix da loja; departamento e
+ * marca viram grupos que abrem e fecham; "Adicionar produto" busca no catálogo do recorte um
+ * produto fora do mix (entra em `fora_do_mix`, sempre presente).
  */
 function CampoSortimentoInput({
   campo,
   valor,
   onChange,
   pontoVendaUuid,
+  recorte,
+  nomesPorUuid,
   onProdutosResolvidos,
 }: {
   campo: CampoTipoRegistro;
   valor: string;
   onChange: (valor: string) => void;
   pontoVendaUuid?: string;
+  recorte: RecorteEscolhido | null;
+  nomesPorUuid: Record<string, string>;
   onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
 }) {
   const query = useQuery({
@@ -845,11 +926,19 @@ function CampoSortimentoInput({
     queryFn: () => buscarSortimentoCampo(campo.id, pontoVendaUuid!),
     enabled: !!pontoVendaUuid,
   });
+  const [fechados, setFechados] = useState<Set<string>>(new Set());
+  const [adicionando, setAdicionando] = useState(false);
+
+  const produtos = useMemo(() => {
+    const todos = query.data?.produtos ?? [];
+    return campo.sortimento_segue_escolha && recorte ? produtosDoRecorte(todos, recorte, query.data?.recortes) : todos;
+  }, [query.data, campo.sortimento_segue_escolha, recorte]);
 
   const estado: EstadoSortimento | null = valor ? (JSON.parse(valor) as EstadoSortimento) : null;
+  const foraDoMix = estado?.fora_do_mix ?? [];
 
   useEffect(() => {
-    if (query.data) onProdutosResolvidos(query.data);
+    if (query.data) onProdutosResolvidos(query.data.produtos);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query.data]);
 
@@ -857,18 +946,43 @@ function CampoSortimentoInput({
   // sobrescreve o que o promotor já ajustou se o componente re-renderizar).
   useEffect(() => {
     if (query.data && !valor) {
-      onChange(JSON.stringify({ presentes: query.data.map((p) => p.produto_uuid), ausentes: [] } satisfies EstadoSortimento));
+      onChange(JSON.stringify({ presentes: produtos.map((p) => p.produto_uuid), ausentes: [] } satisfies EstadoSortimento));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query.data, valor]);
+  }, [query.data, valor, produtos]);
 
   function alternarProduto(produtoUuid: string) {
     if (!estado) return;
+    // Fora do mix: desmarcar tira da lista (o backend só aceita fora do mix entre os presentes).
+    if (foraDoMix.includes(produtoUuid)) {
+      onChange(
+        JSON.stringify({
+          ...estado,
+          presentes: estado.presentes.filter((u) => u !== produtoUuid),
+          fora_do_mix: foraDoMix.filter((u) => u !== produtoUuid),
+        } satisfies EstadoSortimento),
+      );
+      return;
+    }
     const estaPresente = estado.presentes.includes(produtoUuid);
     const novoEstado: EstadoSortimento = estaPresente
-      ? { presentes: estado.presentes.filter((u) => u !== produtoUuid), ausentes: [...estado.ausentes, produtoUuid] }
-      : { presentes: [...estado.presentes, produtoUuid], ausentes: estado.ausentes.filter((u) => u !== produtoUuid) };
+      ? { ...estado, presentes: estado.presentes.filter((u) => u !== produtoUuid), ausentes: [...estado.ausentes, produtoUuid] }
+      : { ...estado, presentes: [...estado.presentes, produtoUuid], ausentes: estado.ausentes.filter((u) => u !== produtoUuid) };
     onChange(JSON.stringify(novoEstado));
+  }
+
+  function adicionarForaDoMix(produto: { id: string; descricao: string }) {
+    const atual = estado ?? { presentes: [], ausentes: [] };
+    onProdutosResolvidos([{ produto_uuid: produto.id, descricao: produto.descricao } as ProdutoSortimento]);
+    onChange(
+      JSON.stringify({
+        ...atual,
+        presentes: [...atual.presentes, produto.id],
+        ausentes: atual.ausentes.filter((u) => u !== produto.id),
+        fora_do_mix: [...(atual.fora_do_mix ?? []), produto.id],
+      } satisfies EstadoSortimento),
+    );
+    setAdicionando(false);
   }
 
   if (!pontoVendaUuid) {
@@ -883,30 +997,205 @@ function CampoSortimentoInput({
     return <Text style={styles.textoDataVencida}>Não foi possível carregar a lista de produtos. Feche e tente de novo.</Text>;
   }
 
-  if ((query.data ?? []).length === 0) {
+  const podeAdicionar = !!campo.sortimento_segue_escolha && !!recorte;
+
+  if (produtos.length === 0 && !podeAdicionar) {
     return <Text style={styles.vazioTexto}>Nenhum produto no mix deste PDV pra este recorte.</Text>;
   }
+
+  const linha = (produto: { produto_uuid: string; descricao: string }, fora: boolean) => {
+    const presente = estado?.presentes.includes(produto.produto_uuid) ?? true;
+    return (
+      <Pressable
+        key={produto.produto_uuid}
+        style={({ pressed }) => [styles.checkboxLinha, styles.subListaItem, pressed && styles.itemPressionado]}
+        onPress={() => alternarProduto(produto.produto_uuid)}
+      >
+        <View style={[styles.checkbox, presente && styles.checkboxMarcado]}>
+          {presente && <Text style={styles.checkboxMarca}>✓</Text>}
+        </View>
+        <Text style={[styles.subListaItemTexto, { flex: 1 }]}>{produto.descricao}</Text>
+        {fora && <Text style={styles.etiquetaForaDoMix}>fora do mix</Text>}
+      </Pressable>
+    );
+  };
+
+  const grupos = recorte && campo.sortimento_segue_escolha ? agruparChecklist(produtos, recorte.tipo) : agruparChecklist(produtos, 'SECAO');
+  const presentesNoGrupo = (g: { produtos: ProdutoSortimento[] }) =>
+    g.produtos.filter((p) => estado?.presentes.includes(p.produto_uuid) ?? true).length;
 
   return (
     <View style={styles.subListaBox}>
       <ScrollView style={styles.subLista} nestedScrollEnabled>
-        {(query.data ?? []).map((produto) => {
-          const presente = estado?.presentes.includes(produto.produto_uuid) ?? true;
-          return (
-            <Pressable
-              key={produto.produto_uuid}
-              style={({ pressed }) => [styles.checkboxLinha, styles.subListaItem, pressed && styles.itemPressionado]}
-              onPress={() => alternarProduto(produto.produto_uuid)}
-            >
-              <View style={[styles.checkbox, presente && styles.checkboxMarcado]}>
-                {presente && <Text style={styles.checkboxMarca}>✓</Text>}
-              </View>
-              <Text style={styles.subListaItemTexto}>{produto.descricao}</Text>
-            </Pressable>
-          );
-        })}
+        {produtos.length === 0 && <Text style={styles.vazioTexto}>A loja não tem produtos desta parte no mix.</Text>}
+        {grupos.map((g) =>
+          g.titulo === '' ? (
+            g.produtos.map((p) => linha(p, false))
+          ) : (
+            <View key={g.chave}>
+              <Pressable
+                style={styles.grupoChecklistCabecalho}
+                onPress={() =>
+                  setFechados((atual) => {
+                    const novo = new Set(atual);
+                    if (novo.has(g.chave)) novo.delete(g.chave);
+                    else novo.add(g.chave);
+                    return novo;
+                  })
+                }
+              >
+                <View style={{ flex: 1 }}>
+                  {g.supertitulo && <Text style={styles.grupoChecklistSupertitulo}>{g.supertitulo}</Text>}
+                  <Text style={styles.grupoChecklistTitulo}>{g.titulo}</Text>
+                </View>
+                <Text style={styles.grupoChecklistContagem}>
+                  {presentesNoGrupo(g)}/{g.produtos.length}
+                </Text>
+                <MaterialCommunityIcons name={fechados.has(g.chave) ? 'chevron-down' : 'chevron-up'} size={20} color={neutro[700]} />
+              </Pressable>
+              {!fechados.has(g.chave) && g.produtos.map((p) => linha(p, false))}
+            </View>
+          ),
+        )}
+        {foraDoMix.map((uuid) => linha({ produto_uuid: uuid, descricao: nomesPorUuid[uuid] ?? 'Produto adicionado' }, true))}
       </ScrollView>
+      {podeAdicionar && !adicionando && (
+        <Pressable style={styles.botaoAdicionarProduto} onPress={() => setAdicionando(true)}>
+          <MaterialCommunityIcons name="plus" size={16} color={cores.primaria} />
+          <Text style={styles.botaoAdicionarProdutoTexto}>Adicionar produto fora do mix</Text>
+        </Pressable>
+      )}
+      {podeAdicionar && adicionando && recorte && (
+        <BuscaProdutoForaDoMix
+          recorte={recorte}
+          jaNaLista={new Set([...produtos.map((p) => p.produto_uuid), ...foraDoMix])}
+          onEscolher={adicionarForaDoMix}
+          onCancelar={() => setAdicionando(false)}
+        />
+      )}
     </View>
+  );
+}
+
+/** Busca no catálogo, dentro do recorte escolhido, um produto que não está no mix (docs/79 decisão 8). Precisa de rede. */
+function BuscaProdutoForaDoMix({
+  recorte,
+  jaNaLista,
+  onEscolher,
+  onCancelar,
+}: {
+  recorte: RecorteEscolhido;
+  jaNaLista: ReadonlySet<string>;
+  onEscolher: (produto: { id: string; descricao: string }) => void;
+  onCancelar: () => void;
+}) {
+  const [busca, setBusca] = useState('');
+  const query = useQuery({
+    queryKey: ['catalogo-fora-do-mix', recorte.tipo, recorte.uuid, busca.trim()],
+    queryFn: () =>
+      listarProdutosCatalogo({
+        busca: busca.trim(),
+        secaoUuid: recorte.tipo === 'SECAO' ? recorte.uuid : null,
+        departamentoUuid: recorte.tipo === 'DEPARTAMENTO' ? recorte.uuid : null,
+        marcaUuid: recorte.tipo === 'MARCA' ? recorte.uuid : null,
+      }),
+    enabled: busca.trim().length >= 2,
+  });
+  const resultados = (query.data?.produtos ?? []).filter((p) => !jaNaLista.has(p.id));
+
+  return (
+    <View style={styles.buscaForaDoMix}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: espaco.sm }}>
+        <TextInput
+          style={[styles.input, { flex: 1 }]}
+          value={busca}
+          onChangeText={setBusca}
+          placeholder={`Buscar em ${recorte.descricao}`}
+          autoFocus
+        />
+        <Pressable onPress={onCancelar} hitSlop={8}>
+          <Text style={styles.recorteFaixaBotaoTexto}>Cancelar</Text>
+        </Pressable>
+      </View>
+      {busca.trim().length < 2 && <Text style={styles.vazioTexto}>Digite pelo menos 2 letras.</Text>}
+      {query.isFetching && <ActivityIndicator color={cores.primaria} style={{ padding: 8 }} />}
+      {query.isError && <Text style={styles.textoDataVencida}>Sem conexão — a busca precisa de internet.</Text>}
+      {query.isSuccess && resultados.length === 0 && <Text style={styles.vazioTexto}>Nenhum produto encontrado.</Text>}
+      {resultados.map((p) => (
+        <Pressable
+          key={p.id}
+          style={({ pressed }) => [styles.subListaItem, pressed && styles.itemPressionado]}
+          onPress={() => onEscolher({ id: p.id, descricao: p.descricao })}
+        >
+          <Text style={styles.subListaItemTexto}>{p.descricao}</Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+/** "Onde é?" — antes das perguntas, o promotor escolhe marca/departamento/seção (docs/79 decisão 3). */
+function EscolhaRecorte({
+  permitidos,
+  recortesDoMix,
+  catalogo,
+  carregando,
+  paddingInferior,
+  onEscolher,
+}: {
+  permitidos: TipoRecorte[];
+  recortesDoMix: RecortesDoMix | undefined;
+  catalogo: Record<TipoRecorte, CatalogoItem[]>;
+  carregando: boolean;
+  paddingInferior: number;
+  onEscolher: (recorte: RecorteEscolhido) => void;
+}) {
+  const [aba, setAba] = useState<TipoRecorte>(permitidos.includes('DEPARTAMENTO') ? 'DEPARTAMENTO' : permitidos[0]);
+
+  // Do mix da loja quando dá; senão (formulário sem Mix que segue a escolha) do catálogo.
+  const itens: { uuid: string; descricao: string; grupo: string | null }[] = recortesDoMix
+    ? aba === 'MARCA'
+      ? recortesDoMix.marcas.map((m) => ({ uuid: m.uuid, descricao: m.descricao, grupo: null }))
+      : aba === 'DEPARTAMENTO'
+        ? recortesDoMix.departamentos.map((d) => ({ uuid: d.uuid, descricao: d.descricao, grupo: null }))
+        : recortesDoMix.secoes.map((s) => ({
+            uuid: s.uuid,
+            descricao: s.descricao,
+            grupo: recortesDoMix.departamentos.find((d) => d.uuid === s.departamento_uuid)?.descricao ?? null,
+          }))
+    : catalogo[aba].map((c) => ({ uuid: c.id, descricao: c.descricao, grupo: null }));
+  const ordenados = [...itens].sort((a, b) => `${a.grupo ?? ''}|${a.descricao}`.localeCompare(`${b.grupo ?? ''}|${b.descricao}`, 'pt-BR'));
+
+  return (
+    <ScrollView contentContainerStyle={[styles.lista, { paddingBottom: paddingInferior }]}>
+      <Text style={styles.escolhaTitulo}>Onde é este registro?</Text>
+      <Text style={styles.escolhaSubtitulo}>Escolha a parte da loja. As perguntas e o checklist valem pra ela.</Text>
+      {permitidos.length > 1 && (
+        <View style={styles.abasRecorte}>
+          {permitidos.map((t) => (
+            <Pressable key={t} style={[styles.abaRecorte, aba === t && styles.abaRecorteAtiva]} onPress={() => setAba(t)}>
+              <Text style={[styles.abaRecorteTexto, aba === t && styles.abaRecorteTextoAtivo]}>{ROTULO_RECORTE[t]}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {carregando && <ActivityIndicator color={cores.primaria} style={{ padding: 12 }} />}
+      {!carregando && ordenados.length === 0 && <Text style={styles.vazioTexto}>Nada desta loja pra escolher aqui.</Text>}
+      {ordenados.map((item, i) => (
+        <View key={item.uuid}>
+          {item.grupo && item.grupo !== ordenados[i - 1]?.grupo && <Text style={styles.grupoChecklistSupertitulo}>{item.grupo}</Text>}
+          <Pressable
+            style={({ pressed }) => [styles.tipoCard, pressed && styles.itemPressionado]}
+            onPress={() => onEscolher({ tipo: aba, uuid: item.uuid, descricao: item.descricao })}
+          >
+            <View style={styles.tipoCardConteudo}>
+              <Text style={[styles.tipoNome, { flex: 1 }]}>{item.descricao}</Text>
+              <MaterialCommunityIcons name="chevron-right" size={20} color={neutro[700]} />
+            </View>
+          </Pressable>
+        </View>
+      ))}
+    </ScrollView>
   );
 }
 
@@ -1110,6 +1399,62 @@ function ListaProdutosColeta({
 }
 
 const styles = StyleSheet.create({
+  // docs/79 — "Onde é?", faixa do recorte escolhido e checklist agrupado.
+  recorteFaixa: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.sm,
+    backgroundColor: cores.primariaClara,
+    borderRadius: raio.lg,
+    paddingHorizontal: espaco.md,
+    paddingVertical: espaco.sm,
+    marginBottom: espaco.md,
+  },
+  recorteFaixaTipo: { fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase', color: cores.primaria },
+  recorteFaixaNome: { fontSize: 15, fontWeight: '700', color: cores.texto },
+  recorteFaixaBotao: { backgroundColor: cores.fundoCard, borderRadius: raio.md, paddingHorizontal: espaco.md, minHeight: 40, justifyContent: 'center' },
+  recorteFaixaBotaoTexto: { fontSize: 13, fontWeight: '600', color: cores.primaria },
+  escolhaTitulo: { fontSize: 18, fontWeight: '700', color: cores.texto },
+  escolhaSubtitulo: { fontSize: 13, color: cores.textoTerciario, marginTop: 4, marginBottom: espaco.md },
+  abasRecorte: { flexDirection: 'row', gap: 4, backgroundColor: neutro[100], padding: 4, borderRadius: raio.md, marginBottom: espaco.md },
+  abaRecorte: { flex: 1, minHeight: 40, borderRadius: raio.sm, alignItems: 'center', justifyContent: 'center' },
+  abaRecorteAtiva: { backgroundColor: cores.fundoCard },
+  abaRecorteTexto: { fontSize: 14, fontWeight: '600', color: neutro[700] },
+  abaRecorteTextoAtivo: { color: cores.texto },
+  grupoChecklistCabecalho: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: espaco.sm,
+    paddingVertical: espaco.sm,
+    paddingHorizontal: 4,
+    minHeight: 44,
+    borderBottomWidth: 1,
+    borderBottomColor: cores.borda,
+  },
+  grupoChecklistSupertitulo: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: cores.textoTerciario,
+    marginTop: espaco.sm,
+  },
+  grupoChecklistTitulo: { fontSize: 14, fontWeight: '700', color: cores.texto },
+  grupoChecklistContagem: { fontSize: 12, fontWeight: '600', color: cores.textoTerciario },
+  etiquetaForaDoMix: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: cores.primaria,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: cores.primaria,
+    borderRadius: raio.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+  },
+  botaoAdicionarProduto: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: espaco.md, minHeight: 44 },
+  botaoAdicionarProdutoTexto: { fontSize: 14, fontWeight: '600', color: cores.primaria },
+  buscaForaDoMix: { padding: espaco.sm, gap: espaco.sm, borderTopWidth: 1, borderTopColor: cores.borda },
   coletaTopo: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: espaco.xs },
   coletaProgresso: { ...tipografia.destaque, color: cores.texto },
   coletaSelo: { borderRadius: raio.pill, paddingHorizontal: 10, paddingVertical: 3 },

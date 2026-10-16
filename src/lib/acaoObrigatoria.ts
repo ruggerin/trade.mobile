@@ -1,4 +1,4 @@
-import type { PontoVenda, TipoRegistro } from '../types/api';
+import type { PontoVenda, SortimentoPontoVenda, TipoRegistro } from '../types/api';
 
 // Resolve se um TipoRegistro com acao_obrigatoria=true vira pendência ("Ação") nesta visita — por
 // escopo (App\Enums\EscopoAcaoTipoRegistro no backend). Extraído de VisitaAndamentoScreen pra ser
@@ -9,12 +9,32 @@ import type { PontoVenda, TipoRegistro } from '../types/api';
 // - CONTRATO: PDV com contrato ativo (booleano pronto do backend).
 // - LOJA_REDE (docs/40-ACAO-OBRIGATORIA-LOJA-REDE.md): loja listada OU rede do PDV listada (OR);
 //   as duas listas vazias = todas as lojas.
+// - LINHA_AUSENTE (docs/80-MONITORAMENTO-LINHA-AUSENTE.md §5.1): nenhum item aprovado do Mix cobre
+//   o recorte do tipo. Mix vazio (ou ainda não carregado) não cobra. Mesma regra de
+//   App\Support\LinhaAusente no backend.
+// Antes do escopo, o filtro por ramo de atividade (docs/80 §5.4): com ramos no tipo, só lojas
+// desses ramos — loja sem ramo cadastrado passa. E o intervalo (docs/80 §5.2): com intervalo_dias
+// N, a Ação só volta N dias (de calendário) depois do último registro do formulário na loja.
+// Registro feito nesta mesma visita não conta — senão a Ação sumiria em vez de aparecer feita.
+export interface ContextoIntervalo {
+  ultimosRegistros?: Record<string, string>;
+  inicioVisita?: string;
+  agora?: Date;
+}
+
 export function acaoValeNestaVisita(
   tipo: TipoRegistro,
-  pontoVenda: Pick<PontoVenda, 'id' | 'rede_loja' | 'tem_contrato_ativo'> | null | undefined,
+  pontoVenda: (Pick<PontoVenda, 'id' | 'rede_loja' | 'tem_contrato_ativo'> & Partial<Pick<PontoVenda, 'ramo_atividade'>>) | null | undefined,
   campanhasDaVisita: Set<string>,
+  mix?: SortimentoPontoVenda[],
+  intervalo: ContextoIntervalo = {},
 ): boolean {
   if (!tipo.acao_obrigatoria) return false;
+  if (dentroDoIntervalo(tipo, intervalo)) return false;
+
+  const ramos = tipo.ramos_atividade_uuids ?? [];
+  const ramoDaLoja = pontoVenda?.ramo_atividade?.id;
+  if (ramos.length > 0 && ramoDaLoja && !ramos.includes(ramoDaLoja)) return false;
 
   switch (tipo.escopo_acao) {
     case 'SEMPRE':
@@ -31,8 +51,64 @@ export function acaoValeNestaVisita(
       const rede = pontoVenda.rede_loja?.id;
       return lojas.includes(pontoVenda.id) || (!!rede && redes.includes(rede));
     }
+    case 'LINHA_AUSENTE':
+      return linhaAusente(tipo, mix ?? []);
     default:
       return false;
+  }
+}
+
+function dentroDoIntervalo(tipo: TipoRegistro, { ultimosRegistros, inicioVisita, agora = new Date() }: ContextoIntervalo): boolean {
+  const dias = tipo.intervalo_dias ?? 0;
+  const ultimo = ultimosRegistros?.[tipo.id];
+  if (dias <= 0 || !ultimo) return false;
+  const ultimoEm = new Date(ultimo);
+  if (inicioVisita && ultimoEm >= new Date(inicioVisita)) return false;
+  return diasDeCalendario(ultimoEm, agora) < dias;
+}
+
+/** Diferença em dias de calendário no fuso do aparelho (ontem 23h → hoje 8h = 1 dia). */
+export function diasDeCalendario(de: Date, ate: Date): number {
+  const inicioDoDia = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  return Math.round((inicioDoDia(ate) - inicioDoDia(de)) / 86_400_000);
+}
+
+// Item pendente/rejeitado não conta como linha presente (docs/80 decisão 3).
+function linhaAusente(tipo: TipoRegistro, mix: SortimentoPontoVenda[]): boolean {
+  const aprovados = mix.filter((i) => !i.status_aprovacao);
+  if (aprovados.length === 0) return false;
+  return !aprovados.some((item) => cobre(tipo, item));
+}
+
+function cobre(tipo: TipoRegistro, item: SortimentoPontoVenda): boolean {
+  const produto = item.produto;
+  switch (tipo.escopo_tipo_vinculo) {
+    case 'SECAO': {
+      const secao = tipo.escopo_secao;
+      if (!secao) return true;
+      if (item.tipo_item === 'PRODUTO') return produto?.secao_uuid === secao.id;
+      if (item.tipo_item === 'SECAO') return item.secao?.id === secao.id;
+      if (item.tipo_item === 'DEPARTAMENTO') return !!secao.departamento_uuid && item.departamento?.id === secao.departamento_uuid;
+      return false;
+    }
+    case 'DEPARTAMENTO': {
+      const departamento = tipo.escopo_departamento?.id;
+      if (!departamento) return true;
+      if (item.tipo_item === 'PRODUTO') return produto?.departamento_uuid === departamento;
+      if (item.tipo_item === 'SECAO') return item.secao?.departamento_uuid === departamento;
+      if (item.tipo_item === 'DEPARTAMENTO') return item.departamento?.id === departamento;
+      return false;
+    }
+    case 'MARCA': {
+      const marca = tipo.escopo_marca?.id;
+      if (!marca) return true;
+      if (item.tipo_item === 'PRODUTO') return produto?.marca_uuid === marca;
+      if (item.tipo_item === 'MARCA') return item.marca?.id === marca;
+      return false;
+    }
+    default:
+      // Sem recorte configurado (cache antigo): nada a levantar.
+      return true;
   }
 }
 

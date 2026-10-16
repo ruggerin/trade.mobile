@@ -1,6 +1,7 @@
 import type { SortimentoPontoVenda, TipoVinculoRegistro } from '../../types/api';
 import { ehErroDeRede } from '../db/database';
 import { lerSortimentoCache, salvarSortimentoCache } from '../db/sortimentoCache';
+import { salvarUltimosRegistrosCache, type UltimosRegistros } from '../db/ultimosRegistrosCache';
 import { apiClient } from './client';
 
 // Sortimento cadastrado pra este PDV (docs/14-SORTIMENTO-PONTO-VENDA.md) — vem junto do
@@ -8,11 +9,16 @@ import { apiClient } from './client';
 // padrão de campanhas.ts/buscarProdutosDisponiveis.
 export async function buscarSortimento(pontoVendaUuid: string): Promise<SortimentoPontoVenda[]> {
   try {
-    const { data } = await apiClient.get<{ ponto_venda: { sortimento?: SortimentoPontoVenda[] } }>(
-      `/pontos-venda/${pontoVendaUuid}`,
-    );
+    const { data } = await apiClient.get<{
+      ponto_venda: { sortimento?: SortimentoPontoVenda[] };
+      ultimos_registros_formulario?: UltimosRegistros | [];
+    }>(`/pontos-venda/${pontoVendaUuid}`);
     const itens = data.ponto_venda.sortimento ?? [];
     void salvarSortimentoCache(pontoVendaUuid, itens).catch(() => {});
+    // Mesmo endpoint traz o último registro por formulário com intervalo (docs/80 §5.2). PHP manda
+    // `[]` quando vazio.
+    const ultimos = data.ultimos_registros_formulario;
+    void salvarUltimosRegistrosCache(pontoVendaUuid, Array.isArray(ultimos) ? {} : (ultimos ?? {})).catch(() => {});
     return itens;
   } catch (err) {
     if (!ehErroDeRede(err)) throw err;

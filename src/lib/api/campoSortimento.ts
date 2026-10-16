@@ -9,6 +9,25 @@ export interface ProdutoSortimento {
   codigo_barras: string | null;
   propriedade: string | null;
   produto_chave: boolean;
+  // Pro checklist que segue a escolha do promotor filtrar e agrupar (docs/79 §4.2). Opcionais:
+  // cache antigo não tem.
+  secao_uuid?: string | null;
+  secao_descricao?: string | null;
+  departamento_uuid?: string | null;
+  departamento_descricao?: string | null;
+}
+
+// O que dá pra escolher em "Onde é?" — só o que existe no mix desta loja (docs/79 §4.2). Só vem
+// quando o campo segue a escolha do promotor.
+export interface RecortesDoMix {
+  marcas: { uuid: string; descricao: string; departamentos_uuids: string[] }[];
+  departamentos: { uuid: string; descricao: string }[];
+  secoes: { uuid: string; descricao: string; departamento_uuid: string | null }[];
+}
+
+export interface SortimentoCampo {
+  produtos: ProdutoSortimento[];
+  recortes?: RecortesDoMix;
 }
 
 // Checklist resolvido de um campo SORTIMENTO pra um PDV — o backend decide a origem (dinâmica no
@@ -22,13 +41,13 @@ export interface ProdutoSortimento {
 // offline-first bem no meio do formulário. Só cai pro cache se ele já tiver dado pra esse PDV
 // específico — sem cache nenhum, relança o erro original pra tela mostrar "não foi possível
 // carregar" em vez de deixar o promotor pensar que o mix está vazio de verdade.
-export async function buscarSortimentoCampo(campoUuid: string, pontoVendaUuid: string): Promise<ProdutoSortimento[]> {
+export async function buscarSortimentoCampo(campoUuid: string, pontoVendaUuid: string): Promise<SortimentoCampo> {
   try {
-    const { data } = await apiClient.get<{ produtos: ProdutoSortimento[] }>(`/tipos-registro/campos/${campoUuid}/sortimento`, {
+    const { data } = await apiClient.get<SortimentoCampo>(`/tipos-registro/campos/${campoUuid}/sortimento`, {
       params: { ponto_venda_uuid: pontoVendaUuid },
     });
-    void salvarSortimentoCampoCache(campoUuid, pontoVendaUuid, data.produtos).catch(() => {});
-    return data.produtos;
+    void salvarSortimentoCampoCache(campoUuid, pontoVendaUuid, data).catch(() => {});
+    return data;
   } catch (err) {
     if (!ehErroDeRede(err)) throw err;
     const cache = await lerSortimentoCampoCache(campoUuid, pontoVendaUuid);
