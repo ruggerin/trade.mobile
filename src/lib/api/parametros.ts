@@ -1,7 +1,7 @@
 import type { AutonomiaPromotor } from '../../types/api';
-import { ehErroDeRede } from '../db/database';
 import { lerParametrosCache, salvarParametrosCache } from '../db/parametrosCache';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
 
 export interface ParametroApi {
   chave: string;
@@ -89,6 +89,17 @@ export async function buscarPedidoSemVisitaPermitido(): Promise<boolean> {
   return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
 }
 
+// Se o checkout é recusado com formulário obrigatório de Direcionamento pendente — mesma regra de
+// App\Support\DirecionamentoParametros (ausente/inativo = só avisa). O app trava o botão antes,
+// pro promotor responder ainda na loja em vez de descobrir a recusa depois; vem do cache local
+// sem sinal, como os demais.
+export async function buscarDirecionamentoBloqueiaCheckout(): Promise<boolean> {
+  const parametros = await buscarParametros();
+  const parametro = parametros.find((p) => p.chave === 'DIRECIONAMENTO_BLOQUEIA_CHECKOUT');
+  if (!parametro || !parametro.ativo) return false;
+  return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
+}
+
 async function lerAutonomia(chave: string, valorPadrao: AutonomiaPromotor): Promise<AutonomiaPromotor> {
   const parametros = await buscarParametros();
   const parametro = parametros.find((p) => p.chave === chave);
@@ -99,16 +110,11 @@ async function lerAutonomia(chave: string, valorPadrao: AutonomiaPromotor): Prom
 }
 
 async function buscarParametros(): Promise<ParametroApi[]> {
-  try {
-    const { data } = await apiClient.get<{ parametros: ParametroApi[] }>('/parametros');
-    void salvarParametrosCache(data.parametros).catch(() => {
-      // Cache é um bônus, best-effort — falhar em gravar não pode derrubar a tela.
-    });
-    return data.parametros;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-    return lerParametrosCache();
-  }
+  return redeComPrazo({
+    rede: async () => (await apiClient.get<{ parametros: ParametroApi[] }>('/parametros')).data.parametros,
+    salvar: salvarParametrosCache,
+    lerCache: lerParametrosCache,
+  });
 }
 
 // Rastreamento em tempo real (docs/11-RASTREAMENTO-TEMPO-REAL.md) — 0 (ausente/inativo/inválido)

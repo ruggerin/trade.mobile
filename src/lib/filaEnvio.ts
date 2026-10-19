@@ -1,9 +1,16 @@
 import axios from 'axios';
-import { criarRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
+import { criarRegistro, enviarImagemRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
 import { listarRespostasDaVisita, marcarRespostaComErro, marcarRespostaEnviada } from './db/filaAcompanhamentos';
 import { ehErroDeRede, ehErroTransitorio } from './db/database';
-import { descartarRegistrosDaVisita, listarRegistrosLocais, marcarRegistroComErro, marcarRegistroEnviado, type RegistroLocal } from './db/filaRegistros';
-import { reportarRecusaFila } from './sentry';
+import {
+  descartarRegistrosDaVisita,
+  listarRegistrosLocais,
+  marcarImagemEnviada,
+  marcarRegistroComErro,
+  marcarRegistroCriadoNoServidor,
+  type RegistroLocal,
+} from './db/filaRegistros';
+import { registrarEnvioFoto, reportarRecusaFila } from './sentry';
 import {
   atualizarErroVisita,
   excluirVisitaLocalCompleta,
@@ -228,15 +235,25 @@ async function processarVisita(visitaInicial: VisitaLocal, resultado: ResultadoF
     visita = atualizada;
   }
 
+  // Rede lenta: primeiro os DADOS de todos os registros (poucos bytes — a ruptura aparece no painel
+  // em segundos), depois as fotos, uma por vez. Antes cada registro subia junto das suas fotos e
+  // uma foto pesada segurava todos os registros de trás.
   const registros = await listarRegistrosLocais(visita.id);
-  for (const registro of registros.filter((r) => r.status === 'PENDENTE')) {
+  for (const registro of registros.filter((r) => r.status === 'PENDENTE' && !r.servidorId)) {
     const continuar = await enviarRegistro(visita, registro, resultado);
     if (!continuar) return;
   }
 
   // "Ainda está lá?" (docs/83): depois dos registros (a resposta pode apontar pro do formulário) e
-  // antes do checkout (que apaga a visita do aparelho).
+  // antes do checkout (que apaga a visita do aparelho). Não espera as fotos.
   if (!(await enviarRespostasAcompanhamento(visita))) return;
+
+  // Fotos antes do check-out: ele apaga a visita do aparelho, e as fotos junto.
+  for (const registro of await listarRegistrosLocais(visita.id)) {
+    if (registro.status !== 'PENDENTE' || !registro.servidorId) continue;
+    const continuar = await enviarFotosDoRegistro(visita, registro);
+    if (!continuar) return;
+  }
 
   if (visita.status === 'FINALIZADA_LOCAL') {
     if (await enviarCheckout(visita)) resultado.checkoutsConfirmados += 1;
@@ -252,7 +269,7 @@ async function enviarRespostasAcompanhamento(visita: VisitaLocal): Promise<boole
   for (const r of respostas) {
     const registro = r.registroLocalId ? registros.find((x) => x.id === r.registroLocalId) : undefined;
     // Registro do formulário ainda não foi: espera ele (volta na próxima passada).
-    if (registro && registro.status === 'PENDENTE') return false;
+    if (registro && registro.status === 'PENDENTE' && !registro.servidorId) return false;
     try {
       await responderAcompanhamento(visita.servidorId!, r.acompanhamentoUuid, {
         resposta: r.resposta,
@@ -321,7 +338,8 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
       // transitória (o servidor pode ter processado a chamada sem a resposta chegar até aqui).
       idempotencyKey: registro.id,
       tipoRegistroUuid: registro.tipoRegistroUuid,
-      imagensUri: registro.imagensLocais.length > 0 ? registro.imagensLocais : undefined,
+      // As fotos sobem depois, uma por vez (enviarFotosDoRegistro).
+      imagensAEnviar: registro.imagensLocais.length || undefined,
       produtoAuditoriaUuid: registro.produtoAuditoriaUuid ?? undefined,
       tipoVinculo: registro.tipoVinculo ?? undefined,
       secaoUuid: registro.secaoUuid ?? undefined,
@@ -337,8 +355,8 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
       embalagemQuantidade: registro.embalagemQuantidade ?? undefined,
       embalagemUnidade: registro.embalagemUnidade ?? undefined,
     });
-    await marcarRegistroEnviado(registro.id, registroServidor.id);
-    console.log(`[fila] registro enviado (visita ${visita.id})`);
+    await marcarRegistroCriadoNoServidor(registro.id, registroServidor.id, registro.imagensLocais.length > 0);
+    console.log(`[fila] registro enviado (visita ${visita.id}, ${registro.imagensLocais.length} foto(s) a seguir)`);
     resultado.registrosEnviados += 1;
     return true;
   } catch (err) {
@@ -352,6 +370,34 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
     resultado.registrosComErro += 1;
     return true; // erro de validação de UM registro não trava os outros nem o checkout
   }
+}
+
+/**
+ * Fotos de um registro que já está no servidor, uma por vez. A chave de cada foto é o id local do
+ * registro + a posição dela: estável entre tentativas, então reenviar não duplica.
+ * @returns false só com falha passageira — para a visita agora e tenta na próxima passada.
+ */
+async function enviarFotosDoRegistro(visita: VisitaLocal, registro: RegistroLocal): Promise<boolean> {
+  for (const [indice, uri] of registro.imagensLocais.entries()) {
+    if (registro.imagensEnviadas.includes(uri)) continue;
+    const inicio = Date.now();
+    try {
+      const { bytes } = await enviarImagemRegistro(visita.servidorId!, registro.servidorId!, uri, `${registro.id}:${indice}`);
+      registrarEnvioFoto({ bytes, duracaoMs: Date.now() - inicio, resultado: 'ok' });
+      await marcarImagemEnviada(registro, uri);
+    } catch (err) {
+      if (ehErroTransitorio(err)) {
+        registrarEnvioFoto({ bytes: 0, duracaoMs: Date.now() - inicio, resultado: 'transitorio' });
+        return false;
+      }
+      // Recusa permanente (arquivo inválido, registro cancelado...): os dados do registro já estão
+      // no servidor — desiste só desta foto, sem travar as outras nem o check-out.
+      registrarEnvioFoto({ bytes: 0, duracaoMs: Date.now() - inicio, resultado: 'recusado' });
+      reportarRecusaFila('foto', err);
+      await marcarImagemEnviada(registro, uri, mensagemDeErroServidor(err) ?? 'Uma foto não pôde ser enviada.');
+    }
+  }
+  return true;
 }
 
 async function enviarCheckout(visita: VisitaLocal): Promise<boolean> {

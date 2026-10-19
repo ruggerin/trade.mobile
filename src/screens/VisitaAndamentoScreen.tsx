@@ -31,6 +31,7 @@ import {
   buscarAutonomiaSortimento,
   buscarCancelamentoRegistroPermitido,
   buscarCancelamentoVisitaPermitido,
+  buscarDirecionamentoBloqueiaCheckout,
 } from '../lib/api/parametros';
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
 import { lerUltimosRegistrosCache, lerUltimosRegistrosNaFila } from '../lib/db/ultimosRegistrosCache';
@@ -279,7 +280,8 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const ordemServicoQuery = useQuery({
     queryKey: ['ordem-servico', visita?.ordemServicoId],
     queryFn: () => buscarOrdemServico(visita!.ordemServicoId!),
-    enabled: Boolean(visita?.ordemServicoId) && online,
+    // Sem `online`: sem sinal, buscarOrdemServico cai pro cache local da OS.
+    enabled: Boolean(visita?.ordemServicoId),
   });
 
   const produtosQuery = useQuery({
@@ -314,6 +316,11 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     queryFn: buscarCancelamentoVisitaPermitido,
   });
   const cancelamentoVisitaPermitido = cancelamentoVisitaPermitidoQuery.data ?? false;
+  const bloqueiaCheckoutQuery = useQuery({
+    queryKey: ['direcionamento-bloqueia-checkout'],
+    queryFn: buscarDirecionamentoBloqueiaCheckout,
+  });
+  const bloqueiaCheckout = bloqueiaCheckoutQuery.data ?? false;
 
   // Só os itens de tipo_item PRODUTO viram linha no checklist — ver ItemSortimentoProduto.
   const itensSortimento = useMemo<ItemSortimentoProduto[]>(() => {
@@ -835,6 +842,13 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // Nomeia o que falta em vez de só contar — mesmo padrão do protótipo Claude Design (bottom
   // sheet "Finalizar visita?"), junta obrigatórias (Ações + formulários obrigatórios da OS,
   // ambos já filtrados pra só quem ainda não tem registro) com produtos-chave do Mix.
+  const formulariosObrigatoriosPendentes = useMemo(
+    () =>
+      formulariosPendentesOS
+        .filter((f) => f.obrigatorio)
+        .map((f) => tipoRegistroPorUuid.get(f.tipo_registro.id)?.descricao ?? 'Formulário obrigatório'),
+    [formulariosPendentesOS, tipoRegistroPorUuid],
+  );
   const faltandoFinalizar = useMemo(
     () => [
       ...acoesPendentes
@@ -844,14 +858,16 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           const progresso = progressoLista(a, (registrosPorTipoRegistro.get(a.id) ?? []).map((r) => r.produtoAuditoriaUuid), sortimentoQuery.data);
           return progresso ? `${a.descricao} (${progresso.feitos} de ${progresso.total})` : a.descricao;
         }),
-      ...formulariosPendentesOS
-        .filter((f) => f.obrigatorio)
-        .map((f) => tipoRegistroPorUuid.get(f.tipo_registro.id)?.descricao ?? 'Formulário obrigatório'),
+      // Com a trava ligada eles saem daqui e vão pra `bloqueandoFinalizar`.
+      ...(bloqueiaCheckout ? [] : formulariosObrigatoriosPendentes),
       ...produtosChaveFaltando.map((nome) => `${nome} (produto-chave)`),
       ...acompanhamentosPendentes.map((c) => `Conferir: ${c.acompanhamento.tipo_registro.descricao}`),
     ],
-    [acoesPendentes, formulariosPendentesOS, registrosPorTipoRegistro, tipoRegistroPorUuid, produtosChaveFaltando, acompanhamentosPendentes],
+    [acoesPendentes, formulariosObrigatoriosPendentes, bloqueiaCheckout, registrosPorTipoRegistro, sortimentoQuery.data, produtosChaveFaltando, acompanhamentosPendentes],
   );
+  // Mesma regra do servidor (VisitaController::checkout): com DIRECIONAMENTO_BLOQUEIA_CHECKOUT, o
+  // check-out seria recusado depois, com o promotor já fora da loja — então trava aqui.
+  const bloqueandoFinalizar = bloqueiaCheckout ? formulariosObrigatoriosPendentes : [];
   const nRupturasFinalizar = registrosLocais.filter((r) => r.ruptura).length;
 
   function confirmarDescarte() {
@@ -1319,6 +1335,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         totalObrigatorias={totalObrigatorias}
         nRupturas={nRupturasFinalizar}
         faltando={faltandoFinalizar}
+        bloqueados={bloqueandoFinalizar}
         enviando={checkoutMutation.isPending}
         onCancelar={() => setFinalizarAberto(false)}
         onConfirmar={() => {
@@ -1579,7 +1596,14 @@ function RegistroCard({
       ? { label: 'Enviado', bg: cores.sucessoFundo, cor: cores.sucesso }
       : registro.status === 'ERRO'
         ? { label: 'Erro', bg: cores.erroFundo, cor: cores.erro }
-        : { label: 'Na fila de envio', bg: amber[50], cor: amber[700] };
+        : registro.servidorId
+          ? // Dados já no servidor, fotos subindo (rede lenta).
+            {
+              label: `Enviando fotos ${registro.imagensEnviadas.length}/${registro.imagensLocais.length}`,
+              bg: amber[50],
+              cor: amber[700],
+            }
+          : { label: 'Na fila de envio', bg: amber[50], cor: amber[700] };
 
   return (
     <View style={styles.registroCardV2}>

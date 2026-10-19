@@ -1,7 +1,7 @@
 import type { ProdutoDisponivel } from '../../types/api';
-import { ehErroDeRede } from '../db/database';
 import { lerProdutosDisponiveisCache, salvarProdutosDisponiveisCache } from '../db/produtosDisponiveisCache';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
 
 // docs/02-API-BACKEND.md#consulta-para-o-app-mobile — resolve os produtos a auditar naquele
 // PDV a partir das campanhas ativas/vigentes (algoritmo já roda no backend, ver regra de
@@ -13,15 +13,14 @@ import { apiClient } from './client';
 // Sem rede, o promotor continua vendo a última lista boa em vez de tela em branco — só não
 // reflete campanha nova nem alteração de vigência criada depois da última sincronização.
 export async function buscarProdutosDisponiveis(pontoVendaUuid: string): Promise<ProdutoDisponivel[]> {
-  try {
-    const { data } = await apiClient.get<{ produtos: ProdutoDisponivel[] }>(
-      '/campanhas-auditoria/disponiveis',
-      { params: { ponto_venda_uuid: pontoVendaUuid } },
-    );
-    void salvarProdutosDisponiveisCache(pontoVendaUuid, data.produtos).catch(() => {});
-    return data.produtos;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-    return lerProdutosDisponiveisCache(pontoVendaUuid);
-  }
+  return redeComPrazo({
+    rede: async () =>
+      (
+        await apiClient.get<{ produtos: ProdutoDisponivel[] }>('/campanhas-auditoria/disponiveis', {
+          params: { ponto_venda_uuid: pontoVendaUuid },
+        })
+      ).data.produtos,
+    salvar: (produtos) => salvarProdutosDisponiveisCache(pontoVendaUuid, produtos),
+    lerCache: () => lerProdutosDisponiveisCache(pontoVendaUuid),
+  });
 }

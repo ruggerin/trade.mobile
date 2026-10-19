@@ -1,7 +1,8 @@
 import type { PaginatedMeta, TipoVinculoRegistro, Visita, VisitaRegistro } from '../../types/api';
-import { ehErroDeRede } from '../db/database';
 import { lerVisitasHistoricoCache, salvarVisitasHistoricoCache } from '../db/visitasCache';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
+import { tamanhoDoArquivo, timeoutDeEnvio } from '../timeoutEnvio';
 
 export interface CheckinPayload {
   ponto_venda_uuid: string;
@@ -77,21 +78,17 @@ export interface VisitasListResponse {
 // o resultado, só deixa a intenção clara na chamada. Cache local (rede primeiro, fallback se
 // faltar sinal) — mesmo padrão de lib/api/pontosVenda.ts, ver lib/db/visitasCache.ts.
 export async function listarMinhasVisitas(): Promise<VisitasListResponse> {
-  try {
-    const { data } = await apiClient.get<VisitasListResponse>('/visitas', {
-      params: { usuario_uuid: 'eu' },
-    });
-    void salvarVisitasHistoricoCache(data.visitas).catch(() => {});
-    return data;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-
-    const cache = await lerVisitasHistoricoCache();
-    return {
-      visitas: cache,
-      meta: { current_page: 1, last_page: 1, per_page: cache.length, total: cache.length },
-    };
-  }
+  return redeComPrazo({
+    rede: async () => (await apiClient.get<VisitasListResponse>('/visitas', { params: { usuario_uuid: 'eu' } })).data,
+    salvar: (data) => salvarVisitasHistoricoCache(data.visitas),
+    lerCache: async () => {
+      const cache = await lerVisitasHistoricoCache();
+      return {
+        visitas: cache,
+        meta: { current_page: 1, last_page: 1, per_page: cache.length, total: cache.length },
+      };
+    },
+  });
 }
 
 export interface CriarRegistroPayload {
@@ -107,6 +104,8 @@ export interface CriarRegistroPayload {
   tipoRegistroUuid: string;
   // N fotos por registro (0..N) — ver docs/21-EVIDENCIA-EM-FOTOS.md.
   imagensUri?: string[];
+  // Fotos que vão subir depois, uma por vez (`enviarImagemRegistro`) — contam pra foto obrigatória.
+  imagensAEnviar?: number;
   produtoAuditoriaUuid?: string;
   // Vínculo opcional a um recorte mais amplo do catálogo (só um dos uuids abaixo, conforme
   // tipoVinculo) — mutuamente exclusivo com produtoAuditoriaUuid.
@@ -132,6 +131,9 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
   const form = new FormData();
   form.append('idempotency_key', payload.idempotencyKey);
   form.append('tipo_registro_uuid', payload.tipoRegistroUuid);
+  if (payload.imagensAEnviar) {
+    form.append('imagens_a_enviar', String(payload.imagensAEnviar));
+  }
 
   if (payload.produtoAuditoriaUuid) {
     form.append('produto_auditoria_uuid', payload.produtoAuditoriaUuid);
@@ -190,12 +192,46 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
   const { data } = await apiClient.post<{ registro: VisitaRegistro }>(
     `/visitas/${payload.visitaId}/registros`,
     form,
-    // Upload de foto em rede móvel passa fácil dos 8s do timeout padrão do client — estourar aqui
-    // é lido como "erro de rede" (transitório) e o registro ficava tentando de novo pra sempre,
-    // travando o checkout atrás dele na fila. Folga generosa só pra este envio.
-    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 90_000 },
+    // Proporcional ao que sobe (lib/timeoutEnvio.ts): os 8 s padrão do client são curtos pra rede
+    // móvel lenta, e estourar aqui é lido como erro passageiro — o registro tentava de novo pra
+    // sempre, travando o check-out atrás dele.
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: timeoutDeEnvio(await tamanhoTotal(payload.imagensUri ?? [])) },
   );
   return data.registro;
+}
+
+async function tamanhoTotal(uris: string[]): Promise<number> {
+  const tamanhos = await Promise.all(uris.map(tamanhoDoArquivo));
+  return tamanhos.reduce((soma, t) => soma + t, 0);
+}
+
+/**
+ * Uma foto do registro, depois dele (rede lenta: o registro chega ao painel em segundos e cada
+ * foto tem a própria retentativa). `idempotencyKey` estável por foto — reenviar depois de perder
+ * a resposta não duplica. Ver VisitaRegistroController::adicionarImagem.
+ */
+export async function enviarImagemRegistro(
+  visitaId: string,
+  registroId: string,
+  imagemUri: string,
+  idempotencyKey: string,
+): Promise<{ bytes: number }> {
+  const nomeArquivo = imagemUri.split('/').pop() ?? 'foto.jpg';
+  const extensao = /\.(\w+)$/.exec(nomeArquivo)?.[1]?.toLowerCase();
+  const form = new FormData();
+  form.append('idempotency_key', idempotencyKey);
+  form.append('imagem', {
+    uri: imagemUri,
+    name: nomeArquivo,
+    type: `image/${extensao === 'jpg' || !extensao ? 'jpeg' : extensao}`,
+  } as unknown as Blob);
+
+  const bytes = await tamanhoDoArquivo(imagemUri);
+  await apiClient.post(`/visitas/${visitaId}/registros/${registroId}/imagens`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: timeoutDeEnvio(bytes),
+  });
+  return { bytes };
 }
 
 // Cancelamento (soft, nunca apaga) de um registro já enviado — parametrizável por empresa pra

@@ -1,11 +1,12 @@
-import { criarRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
+import { criarRegistro, enviarImagemRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
 import { listarRespostasDaVisita, marcarRespostaEnviada } from './db/filaAcompanhamentos';
 import { ehErroDeRede, ehErroTransitorio } from './db/database';
 import {
   descartarRegistrosDaVisita,
   listarRegistrosLocais,
+  marcarImagemEnviada,
   marcarRegistroComErro,
-  marcarRegistroEnviado,
+  marcarRegistroCriadoNoServidor,
   type RegistroLocal,
 } from './db/filaRegistros';
 import {
@@ -42,6 +43,7 @@ jest.mock('./api/visitas', () => ({
   iniciarVisita: jest.fn(),
   finalizarVisita: jest.fn(),
   criarRegistro: jest.fn(),
+  enviarImagemRegistro: jest.fn(),
   responderAcompanhamento: jest.fn(),
 }));
 jest.mock('./db/filaAcompanhamentos', () => ({
@@ -56,8 +58,9 @@ jest.mock('./db/database', () => ({
 jest.mock('./db/filaRegistros', () => ({
   descartarRegistrosDaVisita: jest.fn(),
   listarRegistrosLocais: jest.fn(),
+  marcarImagemEnviada: jest.fn(),
   marcarRegistroComErro: jest.fn(),
-  marcarRegistroEnviado: jest.fn(),
+  marcarRegistroCriadoNoServidor: jest.fn(),
 }));
 jest.mock('./db/filaVisitas', () => ({
   atualizarErroVisita: jest.fn(),
@@ -79,7 +82,9 @@ const mockEhErroTransitorio = ehErroTransitorio as jest.MockedFunction<typeof eh
 const mockDescartarRegistrosDaVisita = descartarRegistrosDaVisita as jest.MockedFunction<typeof descartarRegistrosDaVisita>;
 const mockListarRegistrosLocais = listarRegistrosLocais as jest.MockedFunction<typeof listarRegistrosLocais>;
 const mockMarcarRegistroComErro = marcarRegistroComErro as jest.MockedFunction<typeof marcarRegistroComErro>;
-const mockMarcarRegistroEnviado = marcarRegistroEnviado as jest.MockedFunction<typeof marcarRegistroEnviado>;
+const mockMarcarRegistroCriado = marcarRegistroCriadoNoServidor as jest.MockedFunction<typeof marcarRegistroCriadoNoServidor>;
+const mockMarcarImagemEnviada = marcarImagemEnviada as jest.MockedFunction<typeof marcarImagemEnviada>;
+const mockEnviarImagemRegistro = enviarImagemRegistro as jest.MockedFunction<typeof enviarImagemRegistro>;
 const mockAtualizarErroVisita = atualizarErroVisita as jest.MockedFunction<typeof atualizarErroVisita>;
 const mockExcluirVisitaLocalCompleta = excluirVisitaLocalCompleta as jest.MockedFunction<typeof excluirVisitaLocalCompleta>;
 const mockLerVisitaLocal = lerVisitaLocal as jest.MockedFunction<typeof lerVisitaLocal>;
@@ -136,6 +141,7 @@ function registroLocal(overrides: Partial<RegistroLocal> = {}): RegistroLocal {
     ruptura: null,
     observacao: null,
     imagensLocais: [],
+    imagensEnviadas: [],
     erro: null,
     criadoEm: '2026-09-24T10:00:00.000Z',
     atualizadoEm: '2026-09-24T10:00:00.000Z',
@@ -261,8 +267,8 @@ describe('processarFilaEnvio', () => {
 
       const resultado = await processarFilaEnvio('usuario-1');
 
-      expect(mockMarcarRegistroEnviado).toHaveBeenCalledWith('r1', 'registro-servidor');
-      expect(mockMarcarRegistroEnviado).toHaveBeenCalledWith('r2', 'registro-servidor');
+      expect(mockMarcarRegistroCriado).toHaveBeenCalledWith('r1', 'registro-servidor', false);
+      expect(mockMarcarRegistroCriado).toHaveBeenCalledWith('r2', 'registro-servidor', false);
       expect(resultado.registrosEnviados).toBe(2);
     });
 
@@ -297,7 +303,7 @@ describe('processarFilaEnvio', () => {
       const resultado = await processarFilaEnvio('usuario-1');
 
       expect(mockMarcarRegistroComErro).toHaveBeenCalledWith('r1', 'Produto inválido.');
-      expect(mockMarcarRegistroEnviado).toHaveBeenCalledWith('r2', 'registro-servidor-2');
+      expect(mockMarcarRegistroCriado).toHaveBeenCalledWith('r2', 'registro-servidor-2', false);
       expect(resultado.registrosComErro).toBe(1);
       expect(resultado.registrosEnviados).toBe(1);
       // não travou o checkout por causa do erro de UM registro
@@ -316,7 +322,76 @@ describe('processarFilaEnvio', () => {
       await processarFilaEnvio('usuario-1');
 
       expect(mockCriarRegistro).toHaveBeenCalledTimes(1);
-      expect(mockMarcarRegistroEnviado).toHaveBeenCalledWith('r3', 'x');
+      expect(mockMarcarRegistroCriado).toHaveBeenCalledWith('r3', 'x', false);
+    });
+  });
+
+  describe('fotos separadas do registro (rede lenta)', () => {
+    it('dados de TODOS os registros sobem antes da primeira foto', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visitaLocal({ servidorId: 'servidor-1' })]);
+      const r1 = registroLocal({ id: 'r1', imagensLocais: ['a.jpg', 'b.jpg'] });
+      const r2 = registroLocal({ id: 'r2' });
+      mockListarRegistrosLocais
+        .mockResolvedValueOnce([r1, r2])
+        .mockResolvedValue([{ ...r1, servidorId: 'srv-r1' }, { ...r2, servidorId: 'srv-r2', status: 'ENVIADO' }]);
+      const ordem: string[] = [];
+      mockCriarRegistro.mockImplementation(async (p) => {
+        ordem.push(`registro:${p.idempotencyKey}`);
+        return { id: `srv-${p.idempotencyKey}` } as any;
+      });
+      mockEnviarImagemRegistro.mockImplementation(async (_v, _r, uri) => {
+        ordem.push(`foto:${uri}`);
+        return { bytes: 1000 };
+      });
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(ordem).toEqual(['registro:r1', 'registro:r2', 'foto:a.jpg', 'foto:b.jpg']);
+      // O registro avisa quantas fotos vêm depois (contam pra foto obrigatória no servidor).
+      expect(mockCriarRegistro.mock.calls[0][0]).toMatchObject({ imagensAEnviar: 2 });
+      expect(mockCriarRegistro.mock.calls[0][0]).not.toHaveProperty('imagensUri');
+      expect(mockMarcarRegistroCriado).toHaveBeenCalledWith('r1', 'srv-r1', true);
+      // Chave estável por foto: id local do registro + posição.
+      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'b.jpg', 'r1:1');
+    });
+
+    it('não reenvia foto já confirmada e para na falha passageira, sem check-out', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([
+        visitaLocal({ servidorId: 'servidor-1', status: 'FINALIZADA_LOCAL', latitudeFim: -3.1, longitudeFim: -60.0 }),
+      ]);
+      mockListarRegistrosLocais.mockResolvedValue([
+        registroLocal({ id: 'r1', servidorId: 'srv-r1', imagensLocais: ['a.jpg', 'b.jpg', 'c.jpg'], imagensEnviadas: ['a.jpg'] }),
+      ]);
+      mockEnviarImagemRegistro.mockRejectedValue(new Error('timeout'));
+      mockEhErroTransitorio.mockReturnValue(true);
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(mockCriarRegistro).not.toHaveBeenCalled();
+      expect(mockEnviarImagemRegistro).toHaveBeenCalledTimes(1);
+      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'b.jpg', 'r1:1');
+      expect(mockMarcarImagemEnviada).not.toHaveBeenCalled();
+      expect(mockFinalizarVisita).not.toHaveBeenCalled();
+    });
+
+    it('foto recusada de vez não trava as outras nem o check-out', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([
+        visitaLocal({ servidorId: 'servidor-1', status: 'FINALIZADA_LOCAL', latitudeFim: -3.1, longitudeFim: -60.0 }),
+      ]);
+      mockListarRegistrosLocais.mockResolvedValue([
+        registroLocal({ id: 'r1', servidorId: 'srv-r1', imagensLocais: ['a.jpg', 'b.jpg'] }),
+      ]);
+      mockEnviarImagemRegistro
+        .mockRejectedValueOnce({ isAxiosError: true, response: { status: 422, data: { message: 'Arquivo inválido.' } } })
+        .mockResolvedValueOnce({ bytes: 1000 });
+      mockEhErroTransitorio.mockReturnValue(false);
+      mockFinalizarVisita.mockResolvedValue({} as any);
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(mockMarcarImagemEnviada).toHaveBeenCalledWith(expect.objectContaining({ id: 'r1' }), 'a.jpg', 'Arquivo inválido.');
+      expect(mockMarcarImagemEnviada).toHaveBeenCalledWith(expect.objectContaining({ id: 'r1' }), 'b.jpg');
+      expect(mockFinalizarVisita).toHaveBeenCalled();
     });
   });
 

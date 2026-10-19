@@ -12,6 +12,8 @@ interface FinalizarVisitaModalProps {
   totalObrigatorias: number;
   nRupturas: number;
   faltando: string[];
+  /** Obrigatórios que travam o check-out (DIRECIONAMENTO_BLOQUEIA_CHECKOUT). Com algum, não dá pra finalizar. */
+  bloqueados?: string[];
   enviando: boolean;
   onCancelar: () => void;
   onConfirmar: () => void;
@@ -31,12 +33,14 @@ export function FinalizarVisitaModal({
   totalObrigatorias,
   nRupturas,
   faltando,
+  bloqueados = [],
   enviando,
   onCancelar,
   onConfirmar,
 }: FinalizarVisitaModalProps) {
   const insets = useSafeAreaInsets();
-  const pendente = faltando.length > 0;
+  const bloqueado = bloqueados.length > 0;
+  const pendente = faltando.length > 0 || bloqueado;
   const progresso = useRef(new Animated.Value(0)).current;
   const [larguraBotao, setLarguraBotao] = useState(400);
 
@@ -68,7 +72,9 @@ export function FinalizarVisitaModal({
           <View style={styles.alca} />
 
           <View>
-            <Text style={styles.titulo}>{pendente ? 'Finalizar com pendências?' : 'Tudo pronto por aqui'}</Text>
+            <Text style={styles.titulo}>
+              {bloqueado ? 'Responda antes de finalizar' : pendente ? 'Finalizar com pendências?' : 'Tudo pronto por aqui'}
+            </Text>
             <Text style={styles.subtitulo}>{cronometroTexto} na loja · o check-out usa sua localização atual</Text>
           </View>
 
@@ -108,7 +114,23 @@ export function FinalizarVisitaModal({
             </View>
           </View>
 
-          {pendente && (
+          {bloqueado && (
+            <View style={styles.bloqueadoBox}>
+              <View style={styles.bloqueadoCabecalho}>
+                <MaterialCommunityIcons name="lock-outline" size={16} color={vermelho[800]} />
+                <Text style={styles.bloqueadoTitulo}>Obrigatório para finalizar</Text>
+              </View>
+              <Text style={styles.bloqueadoTexto}>A empresa exige estes formulários antes do check-out:</Text>
+              {bloqueados.map((item) => (
+                <View key={item} style={styles.faltandoLinha}>
+                  <View style={[styles.faltandoPonto, { backgroundColor: vermelho[600] }]} />
+                  <Text style={[styles.faltandoTexto, { color: vermelho[800] }]}>{item}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {faltando.length > 0 && (
             <View style={styles.faltandoBox}>
               <Text style={styles.faltandoTitulo}>Ainda falta</Text>
               {faltando.map((item) => (
@@ -120,37 +142,45 @@ export function FinalizarVisitaModal({
             </View>
           )}
 
-          <Pressable
-            style={[styles.botaoSegurar, pendente && styles.botaoSegurarPendente]}
-            onLayout={(e) => setLarguraBotao(e.nativeEvent.layout.width)}
-            onPressIn={comecarASegurar}
-            onPressOut={soltar}
-            disabled={enviando}
-            accessibilityRole="button"
-            accessibilityLabel={pendente ? 'Finalizar visita com pendências' : 'Finalizar visita'}
-            accessibilityHint="Segure até a barra encher"
-            accessibilityActions={[{ name: 'activate' }]}
-            onAccessibilityAction={() => onConfirmar()}
-          >
-            <Animated.View
-              style={[
-                styles.botaoSegurarFill,
-                {
-                  transform: [
-                    { translateX: progresso.interpolate({ inputRange: [0, 1], outputRange: [-larguraBotao, 0] }) },
-                  ],
-                },
-              ]}
-            />
-            {enviando ? (
-              <ActivityIndicator color={cores.branco} />
-            ) : (
-              <Text style={styles.botaoSegurarTexto}>{pendente ? 'Segure para finalizar assim' : 'Segure para finalizar'}</Text>
-            )}
-          </Pressable>
-          <Pressable style={styles.botaoVoltar} onPress={onCancelar} disabled={enviando}>
-            <Text style={styles.botaoVoltarTexto}>Voltar para a visita</Text>
-          </Pressable>
+          {bloqueado ? (
+            <Pressable style={styles.botaoSegurar} onPress={onCancelar} accessibilityRole="button">
+              <Text style={styles.botaoSegurarTexto}>Voltar e responder</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              style={[styles.botaoSegurar, pendente && styles.botaoSegurarPendente]}
+              onLayout={(e) => setLarguraBotao(e.nativeEvent.layout.width)}
+              onPressIn={comecarASegurar}
+              onPressOut={soltar}
+              disabled={enviando}
+              accessibilityRole="button"
+              accessibilityLabel={pendente ? 'Finalizar visita com pendências' : 'Finalizar visita'}
+              accessibilityHint="Segure até a barra encher"
+              accessibilityActions={[{ name: 'activate' }]}
+              onAccessibilityAction={() => onConfirmar()}
+            >
+              <Animated.View
+                style={[
+                  styles.botaoSegurarFill,
+                  {
+                    transform: [
+                      { translateX: progresso.interpolate({ inputRange: [0, 1], outputRange: [-larguraBotao, 0] }) },
+                    ],
+                  },
+                ]}
+              />
+              {enviando ? (
+                <ActivityIndicator color={cores.branco} />
+              ) : (
+                <Text style={styles.botaoSegurarTexto}>{pendente ? 'Segure para finalizar assim' : 'Segure para finalizar'}</Text>
+              )}
+            </Pressable>
+          )}
+          {!bloqueado && (
+            <Pressable style={styles.botaoVoltar} onPress={onCancelar} disabled={enviando}>
+              <Text style={styles.botaoVoltarTexto}>Voltar para a visita</Text>
+            </Pressable>
+          )}
         </View>
       </View>
     </Modal>
@@ -186,6 +216,10 @@ const styles = StyleSheet.create({
   faltandoLinha: { flexDirection: 'row', alignItems: 'center', gap: espaco.sm },
   faltandoPonto: { width: 5, height: 5, borderRadius: 3, backgroundColor: amber[600] },
   faltandoTexto: { fontSize: 13, color: amber[800], flexShrink: 1 },
+  bloqueadoBox: { gap: 6, padding: espaco.md, borderRadius: raio.lg, backgroundColor: vermelho[50], borderWidth: 1, borderColor: vermelho[200] },
+  bloqueadoCabecalho: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  bloqueadoTitulo: { fontSize: 14, fontWeight: '700', color: vermelho[800] },
+  bloqueadoTexto: { fontSize: 13, color: vermelho[800] },
   botaoSegurar: {
     minHeight: 56,
     borderRadius: raio.lg,

@@ -1,7 +1,12 @@
 import type { OrdemServico, StatusOrdemServico } from '../../types/api';
-import { ehErroDeRede } from '../db/database';
-import { lerOrdensServicoCache, salvarOrdensServicoCache } from '../db/ordensServicoCache';
+import {
+  lerOrdemServicoDetalheCache,
+  lerOrdensServicoCache,
+  salvarOrdemServicoDetalheCache,
+  salvarOrdensServicoCache,
+} from '../db/ordensServicoCache';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
 
 // Cache local (SQLite): o promotor precisa ver as próprias pendências (+ fila aberta) mesmo sem
 // sinal — mesmo padrão de lib/api/pontosVenda.ts. Só busca PENDENTE: EM_ANDAMENTO já vira uma
@@ -47,16 +52,16 @@ export function escolherOrdemDaLoja(ordens: OrdemServico[], agora: Date = new Da
 }
 
 export async function listarOrdensServicoPendentes(): Promise<OrdemServico[]> {
-  try {
-    const { data } = await apiClient.get<{ ordens_servico: OrdemServico[] }>('/ordens-servico', {
-      params: { status: 'PENDENTE', por_pagina: 200 },
-    });
-    void salvarOrdensServicoCache(data.ordens_servico).catch(() => {});
-    return data.ordens_servico;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-    return lerOrdensServicoCache();
-  }
+  return redeComPrazo({
+    rede: async () =>
+      (
+        await apiClient.get<{ ordens_servico: OrdemServico[] }>('/ordens-servico', {
+          params: { status: 'PENDENTE', por_pagina: 200 },
+        })
+      ).data.ordens_servico,
+    salvar: salvarOrdensServicoCache,
+    lerCache: lerOrdensServicoCache,
+  });
 }
 
 const STATUS_AGENDA: StatusOrdemServico[] = [
@@ -134,7 +139,12 @@ export async function listarMotivosNaoExecucao(): Promise<MotivoNaoExecucao[]> {
 // fallback offline: só faz sentido pedir isso com sinal (é dado que pode ter mudado desde o
 // check-in — outro promotor pode ter respondido o mesmo formulário nesse meio tempo, se a OS
 // for de fila aberta), e a visita não fica bloqueada por essa consulta falhar.
+// Rede primeiro, cache como fallback: a visita em andamento precisa dos formulários da OS mesmo
+// sem sinal (lista do que falta e a trava de DIRECIONAMENTO_BLOQUEIA_CHECKOUT).
 export async function buscarOrdemServico(ordemServicoUuid: string): Promise<OrdemServico> {
-  const { data } = await apiClient.get<{ ordem_servico: OrdemServico }>(`/ordens-servico/${ordemServicoUuid}`);
-  return data.ordem_servico;
+  return redeComPrazo({
+    rede: async () => (await apiClient.get<{ ordem_servico: OrdemServico }>(`/ordens-servico/${ordemServicoUuid}`)).data.ordem_servico,
+    salvar: salvarOrdemServicoDetalheCache,
+    lerCache: () => lerOrdemServicoDetalheCache(ordemServicoUuid),
+  });
 }

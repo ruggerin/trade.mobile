@@ -10,6 +10,7 @@ import { useAuth } from '../lib/auth/AuthContext';
 import { headersAutenticados } from '../lib/seguranca/chaveAparelho';
 import type { ContratoAtivo, PontoVenda, VendedorDaLoja } from '../types/api';
 import { cores, espaco, neutro, raio, sombraCard } from '../theme';
+import { comprimirFoto } from '../lib/compressaoFoto';
 
 const TIPO_CONTRATO: Record<ContratoAtivo['tipo'], string> = {
   COMODATO: 'Comodato',
@@ -89,7 +90,7 @@ export function DadosCadastraisLoja({ pontoVenda, depoisDaFachada }: { pontoVend
       if (!permissao.granted) throw new Error('permissao');
       const foto = await ImagePicker.launchCameraAsync({ quality: 0.7 });
       if (foto.canceled || !foto.assets[0]) return null;
-      return enviarFachadaPromotor(pontoVenda.id, foto.assets[0].uri);
+      return enviarFachadaPromotor(pontoVenda.id, await comprimirFoto(foto.assets[0]));
     },
     onSuccess: (atualizada) => {
       if (!atualizada) return;

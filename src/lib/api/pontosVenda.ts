@@ -1,7 +1,7 @@
 import type { PaginatedMeta, PontoVenda } from '../../types/api';
-import { ehErroDeRede } from '../db/database';
 import { lerPontosVendaCache, salvarPontosVendaCache } from '../db/pontosVendaCache';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
 
 export interface PontosVendaListResponse {
   pontos_venda: PontoVenda[];
@@ -37,22 +37,22 @@ async function buscarTodasAsPaginas(busca?: string): Promise<PontosVendaListResp
 // Cache local (SQLite): sem rede, cai pra última lista sincronizada da carteira do promotor —
 // filtra localmente por `busca` pra manter o mesmo comportamento da tela. Guarda tudo, sem página.
 export async function listarPontosVenda(busca?: string): Promise<PontosVendaListResponse> {
-  try {
-    const data = await buscarTodasAsPaginas(busca);
+  return redeComPrazo({
+    rede: () => buscarTodasAsPaginas(busca),
     // Só a lista sem filtro é a carteira inteira — salvar o resultado de uma busca sobrescreveria
     // o cache offline com um recorte dele.
-    if (!busca) void salvarPontosVendaCache(data.pontos_venda).catch(() => {});
-    return data;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-
-    const cache = await lerPontosVendaCache();
-    const filtrados = busca ? filtrarLocalmente(cache, busca) : cache;
-    return {
-      pontos_venda: filtrados,
-      meta: { current_page: 1, last_page: 1, per_page: filtrados.length, total: filtrados.length },
-    };
-  }
+    salvar: async (data) => {
+      if (!busca) await salvarPontosVendaCache(data.pontos_venda);
+    },
+    lerCache: async () => {
+      const cache = await lerPontosVendaCache();
+      const filtrados = busca ? filtrarLocalmente(cache, busca) : cache;
+      return {
+        pontos_venda: filtrados,
+        meta: { current_page: 1, last_page: 1, per_page: filtrados.length, total: filtrados.length },
+      };
+    },
+  });
 }
 
 function filtrarLocalmente(pontosVenda: PontoVenda[], busca: string): PontoVenda[] {

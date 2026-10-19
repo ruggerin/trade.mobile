@@ -138,7 +138,7 @@ export function reportarErro(erro: unknown, origem: 'erro_global' | 'render' | '
  * agrupar: etapa, status HTTP e os NOMES dos campos que a validação recusou. A mensagem do
  * servidor não vai (pode citar loja ou dado digitado); ela continua na tela do promotor.
  */
-export function reportarRecusaFila(etapa: 'checkin' | 'registro' | 'checkout', erro: unknown): void {
+export function reportarRecusaFila(etapa: 'checkin' | 'registro' | 'foto' | 'checkout', erro: unknown): void {
   try {
     const resposta = (erro as { response?: { status?: number; data?: { errors?: Record<string, unknown>; motivo?: string } } })
       ?.response;
@@ -151,6 +151,39 @@ export function reportarRecusaFila(etapa: 'checkin' | 'registro' | 'checkout', e
     });
   } catch {
     // Reportar nunca pode derrubar o app.
+  }
+}
+
+/** Foto que levou mais que isso pra subir vira evento (amostra de rede lenta real). */
+export const FOTO_LENTA_MS = 15_000;
+
+/**
+ * Medição do envio de foto (rede lenta): toda tentativa vira breadcrumb (aparece junto de qualquer
+ * erro posterior), e a foto que subiu mas demorou vira um evento `info` — é com isso que dá pra
+ * decidir o envio com o app fechado (docs/51 Fase 4) olhando número real. Só tamanho e tempo,
+ * nada da foto em si.
+ */
+export function registrarEnvioFoto(medida: { bytes: number; duracaoMs: number; resultado: 'ok' | 'transitorio' | 'recusado' }): void {
+  try {
+    const kb = Math.round(medida.bytes / 1024);
+    const segundos = Math.round(medida.duracaoMs / 100) / 10;
+    const kbps = medida.duracaoMs > 0 ? Math.round((medida.bytes * 8) / medida.duracaoMs) : undefined;
+    Sentry.addBreadcrumb({
+      category: 'fila_envio.foto',
+      level: medida.resultado === 'ok' ? 'info' : 'warning',
+      message: `foto ${medida.resultado}`,
+      data: { kb, segundos, kbps },
+    });
+    if (medida.resultado === 'ok' && medida.duracaoMs >= FOTO_LENTA_MS) {
+      Sentry.captureMessage('Fila de envio: foto lenta', {
+        level: 'info',
+        tags: { origem: 'fila_envio', etapa: 'foto', faixa_kb: kb < 300 ? '<300' : kb < 1024 ? '300-1024' : '>1024' },
+        extra: { kb, segundos, kbps },
+        fingerprint: ['fila-envio', 'foto-lenta'],
+      });
+    }
+  } catch {
+    // Medir nunca pode derrubar o app.
   }
 }
 

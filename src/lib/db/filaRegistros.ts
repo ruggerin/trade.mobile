@@ -20,7 +20,10 @@ export type StatusRegistroLocal = 'PENDENTE' | 'ENVIADO' | 'ERRO' | 'DESCARTADO'
 export interface RegistroLocal {
   id: string;
   visitaLocalId: string;
-  /** Uuid do registro no servidor — só preenchido depois que ENVIADO é confirmado. */
+  /**
+   * Uuid do registro no servidor. Com fotos, o registro sobe antes delas: `servidorId` preenchido
+   * e status ainda PENDENTE quer dizer "dados no servidor, fotos subindo" (ver lib/filaEnvio.ts).
+   */
   servidorId: string | null;
   status: StatusRegistroLocal;
   tipoRegistroUuid: string;
@@ -37,6 +40,8 @@ export interface RegistroLocal {
   observacao: string | null;
   /** Cópias persistentes das fotos (0..N) — ver RegistroFormModal.capturarFoto. */
   imagensLocais: string[];
+  /** Quais de `imagensLocais` o servidor já confirmou. */
+  imagensEnviadas: string[];
   /** Registro de resposta a um "ainda está lá?" (docs/83). */
   acompanhamentoUuid?: string | null;
   /** Marca cadastrada pelo promotor nesta visita (docs/85) — `marcaUuid` foi gerado no celular. */
@@ -67,6 +72,7 @@ interface LinhaFilaRegistro {
   observacao: string | null;
   imagem_local_path: string | null;
   imagens_locais_json: string | null;
+  imagens_enviadas_json?: string | null;
   acompanhamento_uuid?: string | null;
   marca_nova_descricao?: string | null;
   embalagem_quantidade?: number | null;
@@ -101,6 +107,7 @@ function paraRegistroLocal(linha: LinhaFilaRegistro): RegistroLocal {
       : linha.imagem_local_path
         ? [linha.imagem_local_path]
         : [],
+    imagensEnviadas: linha.imagens_enviadas_json ? (JSON.parse(linha.imagens_enviadas_json) as string[]) : [],
     acompanhamentoUuid: linha.acompanhamento_uuid ?? null,
     marcaNovaDescricao: linha.marca_nova_descricao ?? null,
     embalagemQuantidade: linha.embalagem_quantidade ?? null,
@@ -187,6 +194,34 @@ export async function marcarRegistroEnviado(id: string, servidorId: string): Pro
     `UPDATE fila_registros SET status = 'ENVIADO', servidor_id = ?, erro = NULL, atualizado_em = ? WHERE id = ?`,
     [servidorId, new Date().toISOString(), id],
   );
+}
+
+/**
+ * Dados do registro aceitos pelo servidor. Sem foto pra mandar, já está ENVIADO; com foto, fica
+ * PENDENTE até a última subir (`marcarImagemEnviada`).
+ */
+export async function marcarRegistroCriadoNoServidor(id: string, servidorId: string, temFotoPendente: boolean): Promise<void> {
+  if (!temFotoPendente) return marcarRegistroEnviado(id, servidorId);
+  await escrever(`UPDATE fila_registros SET servidor_id = ?, erro = NULL, atualizado_em = ? WHERE id = ?`, [
+    servidorId,
+    new Date().toISOString(),
+    id,
+  ]);
+}
+
+/**
+ * Uma foto confirmada (ou desistida, com `erro`, quando o servidor recusa de vez). Quando não
+ * falta mais nenhuma, o registro vira ENVIADO.
+ */
+export async function marcarImagemEnviada(registro: RegistroLocal, uri: string, erro?: string): Promise<void> {
+  const enviadas = [...new Set([...registro.imagensEnviadas, uri])];
+  const completo = registro.imagensLocais.every((u) => enviadas.includes(u));
+  await escrever(
+    `UPDATE fila_registros SET imagens_enviadas_json = ?, status = ?, erro = COALESCE(?, erro), atualizado_em = ? WHERE id = ?`,
+    [JSON.stringify(enviadas), completo ? 'ENVIADO' : registro.status, erro ?? null, new Date().toISOString(), registro.id],
+  );
+  registro.imagensEnviadas = enviadas;
+  if (completo) registro.status = 'ENVIADO';
 }
 
 export async function marcarRegistroComErro(id: string, erro: string): Promise<void> {

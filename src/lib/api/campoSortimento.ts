@@ -1,6 +1,6 @@
-import { ehErroDeRede } from '../db/database';
 import { lerSortimentoCampoCache, salvarSortimentoCampoCache } from '../db/sortimentoCampoCache';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
 
 export interface ProdutoSortimento {
   produto_uuid: string;
@@ -46,16 +46,14 @@ export interface SortimentoCampo {
 // específico — sem cache nenhum, relança o erro original pra tela mostrar "não foi possível
 // carregar" em vez de deixar o promotor pensar que o mix está vazio de verdade.
 export async function buscarSortimentoCampo(campoUuid: string, pontoVendaUuid: string): Promise<SortimentoCampo> {
-  try {
-    const { data } = await apiClient.get<SortimentoCampo>(`/tipos-registro/campos/${campoUuid}/sortimento`, {
-      params: { ponto_venda_uuid: pontoVendaUuid },
-    });
-    void salvarSortimentoCampoCache(campoUuid, pontoVendaUuid, data).catch(() => {});
-    return data;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-    const cache = await lerSortimentoCampoCache(campoUuid, pontoVendaUuid);
-    if (cache) return cache;
-    throw err;
-  }
+  return redeComPrazo({
+    rede: async () =>
+      (
+        await apiClient.get<SortimentoCampo>(`/tipos-registro/campos/${campoUuid}/sortimento`, {
+          params: { ponto_venda_uuid: pontoVendaUuid },
+        })
+      ).data,
+    salvar: (dados) => salvarSortimentoCampoCache(campoUuid, pontoVendaUuid, dados),
+    lerCache: () => lerSortimentoCampoCache(campoUuid, pontoVendaUuid),
+  });
 }

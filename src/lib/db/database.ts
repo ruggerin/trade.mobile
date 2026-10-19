@@ -153,6 +153,15 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       atualizado_em TEXT NOT NULL
     );
 
+    -- Detalhe da OS da visita em andamento (formulários do Direcionamento). Separado de
+    -- ordens_servico porque aquela guarda só as PENDENTES e é substituída inteira a cada lista —
+    -- depois do check-in a OS vira EM_ANDAMENTO e sumiria de lá no meio da visita.
+    CREATE TABLE IF NOT EXISTS ordem_servico_detalhe (
+      id TEXT PRIMARY KEY NOT NULL,
+      dados TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+
     -- Últimas visitas do próprio promotor já confirmadas pelo servidor (HistoricoScreen) — só
     -- pra continuar dando pra ver o que já foi feito enquanto offline; a fila de envio
     -- (fila_visitas) é quem cobre o que ainda não foi confirmado.
@@ -306,6 +315,13 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     }
   }
 
+  // Fotos já confirmadas pelo servidor, quando sobem separadas do registro (rede lenta).
+  try {
+    await db.execAsync('ALTER TABLE fila_registros ADD COLUMN imagens_enviadas_json TEXT');
+  } catch {
+    // Coluna já existe — nada a fazer.
+  }
+
   return db;
 }
 
@@ -331,6 +347,7 @@ export async function limparCacheLocal(): Promise<void> {
     DELETE FROM sortimento_campo_cache;
     DELETE FROM tipos_registro;
     DELETE FROM ordens_servico;
+    DELETE FROM ordem_servico_detalhe;
     DELETE FROM visitas_historico;
     DELETE FROM catalogo_auditoria;
   `);

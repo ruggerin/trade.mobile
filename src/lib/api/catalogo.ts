@@ -1,7 +1,7 @@
 import type { CatalogoItem } from '../../types/api';
 import { lerCatalogoCache, salvarCatalogoCache } from '../db/catalogoCache';
-import { ehErroDeRede } from '../db/database';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
 
 // Usado pelo seletor opcional de vínculo (produto/seção/departamento/marca) do formulário de
 // registro, quando o TipoRegistro escolhido tem permite_vincular_catalogo. Antes não era
@@ -26,13 +26,12 @@ async function buscarComCache(
   endpoint: string,
   chaveResposta: string,
 ): Promise<CatalogoItem[]> {
-  try {
-    const { data } = await apiClient.get<Record<string, CatalogoItem[]>>(endpoint, { params: { ativo: 1, por_pagina: 1000 } });
-    const itens = data[chaveResposta] ?? [];
-    void salvarCatalogoCache(tipo, itens).catch(() => {});
-    return itens;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-    return lerCatalogoCache(tipo);
-  }
+  return redeComPrazo({
+    rede: async () => {
+      const { data } = await apiClient.get<Record<string, CatalogoItem[]>>(endpoint, { params: { ativo: 1, por_pagina: 1000 } });
+      return data[chaveResposta] ?? [];
+    },
+    salvar: (itens) => salvarCatalogoCache(tipo, itens),
+    lerCache: () => lerCatalogoCache(tipo),
+  });
 }

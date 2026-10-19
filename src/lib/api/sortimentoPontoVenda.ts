@@ -1,33 +1,32 @@
 import type { AcompanhamentoAberto, SortimentoPontoVenda, TipoVinculoRegistro } from '../../types/api';
 import { salvarAcompanhamentosCache } from '../db/filaAcompanhamentos';
-import { ehErroDeRede } from '../db/database';
 import { lerSortimentoCache, salvarSortimentoCache } from '../db/sortimentoCache';
 import { salvarUltimosRegistrosCache, type UltimosRegistros } from '../db/ultimosRegistrosCache';
 import { apiClient } from './client';
+import { redeComPrazo } from '../redeComPrazo';
 
 // Sortimento cadastrado pra este PDV (docs/14-SORTIMENTO-PONTO-VENDA.md) — vem junto do
 // detalhe do PDV (GET /pontos-venda/{uuid}), não é endpoint próprio. Cache local por PDV, mesmo
 // padrão de campanhas.ts/buscarProdutosDisponiveis.
 export async function buscarSortimento(pontoVendaUuid: string): Promise<SortimentoPontoVenda[]> {
-  try {
-    const { data } = await apiClient.get<{
-      ponto_venda: { sortimento?: SortimentoPontoVenda[] };
-      ultimos_registros_formulario?: UltimosRegistros | [];
-      acompanhamentos_abertos?: AcompanhamentoAberto[];
-    }>(`/pontos-venda/${pontoVendaUuid}`);
-    const itens = data.ponto_venda.sortimento ?? [];
-    void salvarSortimentoCache(pontoVendaUuid, itens).catch(() => {});
-    // Mesmo endpoint traz o último registro por formulário com intervalo (docs/80 §5.2). PHP manda
-    // `[]` quando vazio.
-    const ultimos = data.ultimos_registros_formulario;
-    void salvarUltimosRegistrosCache(pontoVendaUuid, Array.isArray(ultimos) ? {} : (ultimos ?? {})).catch(() => {});
-    // "Ainda está lá?" (docs/83 §5.4): o que conferir nas próximas visitas, guardado offline.
-    void salvarAcompanhamentosCache(pontoVendaUuid, data.acompanhamentos_abertos ?? []).catch(() => {});
-    return itens;
-  } catch (err) {
-    if (!ehErroDeRede(err)) throw err;
-    return lerSortimentoCache(pontoVendaUuid);
-  }
+  return redeComPrazo({
+    rede: async () => {
+      const { data } = await apiClient.get<{
+        ponto_venda: { sortimento?: SortimentoPontoVenda[] };
+        ultimos_registros_formulario?: UltimosRegistros | [];
+        acompanhamentos_abertos?: AcompanhamentoAberto[];
+      }>(`/pontos-venda/${pontoVendaUuid}`);
+      // Mesmo endpoint traz o último registro por formulário com intervalo (docs/80 §5.2). PHP manda
+      // `[]` quando vazio.
+      const ultimos = data.ultimos_registros_formulario;
+      void salvarUltimosRegistrosCache(pontoVendaUuid, Array.isArray(ultimos) ? {} : (ultimos ?? {})).catch(() => {});
+      // "Ainda está lá?" (docs/83 §5.4): o que conferir nas próximas visitas, guardado offline.
+      void salvarAcompanhamentosCache(pontoVendaUuid, data.acompanhamentos_abertos ?? []).catch(() => {});
+      return data.ponto_venda.sortimento ?? [];
+    },
+    salvar: (itens) => salvarSortimentoCache(pontoVendaUuid, itens),
+    lerCache: () => lerSortimentoCache(pontoVendaUuid),
+  });
 }
 
 export interface AdicionarSortimentoPayload {

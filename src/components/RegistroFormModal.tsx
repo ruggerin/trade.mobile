@@ -19,6 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconeTipoRegistro } from './IconeTipoRegistro';
 import { CampoEmbalagem, ListaMarcasColeta, type MarcaDaColeta } from './ColetaPorMarca';
+import { comprimirFoto } from '../lib/compressaoFoto';
 import { produtosDaListaGuiada } from '../lib/acaoObrigatoria';
 import { descreverEmbalagem, precoPorReferencia, quantidadeDigitada, type UnidadeEmbalagem } from '../lib/embalagem';
 import { gerarUuidLocal } from '../lib/uuid';
@@ -341,7 +342,9 @@ export function RegistroFormModal({
       // enquanto o promotor ainda preenche o resto do formulário (campos, vínculo, etc.). Sem
       // isso, um formulário longo (ou o app indo pro background no meio) podia perder a foto e o
       // registro inteiro junto na hora de salvar.
-      const caminhoPersistente = await copiarImagemParaArmazenamentoPersistente(asset.uri);
+      // Reduzida antes de guardar (lib/compressaoFoto.ts): é ela que sobe pela fila, em rede lenta.
+      const comprimida = await comprimirFoto(asset);
+      const caminhoPersistente = await copiarImagemParaArmazenamentoPersistente(comprimida);
       setImagensUri((atual) => [...atual, caminhoPersistente]);
     } catch {
       setErroLocal('Não foi possível salvar a foto. Tente novamente.');
