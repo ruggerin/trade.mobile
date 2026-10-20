@@ -11,6 +11,9 @@ export interface Empresa {
   cnpj: string;
   // Módulo pago Pedido de Venda (docs/38-PEDIDO-VENDEDOR.md §12) — sem ele, nada de aba Pedidos.
   pedidos_venda_habilitado?: boolean;
+  // Régua de XP (docs/88): recurso de plano + o que o promotor pode ver (modo prévia, pendente, liga).
+  controle_xp_habilitado?: boolean;
+  xp?: { visivel_promotor: boolean; pendente_visivel_promotor: boolean; ranking_habilitado: boolean };
   ativo: boolean;
 }
 
@@ -168,6 +171,9 @@ export interface ObjetivoVisita {
 // Compromisso" na Agenda) — aparece na aba "Agenda" e como badge na tela de check-in do PDV.
 export interface OrdemServico {
   id: string;
+  // Régua de XP (docs/88 §6): quanto a visita vale, congelado quando a OS nasceu.
+  xp_previsto?: number | null;
+  classe?: ClasseLoja | null;
   ponto_venda: { id: string; fantasia: string; endereco?: string; bairro?: string | null };
   usuario: { id: string; nome: string } | null;
   origem: OrigemOrdemServico;
@@ -528,4 +534,110 @@ export interface AcompanhamentoAberto {
     /** Só no modo "preenchido": a última coleta, pra abrir o formulário com ela. */
     valores_campos: Record<string, string> | null;
   };
+}
+
+// ---- Régua de XP (docs/88 §12) ----
+
+export interface ClasseLoja {
+  nome: string;
+  icone: string | null;
+  cor: string | null;
+}
+
+export interface VisitaDoDiaXp {
+  ordem_servico_id: string;
+  visita_id: string | null;
+  loja: string | null;
+  horario: string | null;
+  quando: string | null;
+  classe: ClasseLoja | null;
+  possivel: number;
+  ganho: number | null;
+  feita: boolean;
+}
+
+export interface IniciativaXp {
+  descricao: string;
+  loja: string | null;
+  pontos: number;
+  situacao: 'ok' | 'pendente';
+}
+
+export interface PosicaoLiga {
+  posicao: number;
+  participantes: number;
+  faltam_para_subir: number | null;
+  nome_acima: string | null;
+}
+
+export interface PontuacaoHoje {
+  dia: string;
+  total: number;
+  plano: number;
+  possivel: number;
+  iniciativa: number;
+  pendente: number | null;
+  ofensiva: number;
+  liga: PosicaoLiga | null;
+  visitas: VisitaDoDiaXp[];
+  iniciativas: IniciativaXp[];
+  dica: string | null;
+}
+
+export interface Conquista {
+  chave: string;
+  titulo: string;
+  descricao: string;
+  conquistada: boolean;
+  progresso: number;
+  meta: number;
+}
+
+export interface PontuacaoSemana {
+  semana_inicio: string;
+  total: number;
+  dias: { dia: string; xp: number; possivel: number; hoje: boolean }[];
+  aproveitamento: number | null;
+  aproveitamento_semana_passada: number | null;
+  ofensiva: number;
+  liga: PosicaoLiga | null;
+  conquistas: Conquista[];
+}
+
+export interface ParteXp {
+  parte: string;
+  rotulo: string;
+  ganho: number;
+  maximo: number;
+  pendente: number;
+  explicacao: string;
+}
+
+export interface PontuacaoVisita {
+  visita_id: string;
+  loja: string | null;
+  quando: string | null;
+  dia: string | null;
+  classe: ClasseLoja | null;
+  possivel: number;
+  total: number;
+  faltou: number;
+  completa: boolean;
+  partes: ParteXp[];
+  iniciativas: { registro_id: number; descricao: string; pontos: number; situacao: string }[];
+  ajustes: { pontos: number; motivo: string | null; por: string | null; em: string }[];
+  fora_da_agenda: boolean;
+}
+
+export interface RankingEquipe {
+  semana_inicio: string;
+  fechada: boolean;
+  fecha_em: string | null;
+  grupo: string;
+  minimo_visitas: number;
+  participantes: number;
+  linhas: { posicao: number; nome: string; xp: number; eu: boolean }[];
+  escondidos: number;
+  eu: { posicao: number; xp: number; plano: number; iniciativa: number; aproveitamento: number | null } | null;
+  alvo: { nome: string; faltam: number; de: number; ate: number } | null;
 }

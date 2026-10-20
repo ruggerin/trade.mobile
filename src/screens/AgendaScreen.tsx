@@ -8,6 +8,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { obterUltimaSincronizacao } from '../lib/db/database';
 import { listarOrdensServicoAgenda } from '../lib/api/ordensServico';
+import { buscarPontuacaoHoje } from '../lib/api/xp';
+import { formatarXp, xpVisivel } from '../lib/xp';
 import { buscarPontoVenda, listarPontosVenda } from '../lib/api/pontosVenda';
 import { useAuth } from '../lib/auth/AuthContext';
 import { useEstaOnline } from '../lib/network';
@@ -147,15 +149,26 @@ export function AgendaScreen({ navigation }: Props) {
     queryFn: () => listarOrdensServicoAgenda(janela),
   });
 
+  // Régua de XP (docs/88 §12.2): a agenda não muda de layout — só o XP de cada loja e uma linha
+  // no "Progresso do dia". Sem sinal, mostra o possível (vem na OS) e esconde o ganho.
+  const comXp = xpVisivel(usuario);
+  const xpHojeQuery = useQuery({ queryKey: ['xp', 'hoje'], queryFn: buscarPontuacaoHoje, enabled: comXp, retry: false });
+  const xpGanhoPorOs = useMemo(
+    () => new Map((xpHojeQuery.data?.visitas ?? []).filter((v) => v.ganho !== null).map((v) => [v.ordem_servico_id, v.ganho as number])),
+    [xpHojeQuery.data],
+  );
+
   // Voltar pra aba Agenda sempre recarrega: a visita pode ter sido finalizada enquanto o promotor estava
   // em outra aba, e a lista guardada ainda mostraria "Em andamento". Também atualiza o horário de
   // sincronização mostrado no topo (lido do cache local, não pede rede — ver lib/db/database.ts).
   const { refetch: recarregarAgenda } = agendaQuery;
+  const { refetch: recarregarXp } = xpHojeQuery;
   useFocusEffect(
     useCallback(() => {
       void recarregarAgenda();
+      if (comXp) void recarregarXp();
       void obterUltimaSincronizacao().then(setUltimaSincronizacao);
-    }, [recarregarAgenda]),
+    }, [recarregarAgenda, recarregarXp, comXp]),
   );
 
   // Precisa do PontoVenda inteiro (mapa/distância) pra abrir o check-in — OrdemServico só traz
@@ -293,7 +306,7 @@ export function AgendaScreen({ navigation }: Props) {
               </View>
 
               {proximaOS ? (
-                <ProximaVisitaCard ordemServico={proximaOS} onAbrir={() => void abrirCompromisso(proximaOS)} />
+                <ProximaVisitaCard ordemServico={proximaOS} xp={comXp ? proximaOS.xp_previsto : null} onAbrir={() => void abrirCompromisso(proximaOS)} />
               ) : (
                 totalHoje === 0 &&
                 agendaQuery.isSuccess && (
@@ -322,6 +335,15 @@ export function AgendaScreen({ navigation }: Props) {
                       <LegendaItem cor={vermelho[600]} texto={`${atrasadasHoje} atrasada${atrasadasHoje > 1 ? 's' : ''}`} destaque />
                     )}
                   </View>
+                  {comXp && (
+                    <Pressable style={styles.progressoXp} onPress={() => navigation.navigate('MinhaPontuacao')} accessibilityRole="button">
+                      <MaterialCommunityIcons name="star-four-points-outline" size={16} color={amber[600]} />
+                      <Text style={styles.progressoXpTexto}>
+                        {xpHojeQuery.data ? `${formatarXp(xpHojeQuery.data.total)} XP hoje` : 'Sua pontuação'}
+                      </Text>
+                      <Text style={styles.progressoXpLink}>Ver pontuação ›</Text>
+                    </Pressable>
+                  )}
                 </View>
               )}
 
@@ -380,6 +402,7 @@ export function AgendaScreen({ navigation }: Props) {
                 <CompromissoCard
                   key={os.id}
                   ordemServico={os}
+                  xp={comXp ? (xpGanhoPorOs.has(os.id) ? { ganho: xpGanhoPorOs.get(os.id)! } : { possivel: os.xp_previsto ?? null }) : null}
                   aguardando={antesDaVez(os, fila)?.ponto_venda.fantasia}
                   onPress={() => void abrirCompromisso(os)}
                 />
@@ -423,7 +446,7 @@ function AtalhoBotao({
 // Card de destaque com o próximo compromisso do dia (o mais urgente: em andamento, senão o
 // pendente mais próximo) — fundo em degradê índigo, CTA em âmbar (mesmo par de cores do resto do
 // app, aqui invertido pro botão ficar em primeiro plano sobre o card cheio).
-function ProximaVisitaCard({ ordemServico: os, onAbrir }: { ordemServico: OrdemServico; onAbrir: () => void }) {
+function ProximaVisitaCard({ ordemServico: os, xp, onAbrir }: { ordemServico: OrdemServico; xp?: number | null; onAbrir: () => void }) {
   const relativo = useMemo(() => tempoRelativo(alvoDoCompromisso(os)), [os]);
   const endereco = [os.ponto_venda.endereco, os.ponto_venda.bairro].filter(Boolean).join(' — ');
   const emAndamento = os.status === 'EM_ANDAMENTO';
@@ -458,6 +481,12 @@ function ProximaVisitaCard({ ordemServico: os, onAbrir }: { ordemServico: OrdemS
             <Text style={styles.heroTagTexto}>{os.tipo_visita.descricao}</Text>
           </View>
         )}
+        {xp != null && (
+          <View style={styles.heroTag}>
+            <MaterialCommunityIcons name="star-four-points-outline" size={13} color={amber[300]} />
+            <Text style={styles.heroTagTexto}>{formatarXp(xp)} XP</Text>
+          </View>
+        )}
       </View>
       <Pressable style={({ pressed }) => [styles.heroBotao, pressed && { opacity: 0.9 }]} onPress={onAbrir}>
         <MaterialCommunityIcons name={emAndamento ? 'arrow-right-circle-outline' : 'map-marker-check-outline'} size={19} color={cores.texto} />
@@ -472,9 +501,12 @@ function ProximaVisitaCard({ ordemServico: os, onAbrir }: { ordemServico: OrdemS
 function CompromissoCard({
   ordemServico,
   aguardando,
+  xp,
   onPress,
 }: {
   ordemServico: OrdemServico;
+  /** Régua de XP (docs/88 §12.2): possível antes da visita, ganho depois. */
+  xp?: { possivel?: number | null; ganho?: number } | null;
   // Loja que vem antes na sequência do dia (docs/74) — o card abre pra leitura, sem iniciar.
   aguardando?: string;
   onPress: () => void;
@@ -512,6 +544,11 @@ function CompromissoCard({
         {!!ordemServico.objetivo_visita && (
           <Text style={styles.cardObjetivo}>Objetivo: {ordemServico.objetivo_visita.descricao}</Text>
         )}
+        {xp?.ganho !== undefined ? (
+          <Text style={[styles.cardXp, { color: verde[700] }]}>+{formatarXp(xp.ganho)} XP</Text>
+        ) : xp?.possivel != null ? (
+          <Text style={styles.cardXp}>{formatarXp(xp.possivel)} XP</Text>
+        ) : null}
       </View>
 
       {/* Fica visível mesmo depois do status voltar pra PENDENTE — sem isso o promotor não
@@ -757,6 +794,18 @@ const styles = StyleSheet.create({
     borderRadius: raio.pill,
     backgroundColor: cores.primaria,
   },
+  progressoXp: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: espaco.sm,
+    paddingTop: espaco.sm,
+    borderTopWidth: 1,
+    borderTopColor: cores.divisor,
+  },
+  progressoXpTexto: { flex: 1, fontSize: 14, fontWeight: '800', color: cores.texto },
+  progressoXpLink: { fontSize: 13, fontWeight: '700', color: indigo[600] },
+  cardXp: { marginLeft: 'auto', fontSize: 12, fontWeight: '800', color: amber[700] },
   progressoLegenda: {
     flexDirection: 'row',
     flexWrap: 'wrap',

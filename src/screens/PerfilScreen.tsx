@@ -1,3 +1,6 @@
+import { type NavigationProp, useNavigation } from '@react-navigation/native';
+import { xpVisivel } from '../lib/xp';
+import type { MainTabsParamList } from '../navigation/MainTabs';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
@@ -24,6 +27,7 @@ import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
 // docs/05-APP-MOBILE-UX.md §3.8 — nome/e-mail do usuário, empresa (tenant), botão Sair com
 // confirmação, espaço pra versão do app.
 export function PerfilScreen() {
+  const navigation = useNavigation<NavigationProp<MainTabsParamList>>();
   // TEMPORÁRIO (docs/72 §4): 7 toques seguidos na versão abrem o teste do Sentry. Remover depois de validar.
   const [toquesNaVersao, setToquesNaVersao] = useState(0);
   function aoTocarNaVersao() {
@@ -254,6 +258,17 @@ export function PerfilScreen() {
             <Text style={styles.empresaNome}>{usuario.empresa.nome_fantasia}</Text>
           </View>
         </View>
+      )}
+
+      {/* Régua de XP (docs/88 §12): "Minha pontuação" também abre pelo Perfil. */}
+      {xpVisivel(usuario) && (
+        <Pressable
+          style={({ pressed }) => [styles.botaoSync, styles.botaoPontuacao, pressed && styles.botaoPressionado]}
+          onPress={() => navigation.navigate('Agenda', { screen: 'MinhaPontuacao' })}
+        >
+          <MaterialCommunityIcons name="star-four-points-outline" size={18} color={cores.primaria} />
+          <Text style={styles.botaoSyncTexto}>Minha pontuação</Text>
+        </Pressable>
       )}
 
       {/* Sincronizar logo abaixo da empresa — não precisa rolar a tela pra achar. */}
@@ -516,6 +531,7 @@ const styles = StyleSheet.create({
     color: cores.primaria,
     marginTop: 6,
   },
+  botaoPontuacao: { marginBottom: espaco.md },
   botaoSync: {
     flexDirection: 'row',
     gap: espaco.sm,

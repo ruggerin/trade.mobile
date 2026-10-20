@@ -116,6 +116,8 @@ function visitaLocal(overrides: Partial<VisitaLocal> = {}): VisitaLocal {
     latitudeFim: null,
     longitudeFim: null,
     fimEm: null,
+    obrigatoriasFeitas: null,
+    obrigatoriasTotal: null,
     erro: null,
     criadoEm: '2026-09-24T10:00:00.000Z',
     atualizadoEm: '2026-09-24T10:00:00.000Z',
@@ -326,6 +328,20 @@ describe('processarFilaEnvio', () => {
     });
   });
 
+  describe('régua de XP (docs/88)', () => {
+    it('o check-out leva as obrigatórias que o promotor viu ao finalizar', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([
+        visitaLocal({ servidorId: 'servidor-1', status: 'FINALIZADA_LOCAL', latitudeFim: -3.1, longitudeFim: -60.0, obrigatoriasFeitas: 2, obrigatoriasTotal: 3 }),
+      ]);
+      mockListarRegistrosLocais.mockResolvedValue([]);
+      mockFinalizarVisita.mockResolvedValue({} as any);
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, null, { feitas: 2, total: 3 });
+    });
+  });
+
   describe('fotos separadas do registro (rede lenta)', () => {
     it('dados de TODOS os registros sobem antes da primeira foto', async () => {
       mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visitaLocal({ servidorId: 'servidor-1' })]);
@@ -415,7 +431,7 @@ describe('processarFilaEnvio', () => {
       const resultado = await processarFilaEnvio('usuario-1');
 
       // 4º argumento = hora do campo (docs/51); visita sem fimEm local manda null e o servidor usa a chegada.
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.2, -60.1, null);
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.2, -60.1, null, null);
       expect(mockExcluirVisitaLocalCompleta).toHaveBeenCalledWith('visita-1', 'checkout-confirmado');
       expect(resultado.checkoutsConfirmados).toBe(1);
     });
@@ -477,7 +493,7 @@ describe('processarFilaEnvio', () => {
       liberarCheckin();
       const resultado = await primeira;
 
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T11:00:00.000Z');
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T11:00:00.000Z', null);
       expect(resultado.visitasEnviadas).toBe(1);
       expect(resultado.checkoutsConfirmados).toBe(1);
     });
@@ -498,7 +514,7 @@ describe('processarFilaEnvio', () => {
 
       expect(mockIniciarVisita).toHaveBeenCalledWith(expect.objectContaining({ inicio_em: '2026-09-24T10:00:00.000Z' }));
       expect(mockCriarRegistro).toHaveBeenCalledWith(expect.objectContaining({ criadoEm: '2026-09-24T10:20:00.000Z' }));
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T10:45:00.000Z');
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T10:45:00.000Z', null);
     });
   });
 

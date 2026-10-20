@@ -315,6 +315,15 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     }
   }
 
+  // Completude declarada no check-out (régua de XP, docs/88 §5.1).
+  for (const coluna of ['obrigatorias_feitas INTEGER', 'obrigatorias_total INTEGER']) {
+    try {
+      await db.execAsync(`ALTER TABLE fila_visitas ADD COLUMN ${coluna}`);
+    } catch {
+      // Coluna já existe — nada a fazer.
+    }
+  }
+
   // Fotos já confirmadas pelo servidor, quando sobem separadas do registro (rede lenta).
   try {
     await db.execAsync('ALTER TABLE fila_registros ADD COLUMN imagens_enviadas_json TEXT');

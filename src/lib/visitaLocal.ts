@@ -147,11 +147,13 @@ export interface FinalizarVisitaLocalParams {
   visitaLocalId: string;
   latitude: number;
   longitude: number;
+  /** O "N de M obrigatórias" do "Finalizar visita" — a régua de XP usa pra completude (docs/88). */
+  obrigatorias?: { feitas: number; total: number };
 }
 
 export async function finalizarVisitaLocal(params: FinalizarVisitaLocalParams): Promise<void> {
   console.log(`[fila] promotor tocou em Finalizar (visita ${params.visitaLocalId})`);
-  await finalizarVisitaLocalDb(params.visitaLocalId, params.latitude, params.longitude);
+  await finalizarVisitaLocalDb(params.visitaLocalId, params.latitude, params.longitude, params.obrigatorias);
   sincronizarEmSegundoPlano(params.usuarioId);
 }
 

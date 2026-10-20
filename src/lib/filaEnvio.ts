@@ -402,7 +402,11 @@ async function enviarFotosDoRegistro(visita: VisitaLocal, registro: RegistroLoca
 
 async function enviarCheckout(visita: VisitaLocal): Promise<boolean> {
   try {
-    await finalizarVisita(visita.servidorId!, visita.latitudeFim!, visita.longitudeFim!, visita.fimEm);
+    const obrigatorias =
+      visita.obrigatoriasTotal !== null && visita.obrigatoriasTotal !== undefined
+        ? { feitas: visita.obrigatoriasFeitas ?? 0, total: visita.obrigatoriasTotal }
+        : null;
+    await finalizarVisita(visita.servidorId!, visita.latitudeFim!, visita.longitudeFim!, visita.fimEm, obrigatorias);
     // Servidor já tem tudo (check-in, registros e checkout confirmados) — a cópia local perdeu
     // utilidade, HistoricoScreen/VisitaDetalhe passam a mostrar essa visita vinda de lá.
     console.log(`[fila] checkout confirmado pelo servidor (visita ${visita.id})`);

@@ -19,7 +19,7 @@ import { useRastreamento } from '../lib/useRastreamento';
 import { sincronizarSeNecessario } from '../lib/sync';
 import { PerfilScreen } from '../screens/PerfilScreen';
 import { cores, neutro } from '../theme';
-import { AgendaStack } from './AgendaStack';
+import { AgendaStack, type AgendaStackParamList } from './AgendaStack';
 import { HistoricoStack, type HistoricoStackParamList } from './HistoricoStack';
 import { PlanogramasStack } from './PlanogramasStack';
 import { PedidosStack } from './PedidosStack';
@@ -42,7 +42,8 @@ const ICONES_TAB: Record<keyof MainTabsParamList, IconeMdi> = {
 // docs/05-APP-MOBILE-UX.md §2 (Pontos de Venda, Pendências). "Planogramas" é consulta livre,
 // fora do fluxo de visita — ver docs/22-PLANOGRAMA.md.
 export type MainTabsParamList = {
-  Agenda: undefined;
+  // Aninhado: o Perfil abre "Minha pontuação" dentro desta aba (régua de XP, docs/88 §12).
+  Agenda: NavigatorScreenParams<AgendaStackParamList> | undefined;
   PontosVenda: undefined;
   // Só existe no "modo Vendedor" (perfil com pedidos_venda.criar), ver docs/38-PEDIDO-VENDEDOR.md §4.
   Pedidos: undefined;

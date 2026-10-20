@@ -672,7 +672,13 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const checkoutMutation = useMutation({
     mutationFn: async () => {
       const coords = await obterLocalizacaoAtual();
-      await finalizarVisitaLocal({ usuarioId: usuario!.id, visitaLocalId, latitude: coords.latitude, longitude: coords.longitude });
+      await finalizarVisitaLocal({
+        usuarioId: usuario!.id,
+        visitaLocalId,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        obrigatorias: { feitas: feitasObrigatorias, total: totalObrigatorias },
+      });
     },
     onSuccess: () => setFinalizarAberto(false),
     onError: () => Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.'),
@@ -891,6 +897,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         navigation.popToTop();
         navigation.navigate('PontoVendaCheckin', { pontoVenda, ordemServico, ordemServicoEscolhida: true });
       }}
+      onVerPontuacao={(visitaId) => navigation.navigate('PontuacaoVisita', { visitaId })}
     />
   );
 
@@ -1348,6 +1355,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             feitasObrigatorias,
             totalObrigatorias,
             nFaltando: faltandoFinalizar.length,
+            xpPossivel: ordemServicoQuery.data?.xp_previsto ?? null,
           });
           checkoutMutation.mutate();
         }}

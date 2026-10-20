@@ -59,11 +59,19 @@ export async function buscarVisita(visitaId: string): Promise<Visita> {
 }
 
 // `fimEm` = hora em que o promotor finalizou no campo (docs/51 Fase 2).
-export async function finalizarVisita(visitaId: string, latitude: number, longitude: number, fimEm?: string | null): Promise<Visita> {
+export async function finalizarVisita(
+  visitaId: string,
+  latitude: number,
+  longitude: number,
+  fimEm?: string | null,
+  obrigatorias?: { feitas: number; total: number } | null,
+): Promise<Visita> {
   const { data } = await apiClient.patch<{ visita: Visita }>(`/visitas/${visitaId}/checkout`, {
     latitude,
     longitude,
     ...(fimEm ? { fim_em: fimEm } : {}),
+    // Régua de XP (docs/88 §5.1): o servidor calcula a completude com o que o promotor viu.
+    ...(obrigatorias ? { obrigatorias_feitas: Math.min(obrigatorias.feitas, obrigatorias.total), obrigatorias_total: obrigatorias.total } : {}),
   });
   return data.visita;
 }

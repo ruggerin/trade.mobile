@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AccessibilityInfo, ActivityIndicator, Alert, Animated, Easing, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listarOrdensServicoAgenda } from '../lib/api/ordensServico';
+import { buscarPontuacaoHoje, buscarPontuacaoVisita } from '../lib/api/xp';
+import { formatarXp, xpVisivel } from '../lib/xp';
 import { buscarPontoVenda, listarPontosVenda } from '../lib/api/pontosVenda';
 import { useAuth } from '../lib/auth/AuthContext';
 import { exigeSequencia, filaDoDia } from '../lib/rotaObrigatoria';
@@ -21,6 +23,8 @@ export interface ResumoVisita {
   feitasObrigatorias: number;
   totalObrigatorias: number;
   nFaltando: number;
+  /** XP possível da OS (régua de XP, docs/88) — mostrado enquanto o servidor não confirma o total. */
+  xpPossivel?: number | null;
 }
 
 interface Props {
@@ -31,13 +35,15 @@ interface Props {
   online: boolean;
   onVoltarAgenda: () => void;
   onIrParaLoja: (pontoVenda: PontoVenda, ordemServico: OrdemServico) => void;
+  /** Abre "Pontuação da visita" (docs/88 §12.1). */
+  onVerPontuacao?: (visitaServidorId: string) => void;
 }
 
 // Tela depois do check-out (protótipo "Finalizar Visita Horus" aprovado em 14/10/2026). Substitui
 // o "Visita finalizada / Voltar" de antes e a tela de sucesso dentro do FinalizarVisitaModal — as
 // duas existiam porque online a visita sai do aparelho na hora e offline continua. A comemoração é
 // completa só quando nada ficou pendente: o promotor sente a diferença.
-export function VisitaConcluida({ resumo, enviado, online, onVoltarAgenda, onIrParaLoja }: Props) {
+export function VisitaConcluida({ resumo, enviado, online, onVoltarAgenda, onIrParaLoja, onVerPontuacao }: Props) {
   const { usuario } = useAuth();
   const insets = useSafeAreaInsets();
   const completa = resumo ? resumo.nFaltando === 0 : true;
@@ -177,6 +183,8 @@ export function VisitaConcluida({ resumo, enviado, online, onVoltarAgenda, onIrP
             )}
           </Animated.View>
         )}
+
+        {resumo && <BlocoXp resumo={resumo} enviado={enviado} onVerPontuacao={onVerPontuacao} estilo={sobe(1)} />}
 
         {dia && (
           <Animated.View style={[styles.dia, sobe(2)]}>
@@ -422,6 +430,12 @@ const styles = StyleSheet.create({
   },
   statValor: { fontSize: 24, fontWeight: '800', color: cores.branco, fontVariant: ['tabular-nums'] },
   statRotulo: { fontSize: 11, color: 'rgba(255,255,255,0.75)', marginTop: 2 },
+  xp: { alignSelf: 'stretch', padding: espaco.md, borderRadius: raio.lg, backgroundColor: BRANCO_10, borderWidth: 1, borderColor: amber[300], gap: 4 },
+  xpTotal: { fontSize: 30, fontWeight: '800', color: amber[300] },
+  xpSub: { fontSize: 13, color: cores.branco },
+  xpFalta: { fontSize: 13, color: amber[100] },
+  xpPendente: { fontSize: 12, color: amber[200], fontWeight: '700' },
+  xpLink: { fontSize: 13, fontWeight: '800', color: cores.branco, marginTop: 4, textDecorationLine: 'underline' },
   dia: { alignSelf: 'stretch', padding: espaco.md, borderRadius: raio.lg, backgroundColor: BRANCO_10, borderWidth: 1, borderColor: BRANCO_15 },
   diaTopo: { flexDirection: 'row', justifyContent: 'space-between' },
   diaRotulo: { fontSize: 13, color: cores.branco },
@@ -451,3 +465,76 @@ const styles = StyleSheet.create({
   botaoAgendaCheioTexto: { fontSize: 16, fontWeight: '800', color: cores.primaria },
   pressionado: { opacity: 0.85 },
 });
+
+/**
+ * Bloco de XP no splash (docs/88 §12.1): o total, "de N possíveis", o que mais faltou e a
+ * iniciativa pendente (se a empresa mostrar). A quebra completa fica na tela da pontuação.
+ * Calculado no servidor: até a visita subir, mostra "até N XP, confirma quando enviar". Acha a
+ * visita pela OS (mesmo uuid no app e no servidor), porque a cópia local some depois do envio.
+ */
+function BlocoXp({
+  resumo,
+  enviado,
+  onVerPontuacao,
+  estilo,
+}: {
+  resumo: ResumoVisita;
+  enviado: boolean;
+  onVerPontuacao?: (visitaServidorId: string) => void;
+  estilo: object;
+}) {
+  const { usuario } = useAuth();
+  const ativo = xpVisivel(usuario) && Boolean(resumo.ordemServicoId);
+  const hoje = useQuery({ queryKey: ['xp', 'hoje'], queryFn: buscarPontuacaoHoje, enabled: ativo && enviado, retry: 2 });
+  const daVisita = hoje.data?.visitas.find((v) => v.ordem_servico_id === resumo.ordemServicoId && v.visita_id);
+  const detalhe = useQuery({
+    queryKey: ['xp', 'visita', daVisita?.visita_id],
+    queryFn: () => buscarPontuacaoVisita(daVisita!.visita_id!),
+    enabled: Boolean(daVisita?.visita_id),
+    retry: 2,
+  });
+  if (!ativo) return null;
+  const possivel = detalhe.data?.possivel ?? daVisita?.possivel ?? resumo.xpPossivel ?? null;
+  if (!possivel) return null;
+
+  const p = detalhe.data;
+  if (!p) {
+    return (
+      <Animated.View style={[styles.xp, estilo]}>
+        <Text style={styles.xpTotal}>Até {formatarXp(possivel)} XP</Text>
+        <Text style={styles.xpSub}>{enviado ? 'Calculando sua pontuação...' : 'Confirma quando a visita for enviada.'}</Text>
+      </Animated.View>
+    );
+  }
+
+  const maior = [...p.partes].sort((a, b) => b.maximo - b.ganho - b.pendente - (a.maximo - a.ganho - a.pendente))[0];
+  const iniciativaOk = p.iniciativas.filter((i) => i.situacao === 'ok').reduce((s, i) => s + i.pontos, 0);
+  const pendentes = p.iniciativas.filter((i) => i.situacao === 'pendente');
+  const mostraPendente = Boolean(usuario?.empresa?.xp?.pendente_visivel_promotor);
+  const falta =
+    p.faltou === 0
+      ? 'Nenhum XP ficou pra trás.'
+      : `Faltaram ${formatarXp(p.faltou)} XP pra visita perfeita${maior && maior.maximo > maior.ganho ? `, a maior parte em "${maior.rotulo.toLowerCase()}"` : ''}.`;
+
+  return (
+    <Animated.View style={[styles.xp, estilo]}>
+      <Text style={styles.xpTotal}>+{formatarXp(p.total)} XP</Text>
+      <Text style={styles.xpSub}>
+        de {formatarXp(p.possivel)} possíveis{iniciativaOk > 0 ? ` · +${formatarXp(iniciativaOk)} de iniciativa` : ''}
+      </Text>
+      <Text style={styles.xpFalta}>{falta}</Text>
+      {pendentes.length > 0 && (
+        <Text style={styles.xpPendente}>
+          {mostraPendente
+            ? `+${formatarXp(pendentes.reduce((s, i) => s + i.pontos, 0))} XP aguardando avaliação`
+            : `${pendentes.length} registro(s) vai(ão) para avaliação`}
+        </Text>
+      )}
+      {onVerPontuacao && (
+        <Pressable onPress={() => onVerPontuacao(p.visita_id)} accessibilityRole="link">
+          <Text style={styles.xpLink}>Ver pontuação da visita</Text>
+        </Pressable>
+      )}
+    </Animated.View>
+  );
+}

@@ -39,6 +39,9 @@ export interface VisitaLocal {
   latitudeFim: number | null;
   longitudeFim: number | null;
   fimEm: string | null;
+  /** "N de M obrigatórias" que o promotor viu ao finalizar — vai no check-out (régua de XP, docs/88 §5.1). */
+  obrigatoriasFeitas: number | null;
+  obrigatoriasTotal: number | null;
   erro: string | null;
   criadoEm: string;
   atualizadoEm: string;
@@ -60,6 +63,8 @@ interface LinhaFilaVisita {
   latitude_fim: number | null;
   longitude_fim: number | null;
   fim_em: string | null;
+  obrigatorias_feitas?: number | null;
+  obrigatorias_total?: number | null;
   erro: string | null;
   criado_em: string;
   atualizado_em: string;
@@ -81,6 +86,8 @@ function paraVisitaLocal(linha: LinhaFilaVisita): VisitaLocal {
     latitudeFim: linha.latitude_fim,
     longitudeFim: linha.longitude_fim,
     fimEm: linha.fim_em,
+    obrigatoriasFeitas: linha.obrigatorias_feitas ?? null,
+    obrigatoriasTotal: linha.obrigatorias_total ?? null,
     erro: linha.erro,
     criadoEm: linha.criado_em,
     atualizadoEm: linha.atualizado_em,
@@ -140,6 +147,8 @@ export async function criarVisitaLocal(dados: NovaVisitaLocal): Promise<VisitaLo
     latitudeFim: null,
     longitudeFim: null,
     fimEm: null,
+    obrigatoriasFeitas: null,
+    obrigatoriasTotal: null,
     erro: null,
     criadoEm: agora,
     atualizadoEm: agora,
@@ -237,12 +246,18 @@ export async function reabrirVisitaLocal(id: string): Promise<void> {
   );
 }
 
-export async function finalizarVisitaLocal(id: string, latitude: number, longitude: number): Promise<void> {
+export async function finalizarVisitaLocal(
+  id: string,
+  latitude: number,
+  longitude: number,
+  obrigatorias?: { feitas: number; total: number },
+): Promise<void> {
   const db = await getDatabase();
   const agora = new Date().toISOString();
   await escrever(
-    `UPDATE fila_visitas SET status = 'FINALIZADA_LOCAL', latitude_fim = ?, longitude_fim = ?, fim_em = ?, atualizado_em = ? WHERE id = ?`,
-    [latitude, longitude, agora, agora, id],
+    `UPDATE fila_visitas SET status = 'FINALIZADA_LOCAL', latitude_fim = ?, longitude_fim = ?, fim_em = ?,
+       obrigatorias_feitas = ?, obrigatorias_total = ?, atualizado_em = ? WHERE id = ?`,
+    [latitude, longitude, agora, obrigatorias?.feitas ?? null, obrigatorias?.total ?? null, agora, id],
   );
 }
 
