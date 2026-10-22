@@ -630,13 +630,14 @@ export interface PontuacaoVisita {
 }
 
 export interface RankingEquipe {
+  periodo?: 'semana' | 'mes';
   semana_inicio: string;
   fechada: boolean;
   fecha_em: string | null;
   grupo: string;
   minimo_visitas: number;
   participantes: number;
-  linhas: { posicao: number; nome: string; xp: number; eu: boolean }[];
+  linhas: { posicao: number; nome: string; xp: number; eu: boolean; foto_url?: string | null }[];
   escondidos: number;
   eu: { posicao: number; xp: number; plano: number; iniciativa: number; aproveitamento: number | null } | null;
   alvo: { nome: string; faltam: number; de: number; ate: number } | null;

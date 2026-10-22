@@ -19,7 +19,10 @@ export async function buscarPontuacaoVisita(visitaServidorId: string): Promise<P
   return data.pontuacao;
 }
 
-export async function buscarRankingEquipe(semana: 'atual' | 'passada'): Promise<RankingEquipe> {
+// `atual`/`passada` = semana; `mes`/`mes_passado` = mês.
+export type PeriodoRanking = 'atual' | 'passada' | 'mes' | 'mes_passado';
+
+export async function buscarRankingEquipe(semana: PeriodoRanking): Promise<RankingEquipe> {
   const { data } = await apiClient.get<{ ranking: RankingEquipe }>('/xp/ranking', { params: { semana } });
   return data.ranking;
 }
