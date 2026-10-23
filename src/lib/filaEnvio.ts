@@ -18,6 +18,7 @@ import {
   listarVisitasLocaisPendentesOuRejeitadas,
   marcarCheckinEnviado,
   marcarVisitaRejeitada,
+  reabrirVisitaLocal,
   type VisitaLocal,
 } from './db/filaVisitas';
 import { estaOnline } from './network';
@@ -406,13 +407,22 @@ async function enviarCheckout(visita: VisitaLocal): Promise<boolean> {
       visita.obrigatoriasTotal !== null && visita.obrigatoriasTotal !== undefined
         ? { feitas: visita.obrigatoriasFeitas ?? 0, total: visita.obrigatoriasTotal }
         : null;
-    await finalizarVisita(visita.servidorId!, visita.latitudeFim!, visita.longitudeFim!, visita.fimEm, obrigatorias);
+    await finalizarVisita(visita.servidorId!, visita.latitudeFim!, visita.longitudeFim!, visita.fimEm, obrigatorias, visita.usarSaidaDetectada);
     // Servidor já tem tudo (check-in, registros e checkout confirmados) — a cópia local perdeu
     // utilidade, HistoricoScreen/VisitaDetalhe passam a mostrar essa visita vinda de lá.
     console.log(`[fila] checkout confirmado pelo servidor (visita ${visita.id})`);
     await excluirVisitaLocalCompleta(visita.id, 'checkout-confirmado');
     return true;
   } catch (err) {
+    // Fora do raio com a empresa em BLOQUEIA (docs/92 peça A): reenviar não adianta — a visita
+    // volta a ficar aberta no aparelho, com o motivo, pro promotor voltar à loja, finalizar pela
+    // saída detectada ou pedir ao gestor. Sem isso ela ficaria tentando de novo pra sempre.
+    if (checkoutForaDoRaio(err)) {
+      reportarRecusaFila('checkout', err);
+      await reabrirVisitaLocal(visita.id);
+      await atualizarErroVisita(visita.id, mensagemDeErroServidor(err) ?? 'Você está longe da loja. Volte à loja para finalizar ou peça ao seu gestor.');
+      return false;
+    }
     // Checkout não vira terminal (continua tentando), mas uma recusa 4xx merece rastro.
     if (!ehErroTransitorio(err)) reportarRecusaFila('checkout', err);
     const mensagem = ehErroDeRede(err)
@@ -421,6 +431,10 @@ async function enviarCheckout(visita: VisitaLocal): Promise<boolean> {
     await atualizarErroVisita(visita.id, mensagem);
     return false;
   }
+}
+
+function checkoutForaDoRaio(err: unknown): boolean {
+  return axios.isAxiosError<{ fora_do_raio?: boolean }>(err) && err.response?.status === 422 && err.response.data?.fora_do_raio === true;
 }
 
 function mensagemDeErroServidor(err: unknown): string | null {

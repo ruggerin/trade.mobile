@@ -42,6 +42,11 @@ export type SituacaoRastreamento =
   | 'INDISPONIVEL'
   /** Exigência da empresa só vale na jornada e agora está fora dela — rastreamento desligado. */
   | 'FORA_DA_JORNADA'
+  /**
+   * Intervalo (almoço) que a empresa desconsidera (docs/95): o que estiver errado com a localização
+   * não é cobrado agora. Se o rastreamento estiver ligado, continua coletando.
+   */
+  | 'NO_INTERVALO'
   /** Promotor desligou o switch do Perfil — só existe na exigência OPCIONAL. */
   | 'DESLIGADO_PELO_PROMOTOR'
   /** Nunca pediu a permissão — a UI explica o motivo antes de pedir. */
@@ -67,7 +72,7 @@ export interface EstadoRastreamento {
 
 /** Situações em que o rastreamento está como deveria (nada a cobrar do promotor). */
 export function situacaoRegular(situacao: SituacaoRastreamento): boolean {
-  return situacao === 'ATIVO' || situacao === 'INDISPONIVEL' || situacao === 'FORA_DA_JORNADA';
+  return situacao === 'ATIVO' || situacao === 'INDISPONIVEL' || situacao === 'FORA_DA_JORNADA' || situacao === 'NO_INTERVALO';
 }
 
 async function lerFlag(chave: string): Promise<boolean> {
@@ -182,6 +187,13 @@ function dentroDaJornada(jornada: { inicio: string; fim: string } | null): boole
   return hora >= jornada.inicio && hora <= jornada.fim;
 }
 
+/** Agora está no intervalo desconsiderado pela empresa (docs/95)? */
+export function noIntervalo(intervalo: { inicio: string; fim: string } | null, agora = new Date()): boolean {
+  if (!intervalo) return false;
+  const hora = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
+  return hora >= intervalo.inicio && hora <= intervalo.fim;
+}
+
 /** Situação → o que o servidor entende (App\Support\Rastreamento::SITUACOES). */
 function situacaoParaServidor(situacao: SituacaoRastreamento): string | null {
   switch (situacao) {
@@ -190,6 +202,7 @@ function situacaoParaServidor(situacao: SituacaoRastreamento): string | null {
       return 'SEM_PERMISSAO';
     case 'INDISPONIVEL':
     case 'FORA_DA_JORNADA':
+    case 'NO_INTERVALO':
       return null; // nada a cobrar — não informa
     default:
       return situacao;
@@ -275,7 +288,13 @@ async function avaliar(): Promise<EstadoRastreamento> {
  * situação mudou e devolve o estado pra UI. Nunca pede permissão sozinha.
  */
 export async function sincronizarRastreamento(): Promise<EstadoRastreamento> {
-  const estado = await avaliar();
+  let estado = await avaliar();
+  // No intervalo desconsiderado (docs/95) nada é cobrado: o que estiver irregular vira NO_INTERVALO
+  // (a tela não avisa nem bloqueia). Se estava ATIVO, continua ativo e coletando.
+  if (estado.exigencia !== 'OPCIONAL' && !situacaoRegular(estado.situacao)) {
+    const config = await buscarConfigRastreamento().catch(() => null);
+    if (noIntervalo(config?.intervalo ?? null)) estado = { ...estado, situacao: 'NO_INTERVALO', detalhe: null };
+  }
   void informarSituacao(estado);
   return estado;
 }

@@ -27,7 +27,8 @@ export type PontosVendaStackParamList = {
   // Só o id local (fila_visitas) — a visita nasce e vive na fila de envio até o checkout ser
   // confirmado pelo servidor, nunca chega aqui como um objeto Visita "de servidor" (ver
   // lib/visitaLocal.ts e docs/04-APP-MOBILE.md "Fila offline de envio").
-  VisitaAndamento: { visitaLocalId: string };
+  // `abrirFinalizar`: veio do push "visita ainda aberta" (docs/92) — já abre o "Finalizar visita".
+  VisitaAndamento: { visitaLocalId: string; abrirFinalizar?: boolean };
   // Mesma tela de VisitaDetalheScreen, registrada aqui também (e em AgendaStack) além de
   // HistoricoStack — "Últimas visitas" (HistoricoLojaPanel) abre isso a partir do check-in/da
   // visita em andamento, e sem a tela existir NESTA stack o "voltar" pulava pro índice do

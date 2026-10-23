@@ -4,6 +4,8 @@ import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { apiClient } from './api/client';
+import { contestarSaidaDetectada } from './api/visitas';
+import { lerVisitaLocalPorServidorId } from './db/filaVisitas';
 
 /**
  * Push notifications — docs/77-PUSH-NOTIFICATIONS.md §3.1. O servidor manda pela Expo (App\Support\Push)
@@ -26,6 +28,22 @@ const CANAIS: { id: string; nome: string; descricao: string }[] = [
   { id: 'agenda', nome: 'Agenda', descricao: 'Visita nova na sua agenda.' },
 ];
 
+/**
+ * Botões da notificação "visita ainda aberta" (docs/92 §6, protótipo tela 4) — o servidor manda
+ * `categoryId: 'saida_detectada'`. Os dois abrem o app: no Android o toque num botão com o app
+ * fechado não garante rodar o JS sem abrir.
+ */
+const CATEGORIA_SAIDA = 'saida_detectada';
+const ACAO_FINALIZAR = 'finalizar';
+const ACAO_AINDA_NA_LOJA = 'ainda_na_loja';
+
+async function criarCategorias(): Promise<void> {
+  await Notifications.setNotificationCategoryAsync(CATEGORIA_SAIDA, [
+    { identifier: ACAO_FINALIZAR, buttonTitle: 'Finalizar', options: { opensAppToForeground: true } },
+    { identifier: ACAO_AINDA_NA_LOJA, buttonTitle: 'Ainda estou na loja', options: { opensAppToForeground: true } },
+  ]).catch(() => {});
+}
+
 // App aberto: mostra o aviso mesmo assim (banner), senão o promotor não fica sabendo.
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -42,6 +60,7 @@ function suportado(): boolean {
 }
 
 async function criarCanais(): Promise<void> {
+  await criarCategorias();
   if (Platform.OS !== 'android') return;
   await Promise.all(
     CANAIS.map((c) =>
@@ -113,8 +132,16 @@ export async function esquecerPushLocal(): Promise<void> {
 
 type DadosPush = { tipo?: string; visita_id?: string; registro_id?: string; pedido_id?: string };
 
-/** Mesmo destino do sino (NotificacoesScreen): conversa do registro ou detalhe do pedido. */
-function abrirDestino(dados: DadosPush): void {
+/**
+ * Mesmo destino do sino (NotificacoesScreen): conversa do registro ou detalhe do pedido. Saída
+ * detectada (docs/92): "Ainda estou na loja" contesta no servidor; o toque ou "Finalizar" abre a
+ * visita deste aparelho já no "Finalizar visita".
+ */
+function abrirDestino(dados: DadosPush, acao?: string): void {
+  if ((dados.tipo === 'saida_detectada' || dados.tipo === 'visita_finalizada_automaticamente') && dados.visita_id) {
+    void abrirVisitaDoPush(dados.tipo, dados.visita_id, acao);
+    return;
+  }
   if (!navegacaoRef.isReady()) return;
   // A tipagem do ref é genérica (as abas aninham pilhas tipadas) — mesmo formato do BotaoNotificacoes.
   const navegar = navegacaoRef.navigate as (aba: string, params: object) => void;
@@ -125,6 +152,20 @@ function abrirDestino(dados: DadosPush): void {
   }
 }
 
+async function abrirVisitaDoPush(tipo: string, visitaServidorId: string, acao?: string): Promise<void> {
+  if (tipo === 'saida_detectada' && acao === ACAO_AINDA_NA_LOJA) {
+    await contestarSaidaDetectada(visitaServidorId).catch(() => {});
+    return;
+  }
+  const visita = await lerVisitaLocalPorServidorId(visitaServidorId).catch(() => null);
+  if (!visita || !navegacaoRef.isReady()) return;
+  const navegar = navegacaoRef.navigate as (aba: string, params: object) => void;
+  navegar('Agenda', {
+    screen: 'VisitaAndamento',
+    params: { visitaLocalId: visita.id, abrirFinalizar: tipo === 'saida_detectada' },
+  });
+}
+
 /**
  * Escuta o toque nas notificações enquanto o promotor está nas abas. Também trata a notificação que
  * ABRIU o app (estava fechado): ela chega antes deste listener existir.
@@ -132,11 +173,11 @@ function abrirDestino(dados: DadosPush): void {
 export function ouvirToquesNasNotificacoes(): () => void {
   if (!suportado()) return () => {};
   const assinatura = Notifications.addNotificationResponseReceivedListener((resposta) => {
-    abrirDestino(resposta.notification.request.content.data as DadosPush);
+    abrirDestino(resposta.notification.request.content.data as DadosPush, resposta.actionIdentifier);
   });
   const ultima = Notifications.getLastNotificationResponse();
   if (ultima) {
-    abrirDestino(ultima.notification.request.content.data as DadosPush);
+    abrirDestino(ultima.notification.request.content.data as DadosPush, ultima.actionIdentifier);
     Notifications.clearLastNotificationResponse();
   }
   return () => assinatura.remove();

@@ -50,6 +50,8 @@ export function textoSituacao(situacao: SituacaoRastreamento | null): TextoSitua
       return { titulo: 'Localização ativa', explicacao: 'Seu gestor vê sua posição durante o expediente.', acao: null };
     case 'FORA_DA_JORNADA':
       return { titulo: 'Fora do expediente', explicacao: 'A localização não é compartilhada fora do horário de trabalho.', acao: null };
+    case 'NO_INTERVALO':
+      return { titulo: 'Intervalo', explicacao: 'No seu intervalo a localização não é cobrada.', acao: null };
     default:
       return { titulo: 'Localização', explicacao: '', acao: null };
   }

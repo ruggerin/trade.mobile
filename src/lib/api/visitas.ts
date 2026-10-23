@@ -58,13 +58,16 @@ export async function buscarVisita(visitaId: string): Promise<Visita> {
   return data.visita;
 }
 
-// `fimEm` = hora em que o promotor finalizou no campo (docs/51 Fase 2).
+// `fimEm` = hora em que o promotor finalizou no campo (docs/51 Fase 2). `usarSaidaDetectada`:
+// o promotor aceitou finalizar no horário em que saiu da loja (docs/92) — a hora quem calcula é o
+// servidor; se ele já voltou à loja, o servidor faz o checkout normal com `fimEm`.
 export async function finalizarVisita(
   visitaId: string,
   latitude: number,
   longitude: number,
   fimEm?: string | null,
   obrigatorias?: { feitas: number; total: number } | null,
+  usarSaidaDetectada = false,
 ): Promise<Visita> {
   const { data } = await apiClient.patch<{ visita: Visita }>(`/visitas/${visitaId}/checkout`, {
     latitude,
@@ -72,8 +75,31 @@ export async function finalizarVisita(
     ...(fimEm ? { fim_em: fimEm } : {}),
     // Régua de XP (docs/88 §5.1): o servidor calcula a completude com o que o promotor viu.
     ...(obrigatorias ? { obrigatorias_feitas: Math.min(obrigatorias.feitas, obrigatorias.total), obrigatorias_total: obrigatorias.total } : {}),
+    ...(usarSaidaDetectada ? { usar_saida_detectada: true } : {}),
   });
   return data.visita;
+}
+
+// Saída detectada (docs/92 §3): o promotor está longe da loja agora e a visita segue aberta.
+export interface SaidaDetectada {
+  saiu_em: string;
+  latitude: number;
+  longitude: number;
+  distancia_metros: number;
+  dentro_do_raio: boolean | null;
+  distancia_atual_metros: number;
+  minutos_fora: number;
+}
+
+/** null = não saiu, a empresa não sugere a saída, ou sem rede (quem chama trata como "sem saída"). */
+export async function buscarSaidaDetectada(visitaId: string): Promise<SaidaDetectada | null> {
+  const { data } = await apiClient.get<{ saida: SaidaDetectada | null }>(`/visitas/${visitaId}/saida-detectada`);
+  return data.saida;
+}
+
+/** "Ainda estou na loja": silencia o aviso daquela visita e impede o fechamento automático. */
+export async function contestarSaidaDetectada(visitaId: string): Promise<void> {
+  await apiClient.post(`/visitas/${visitaId}/ainda-na-loja`);
 }
 
 export interface VisitasListResponse {

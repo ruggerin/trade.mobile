@@ -133,6 +133,8 @@ export interface ConfigRastreamento {
   exigencia: ExigenciaRastreamento;
   // A exigência só vale dentro da jornada (JORNADA_INICIO/FIM)? `jornada` null = o dia inteiro.
   jornada: { inicio: string; fim: string } | null;
+  // Intervalo (almoço) que a empresa desconsidera (docs/95) — no intervalo nada é cobrado. null = não desconsidera.
+  intervalo: { inicio: string; fim: string } | null;
 }
 
 // Mesmos defaults do backend (App\Support\Rastreamento / OperacaoDoDia): OPCIONAL, só na jornada,
@@ -144,6 +146,8 @@ export async function buscarConfigRastreamento(): Promise<ConfigRastreamento> {
   const intervalo = Number(ativo('RASTREAMENTO_INTERVALO_SEGUNDOS'));
   const exigencia = (ativo('RASTREAMENTO_EXIGENCIA') ?? '').toUpperCase();
   const soNaJornada = ativo('RASTREAMENTO_SO_NA_JORNADA');
+  const intervaloLigado = VALORES_VERDADEIROS.includes((ativo('JORNADA_INTERVALO_HABILITADO') ?? '').toLowerCase());
+  const intervaloAlmoco = { inicio: ativo('JORNADA_INTERVALO_INICIO') ?? '12:00', fim: ativo('JORNADA_INTERVALO_FIM') ?? '13:30' };
 
   return {
     intervaloSegundos: Number.isFinite(intervalo) && intervalo > 0 ? intervalo : 0,
@@ -152,5 +156,35 @@ export async function buscarConfigRastreamento(): Promise<ConfigRastreamento> {
       soNaJornada === undefined || ['1', 'true', 'sim', 'yes'].includes(soNaJornada.toLowerCase())
         ? { inicio: ativo('JORNADA_INICIO') ?? '07:00', fim: ativo('JORNADA_FIM') ?? '17:00' }
         : null,
+    // Fim antes do início (cadastro errado) = sem intervalo, igual ao servidor.
+    intervalo: intervaloLigado && intervaloAlmoco.inicio < intervaloAlmoco.fim ? intervaloAlmoco : null,
+  };
+}
+
+// Checkout pela saída detectada (docs/92). Mesma semântica do servidor (App\Support\CheckoutParametros):
+// raio ausente/inativo/0 = sem raio; modo padrão REGISTRA; sugestão desligada por padrão.
+export type ModoForaDoRaio = 'REGISTRA' | 'AVISA' | 'BLOQUEIA';
+
+export interface ConfigCheckout {
+  raioMetros: number | null;
+  foraDoRaio: ModoForaDoRaio;
+  sugerirSaida: boolean;
+  // Minutos longe da loja até o servidor fechar a visita sozinho (0 = nunca).
+  automaticoMinutos: number;
+}
+
+export async function buscarConfigCheckout(): Promise<ConfigCheckout> {
+  const parametros = await buscarParametros();
+  const ativo = (chave: string) => parametros.find((p) => p.chave === chave && p.ativo)?.valor?.trim();
+
+  const raio = Number(ativo('CHECKOUT_RAIO_METROS'));
+  const modo = (ativo('CHECKOUT_FORA_DO_RAIO') ?? '').toUpperCase();
+  const automatico = Number(ativo('CHECKOUT_AUTOMATICO_MINUTOS'));
+
+  return {
+    raioMetros: Number.isFinite(raio) && raio > 0 ? raio : null,
+    foraDoRaio: modo === 'AVISA' || modo === 'BLOQUEIA' ? modo : 'REGISTRA',
+    sugerirSaida: VALORES_VERDADEIROS.includes((ativo('CHECKOUT_SUGERIR_SAIDA') ?? '').toLowerCase()),
+    automaticoMinutos: Number.isFinite(automatico) && automatico > 0 ? automatico : 0,
   };
 }

@@ -16,6 +16,7 @@ import {
   listarVisitasLocaisPendentesOuRejeitadas,
   marcarCheckinEnviado,
   marcarVisitaRejeitada,
+  reabrirVisitaLocal,
   type VisitaLocal,
 } from './db/filaVisitas';
 import {
@@ -69,6 +70,7 @@ jest.mock('./db/filaVisitas', () => ({
   listarVisitasLocaisPendentesOuRejeitadas: jest.fn(),
   marcarCheckinEnviado: jest.fn(),
   marcarVisitaRejeitada: jest.fn(),
+  reabrirVisitaLocal: jest.fn(),
 }));
 jest.mock('./network', () => ({
   estaOnline: jest.fn(),
@@ -93,6 +95,7 @@ const mockListarVisitasLocaisPendentesOuRejeitadas = listarVisitasLocaisPendente
 >;
 const mockMarcarCheckinEnviado = marcarCheckinEnviado as jest.MockedFunction<typeof marcarCheckinEnviado>;
 const mockMarcarVisitaRejeitada = marcarVisitaRejeitada as jest.MockedFunction<typeof marcarVisitaRejeitada>;
+const mockReabrirVisitaLocal = reabrirVisitaLocal as jest.MockedFunction<typeof reabrirVisitaLocal>;
 const mockEstaOnline = estaOnline as jest.MockedFunction<typeof estaOnline>;
 const mockListarRespostasDaVisita = listarRespostasDaVisita as jest.MockedFunction<typeof listarRespostasDaVisita>;
 const mockResponderAcompanhamento = responderAcompanhamento as jest.MockedFunction<typeof responderAcompanhamento>;
@@ -118,6 +121,7 @@ function visitaLocal(overrides: Partial<VisitaLocal> = {}): VisitaLocal {
     fimEm: null,
     obrigatoriasFeitas: null,
     obrigatoriasTotal: null,
+    usarSaidaDetectada: false,
     erro: null,
     criadoEm: '2026-09-24T10:00:00.000Z',
     atualizadoEm: '2026-09-24T10:00:00.000Z',
@@ -338,7 +342,7 @@ describe('processarFilaEnvio', () => {
 
       await processarFilaEnvio('usuario-1');
 
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, null, { feitas: 2, total: 3 });
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, null, { feitas: 2, total: 3 }, false);
     });
   });
 
@@ -431,7 +435,7 @@ describe('processarFilaEnvio', () => {
       const resultado = await processarFilaEnvio('usuario-1');
 
       // 4º argumento = hora do campo (docs/51); visita sem fimEm local manda null e o servidor usa a chegada.
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.2, -60.1, null, null);
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.2, -60.1, null, null, false);
       expect(mockExcluirVisitaLocalCompleta).toHaveBeenCalledWith('visita-1', 'checkout-confirmado');
       expect(resultado.checkoutsConfirmados).toBe(1);
     });
@@ -493,7 +497,7 @@ describe('processarFilaEnvio', () => {
       liberarCheckin();
       const resultado = await primeira;
 
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T11:00:00.000Z', null);
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T11:00:00.000Z', null, false);
       expect(resultado.visitasEnviadas).toBe(1);
       expect(resultado.checkoutsConfirmados).toBe(1);
     });
@@ -514,7 +518,40 @@ describe('processarFilaEnvio', () => {
 
       expect(mockIniciarVisita).toHaveBeenCalledWith(expect.objectContaining({ inicio_em: '2026-09-24T10:00:00.000Z' }));
       expect(mockCriarRegistro).toHaveBeenCalledWith(expect.objectContaining({ criadoEm: '2026-09-24T10:20:00.000Z' }));
-      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T10:45:00.000Z', null);
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T10:45:00.000Z', null, false);
+    });
+  });
+
+  describe('checkout pela saída detectada (docs/92)', () => {
+    const finalizada = (overrides: Partial<VisitaLocal> = {}) =>
+      visitaLocal({ servidorId: 'servidor-1', status: 'FINALIZADA_LOCAL', latitudeFim: -3.1, longitudeFim: -60.0, fimEm: '2026-09-24T11:19:00.000Z', ...overrides });
+
+    it('manda o pedido de usar a saída detectada que o promotor escolheu', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([finalizada({ usarSaidaDetectada: true })]);
+      mockLerVisitaLocal.mockResolvedValue(finalizada({ usarSaidaDetectada: true }));
+      mockListarRegistrosLocais.mockResolvedValue([]);
+      mockFinalizarVisita.mockResolvedValue({} as any);
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(mockFinalizarVisita).toHaveBeenCalledWith('servidor-1', -3.1, -60.0, '2026-09-24T11:19:00.000Z', null, true);
+      expect(mockExcluirVisitaLocalCompleta).toHaveBeenCalledWith('visita-1', 'checkout-confirmado');
+    });
+
+    it('recusado fora do raio: reabre a visita com o motivo em vez de tentar pra sempre', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([finalizada()]);
+      mockLerVisitaLocal.mockResolvedValue(finalizada());
+      mockListarRegistrosLocais.mockResolvedValue([]);
+      mockFinalizarVisita.mockRejectedValue({
+        isAxiosError: true,
+        response: { status: 422, data: { message: 'Você está a 7,2 km da loja.', fora_do_raio: true } },
+      });
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(mockReabrirVisitaLocal).toHaveBeenCalledWith('visita-1');
+      expect(mockAtualizarErroVisita).toHaveBeenCalledWith('visita-1', 'Você está a 7,2 km da loja.');
+      expect(mockExcluirVisitaLocalCompleta).not.toHaveBeenCalled();
     });
   });
 

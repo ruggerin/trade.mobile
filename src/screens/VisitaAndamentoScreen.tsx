@@ -31,8 +31,11 @@ import {
   buscarAutonomiaSortimento,
   buscarCancelamentoRegistroPermitido,
   buscarCancelamentoVisitaPermitido,
+  buscarConfigCheckout,
   buscarDirecionamentoBloqueiaCheckout,
 } from '../lib/api/parametros';
+import { buscarSaidaDetectada, buscarVisita } from '../lib/api/visitas';
+import { calcularDistanciaMetros } from '../lib/location/distancia';
 import { buscarSortimento } from '../lib/api/sortimentoPontoVenda';
 import { lerUltimosRegistrosCache, lerUltimosRegistrosNaFila } from '../lib/db/ultimosRegistrosCache';
 import { listarTiposRegistro } from '../lib/api/tiposRegistro';
@@ -131,6 +134,20 @@ function formatarCronometro(inicioISO: string): string {
   const h = Math.floor(seg / 3600);
   const min = Math.floor(seg / 60) % 60;
   return h > 0 ? `${h}h ${String(min).padStart(2, '0')}min` : `${min}min`;
+}
+
+// Horas e minutos do "Saída detectada · 10:56 (5 min)" × "Se finalizar agora · 11:19 (28 min)" — docs/92.
+function textosSaida(saiuEmISO: string, inicioISO: string) {
+  const hora = (d: Date) => d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const inicio = new Date(inicioISO).getTime();
+  const saiu = new Date(saiuEmISO);
+  const agora = new Date();
+  return {
+    horaSaida: hora(saiu),
+    minutosSaida: Math.max(0, Math.round((saiu.getTime() - inicio) / 60_000)),
+    horaAgora: hora(agora),
+    minutosAgora: Math.max(0, Math.round((agora.getTime() - inicio) / 60_000)),
+  };
 }
 
 export function VisitaAndamentoScreen({ route, navigation }: Props) {
@@ -321,6 +338,29 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     queryFn: buscarDirecionamentoBloqueiaCheckout,
   });
   const bloqueiaCheckout = bloqueiaCheckoutQuery.data ?? false;
+  // Checkout pela saída detectada (docs/92): raio, sugestão da saída e fechamento automático.
+  const configCheckoutQuery = useQuery({ queryKey: ['config-checkout'], queryFn: buscarConfigCheckout });
+  const configCheckout = configCheckoutQuery.data;
+  const visitaAbertaNoServidor = !!visita?.servidorId && visita.status === 'CHECKIN_ENVIADO';
+  const saidaQuery = useQuery({
+    queryKey: ['saida-detectada', visita?.servidorId],
+    queryFn: () => buscarSaidaDetectada(visita!.servidorId!),
+    enabled: !!configCheckout?.sugerirSaida && visitaAbertaNoServidor && online,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const saida = visitaAbertaNoServidor ? (saidaQuery.data ?? null) : null;
+  // A visita pode ter sido fechada no servidor sem o aparelho saber: automático (docs/92 peça D) ou
+  // checkout forçado pelo gestor. Só consulta nas empresas com o fechamento automático ligado.
+  const visitaServidorQuery = useQuery({
+    queryKey: ['visita-servidor', visita?.servidorId],
+    queryFn: () => buscarVisita(visita!.servidorId!),
+    enabled: (configCheckout?.automaticoMinutos ?? 0) > 0 && visitaAbertaNoServidor && online,
+    refetchInterval: 120_000,
+    retry: false,
+  });
+  const fechadaNoServidor =
+    visitaAbertaNoServidor && visitaServidorQuery.data && visitaServidorQuery.data.status !== 'ABERTA' ? visitaServidorQuery.data : null;
 
   // Só os itens de tipo_item PRODUTO viram linha no checklist — ver ItemSortimentoProduto.
   const itensSortimento = useMemo<ItemSortimentoProduto[]>(() => {
@@ -665,12 +705,40 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   }
 
   const [finalizarAberto, setFinalizarAberto] = useState(false);
+  // Veio do push "visita ainda aberta" (docs/92): já abre o "Finalizar visita" — também quando a
+  // tela já estava aberta e só os parâmetros mudaram.
+  useEffect(() => {
+    if (route.params.abrirFinalizar) setFinalizarAberto(true);
+  }, [route.params.abrirFinalizar]);
   // Números mostrados na VisitaConcluida — guardados na hora do check-out, porque online a visita
   // (e os registros dela) some do aparelho logo depois que a fila confirma.
   const [resumoFinal, setResumoFinal] = useState<ResumoVisita | null>(null);
 
+  // Longe da loja com a empresa exigindo raio no check-out (docs/92 peça A) — medido ao abrir o
+  // "Finalizar". Só aviso/bloqueio na tela: quem decide de verdade é o servidor.
+  const [foraDoRaio, setForaDoRaio] = useState<{ distanciaTexto: string; bloqueia: boolean } | null>(null);
+  useEffect(() => {
+    setForaDoRaio(null);
+    const raioCheckout = configCheckout?.raioMetros ?? null;
+    if (!finalizarAberto || raioCheckout === null || configCheckout?.foraDoRaio === 'REGISTRA' || !pontoVenda) return;
+    let cancelado = false;
+    obterLocalizacaoAtual()
+      .then((coords) => {
+        const metros = calcularDistanciaMetros(coords.latitude, coords.longitude, Number(pontoVenda.latitude), Number(pontoVenda.longitude));
+        if (cancelado || metros <= raioCheckout) return;
+        setForaDoRaio({
+          distanciaTexto: metros < 1000 ? `${Math.round(metros)} m` : `${(metros / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} km`,
+          bloqueia: configCheckout?.foraDoRaio === 'BLOQUEIA',
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelado = true;
+    };
+  }, [finalizarAberto, configCheckout, pontoVenda]);
+
   const checkoutMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (usarSaidaDetectada: boolean) => {
       const coords = await obterLocalizacaoAtual();
       await finalizarVisitaLocal({
         usuarioId: usuario!.id,
@@ -678,6 +746,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         latitude: coords.latitude,
         longitude: coords.longitude,
         obrigatorias: { feitas: feitasObrigatorias, total: totalObrigatorias },
+        usarSaidaDetectada,
       });
     },
     onSuccess: () => setFinalizarAberto(false),
@@ -1044,6 +1113,50 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
               {visita.erro ? `\n${visita.erro}` : ''}
             </Text>
           </View>
+        ) : fechadaNoServidor ? (
+          // Fechada no servidor (automático, docs/92 §7, ou forçada pelo gestor): finalizar aqui
+          // manda o que faltar e limpa a visita do aparelho — o servidor mantém o horário de lá.
+          <View style={[styles.statusBox, styles.avisoSaida]}>
+            <Text style={styles.avisoSaidaTitulo}>
+              {fechadaNoServidor.checkout_tipo === 'AUTOMATICO' ? 'Visita finalizada automaticamente' : 'Visita já finalizada'}
+            </Text>
+            <Text style={styles.avisoSaidaTexto}>
+              {fechadaNoServidor.checkout_tipo === 'AUTOMATICO'
+                ? `Ela foi finalizada às ${fechadaNoServidor.fim_data ? new Date(fechadaNoServidor.fim_data).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '—'}, quando você saiu da loja.`
+                : 'O gestor finalizou esta visita.'}{' '}
+              Conclua aqui para enviar o que faltar.
+            </Text>
+            <Pressable
+              style={styles.avisoSaidaBotao}
+              onPress={() => checkoutMutation.mutate(false)}
+              disabled={checkoutMutation.isPending}
+              accessibilityRole="button"
+            >
+              <Text style={styles.avisoSaidaBotaoTexto}>{checkoutMutation.isPending ? 'Concluindo...' : 'Concluir'}</Text>
+            </Pressable>
+          </View>
+        ) : saida ? (
+          // Saída detectada (docs/92 peça B, protótipo tela 1).
+          <View style={[styles.statusBox, styles.avisoSaida]}>
+            <Text style={styles.avisoSaidaTitulo}>
+              Você saiu da loja às {new Date(saida.saiu_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+            </Text>
+            <Text style={styles.avisoSaidaTexto}>
+              Está a{' '}
+              {saida.distancia_atual_metros < 1000
+                ? `${saida.distancia_atual_metros} m`
+                : `${(saida.distancia_atual_metros / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} km`}{' '}
+              e a visita ainda está aberta. Finalize com o horário em que você saiu.
+            </Text>
+            <Pressable style={styles.avisoSaidaBotao} onPress={() => setFinalizarAberto(true)} accessibilityRole="button">
+              <Text style={styles.avisoSaidaBotaoTexto}>Finalizar visita</Text>
+            </Pressable>
+          </View>
+        ) : visita.erro ? (
+          // Ex.: check-out recusado fora do raio (docs/92 peça A) — a visita voltou a ficar aberta.
+          <View style={[styles.statusBox, styles.statusBoxErro]}>
+            <Text style={styles.statusBoxTexto}>{visita.erro}</Text>
+          </View>
         ) : null}
 
         {/* "Modo Vendedor" (docs/38-PEDIDO-VENDEDOR.md §8) — o pedido nasce no contexto da
@@ -1344,12 +1457,18 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         faltando={faltandoFinalizar}
         bloqueados={bloqueandoFinalizar}
         enviando={checkoutMutation.isPending}
+        lojaNome={visita.pontoVenda.fantasia}
+        saida={saida ? textosSaida(saida.saiu_em, visita.inicioEm) : null}
+        foraDoRaio={foraDoRaio}
         onCancelar={() => setFinalizarAberto(false)}
-        onConfirmar={() => {
+        onConfirmar={(usarSaida) => {
           setResumoFinal({
             lojaNome: visita.pontoVenda.fantasia,
             ordemServicoId: visita.ordemServicoId,
-            minutos: Math.max(1, Math.round((Date.now() - new Date(visita.inicioEm).getTime()) / 60_000)),
+            minutos: Math.max(
+              1,
+              Math.round(((usarSaida && saida ? new Date(saida.saiu_em).getTime() : Date.now()) - new Date(visita.inicioEm).getTime()) / 60_000),
+            ),
             nRegistros: registrosLocais.length,
             nRupturas: nRupturasFinalizar,
             feitasObrigatorias,
@@ -1357,7 +1476,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             nFaltando: faltandoFinalizar.length,
             xpPossivel: ordemServicoQuery.data?.xp_previsto ?? null,
           });
-          checkoutMutation.mutate();
+          checkoutMutation.mutate(usarSaida);
         }}
       />
 
@@ -1893,6 +2012,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: cores.acentoTexto,
   },
+  // Saída detectada / finalizada no servidor (docs/92) — âmbar, como no protótipo.
+  avisoSaida: { backgroundColor: amber[50], borderColor: amber[200], gap: espaco.sm },
+  avisoSaidaTitulo: { fontSize: 15, fontWeight: '800', color: amber[800] },
+  avisoSaidaTexto: { fontSize: 13, lineHeight: 18, color: amber[800] },
+  avisoSaidaBotao: {
+    minHeight: 44,
+    borderRadius: raio.md,
+    backgroundColor: amber[700],
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avisoSaidaBotaoTexto: { color: cores.branco, fontSize: 15, fontWeight: '700' },
   botaoDescartar: {
     marginTop: espaco.sm,
     alignSelf: 'flex-start',

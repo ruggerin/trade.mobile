@@ -6,22 +6,22 @@ import { HistoricoLojaPanel } from '../components/HistoricoLojaPanel';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Linking, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import MapView, { Circle, Marker } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useEspacoInferior } from '../lib/useEspacoInferior';
 import { useAuth } from '../lib/auth/AuthContext';
-import { liberarVisita, type LiberacaoVisita } from '../lib/api/visitas';
+import { buscarSaidaDetectada, liberarVisita, type LiberacaoVisita } from '../lib/api/visitas';
 import { exigeAgenda, exigeSequencia } from '../lib/rotaObrigatoria';
 import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
-import { buscarRaioCheckinMetros } from '../lib/api/parametros';
+import { buscarConfigCheckout, buscarRaioCheckinMetros } from '../lib/api/parametros';
 import { buscarAgendaSemanal } from '../lib/api/pontosVenda';
 import { calcularDistanciaMetros } from '../lib/location/distancia';
 import { obterLocalizacaoAtual, useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import type { OrdemServico } from '../types/api';
-import { buscarVisitaEmAndamento, iniciarVisitaLocal, VisitaEmAndamentoError } from '../lib/visitaLocal';
+import { buscarVisitaEmAndamento, finalizarVisitaLocal, iniciarVisitaLocal, VisitaEmAndamentoError } from '../lib/visitaLocal';
 import { amber, cores, espaco, indigo, neutro, raio as raioUI, sombraCard, tipografia, verde } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontoVendaCheckin'>;
@@ -93,6 +93,37 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
   const visitaEmAndamento = emAndamentoQuery.data ?? null;
   const emAndamentoNestaLoja = visitaEmAndamento?.pontoVenda.id === pontoVenda.id;
   const emAndamentoEmOutraLoja = visitaEmAndamento !== null && !emAndamentoNestaLoja;
+
+  // Visita aberta em outra loja da qual ele já saiu (docs/92, protótipo tela 3): finaliza lá no
+  // horário da saída e faz o check-in aqui num toque só.
+  const configCheckoutQuery = useQuery({ queryKey: ['config-checkout'], queryFn: buscarConfigCheckout });
+  const saidaOutraQuery = useQuery({
+    queryKey: ['saida-detectada', visitaEmAndamento?.servidorId],
+    queryFn: () => buscarSaidaDetectada(visitaEmAndamento!.servidorId!),
+    enabled:
+      emAndamentoEmOutraLoja &&
+      !!visitaEmAndamento?.servidorId &&
+      visitaEmAndamento.status === 'CHECKIN_ENVIADO' &&
+      !!configCheckoutQuery.data?.sugerirSaida,
+    retry: false,
+  });
+  const saidaOutra = emAndamentoEmOutraLoja ? (saidaOutraQuery.data ?? null) : null;
+  const [iniciarAposFinalizar, setIniciarAposFinalizar] = useState(false);
+  const finalizarOutraMutation = useMutation({
+    mutationFn: async () => {
+      const coords = await obterLocalizacaoAtual();
+      await finalizarVisitaLocal({
+        usuarioId: usuario!.id,
+        visitaLocalId: visitaEmAndamento!.id,
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        usarSaidaDetectada: true,
+      });
+      await emAndamentoQuery.refetch();
+    },
+    onSuccess: () => setIniciarAposFinalizar(true),
+    onError: () => Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.'),
+  });
 
   // Perfil obrigado a seguir a agenda (docs/74): pela aba Lojas a tela fica só pra consulta, e na
   // Agenda só o compromisso da vez inicia. A liberação do gestor abre a exceção. Visita já em
@@ -245,6 +276,15 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
     iniciandoRef.current = true;
     checkinMutation.mutate();
   }
+
+  // Depois de finalizar a outra visita pela saída: segue o "Iniciar visita" normal (com as regras
+  // de agenda), agora sem visita em andamento.
+  useEffect(() => {
+    if (!iniciarAposFinalizar || visitaEmAndamento) return;
+    setIniciarAposFinalizar(false);
+    iniciarVisita();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iniciarAposFinalizar, visitaEmAndamento]);
 
   function abrirRota() {
     void Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${pontoVenda.latitude},${pontoVenda.longitude}`);
@@ -528,6 +568,31 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
             <Text style={styles.avisoForaRaioTexto}>
               Você ainda está fora do raio. Dá pra iniciar, mas o servidor pode recusar o check-in.
             </Text>
+          </View>
+        )}
+
+        {saidaOutra && visitaEmAndamento && (
+          <View style={styles.saidaOutra}>
+            <View style={styles.saidaOutraCabecalho}>
+              <MaterialCommunityIcons name="lock-outline" size={18} color={amber[800]} />
+              <Text style={styles.saidaOutraTitulo}>Visita aberta na {visitaEmAndamento.pontoVenda.fantasia}</Text>
+            </View>
+            <Text style={styles.saidaOutraTexto}>
+              Você saiu de lá às {new Date(saidaOutra.saiu_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} e não
+              finalizou. Finalize nesse horário para fazer o check-in aqui.
+            </Text>
+            <Pressable
+              style={({ pressed }) => [styles.botaoPrimario, pressed && styles.botaoPressionado]}
+              onPress={() => finalizarOutraMutation.mutate()}
+              disabled={finalizarOutraMutation.isPending || checkinMutation.isPending}
+              accessibilityRole="button"
+            >
+              <Text style={styles.botaoPrimarioTexto}>
+                {finalizarOutraMutation.isPending
+                  ? 'Finalizando...'
+                  : `Finalizar às ${new Date(saidaOutra.saiu_em).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })} e fazer check-in`}
+              </Text>
+            </Pressable>
           </View>
         )}
 
@@ -1094,6 +1159,19 @@ const styles = StyleSheet.create({
     padding: espaco.lg,
     gap: espaco.sm,
   },
+  // Visita aberta em outra loja com saída detectada (docs/92).
+  saidaOutra: {
+    gap: espaco.sm,
+    padding: espaco.md,
+    borderRadius: raioUI.lg,
+    backgroundColor: amber[50],
+    borderWidth: 1,
+    borderColor: amber[200],
+    marginBottom: espaco.sm,
+  },
+  saidaOutraCabecalho: { flexDirection: 'row', alignItems: 'center', gap: espaco.sm },
+  saidaOutraTitulo: { fontSize: 15, fontWeight: '800', color: amber[800], flexShrink: 1 },
+  saidaOutraTexto: { fontSize: 13, lineHeight: 18, color: amber[800] },
   avisoForaRaio: {
     flexDirection: 'row',
     alignItems: 'flex-start',

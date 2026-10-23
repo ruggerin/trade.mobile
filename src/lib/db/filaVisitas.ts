@@ -42,6 +42,8 @@ export interface VisitaLocal {
   /** "N de M obrigatórias" que o promotor viu ao finalizar — vai no check-out (régua de XP, docs/88 §5.1). */
   obrigatoriasFeitas: number | null;
   obrigatoriasTotal: number | null;
+  /** Finalizar no horário em que saiu da loja (docs/92) — o servidor calcula a hora. */
+  usarSaidaDetectada: boolean;
   erro: string | null;
   criadoEm: string;
   atualizadoEm: string;
@@ -65,6 +67,7 @@ interface LinhaFilaVisita {
   fim_em: string | null;
   obrigatorias_feitas?: number | null;
   obrigatorias_total?: number | null;
+  usar_saida_detectada?: number | null;
   erro: string | null;
   criado_em: string;
   atualizado_em: string;
@@ -88,6 +91,7 @@ function paraVisitaLocal(linha: LinhaFilaVisita): VisitaLocal {
     fimEm: linha.fim_em,
     obrigatoriasFeitas: linha.obrigatorias_feitas ?? null,
     obrigatoriasTotal: linha.obrigatorias_total ?? null,
+    usarSaidaDetectada: Boolean(linha.usar_saida_detectada),
     erro: linha.erro,
     criadoEm: linha.criado_em,
     atualizadoEm: linha.atualizado_em,
@@ -149,6 +153,7 @@ export async function criarVisitaLocal(dados: NovaVisitaLocal): Promise<VisitaLo
     fimEm: null,
     obrigatoriasFeitas: null,
     obrigatoriasTotal: null,
+    usarSaidaDetectada: false,
     erro: null,
     criadoEm: agora,
     atualizadoEm: agora,
@@ -158,6 +163,13 @@ export async function criarVisitaLocal(dados: NovaVisitaLocal): Promise<VisitaLo
 export async function lerVisitaLocal(id: string): Promise<VisitaLocal | null> {
   const db = await getDatabase();
   const linha = await db.getFirstAsync<LinhaFilaVisita>('SELECT * FROM fila_visitas WHERE id = ?', [id]);
+  return linha ? paraVisitaLocal(linha) : null;
+}
+
+/** Visita deste aparelho pelo id do servidor — o push só leva o id de lá (docs/92). */
+export async function lerVisitaLocalPorServidorId(servidorId: string): Promise<VisitaLocal | null> {
+  const db = await getDatabase();
+  const linha = await db.getFirstAsync<LinhaFilaVisita>('SELECT * FROM fila_visitas WHERE servidor_id = ?', [servidorId]);
   return linha ? paraVisitaLocal(linha) : null;
 }
 
@@ -240,7 +252,7 @@ export async function reabrirVisitaLocal(id: string): Promise<void> {
   await escrever(
     `UPDATE fila_visitas
      SET status = CASE WHEN servidor_id IS NULL THEN 'RASCUNHO' ELSE 'CHECKIN_ENVIADO' END,
-         latitude_fim = NULL, longitude_fim = NULL, fim_em = NULL, erro = NULL, atualizado_em = ?
+         latitude_fim = NULL, longitude_fim = NULL, fim_em = NULL, usar_saida_detectada = 0, erro = NULL, atualizado_em = ?
      WHERE id = ? AND status = 'FINALIZADA_LOCAL'`,
     [new Date().toISOString(), id],
   );
@@ -251,13 +263,14 @@ export async function finalizarVisitaLocal(
   latitude: number,
   longitude: number,
   obrigatorias?: { feitas: number; total: number },
+  usarSaidaDetectada = false,
 ): Promise<void> {
   const db = await getDatabase();
   const agora = new Date().toISOString();
   await escrever(
     `UPDATE fila_visitas SET status = 'FINALIZADA_LOCAL', latitude_fim = ?, longitude_fim = ?, fim_em = ?,
-       obrigatorias_feitas = ?, obrigatorias_total = ?, atualizado_em = ? WHERE id = ?`,
-    [latitude, longitude, agora, obrigatorias?.feitas ?? null, obrigatorias?.total ?? null, agora, id],
+       obrigatorias_feitas = ?, obrigatorias_total = ?, usar_saida_detectada = ?, atualizado_em = ? WHERE id = ?`,
+    [latitude, longitude, agora, obrigatorias?.feitas ?? null, obrigatorias?.total ?? null, usarSaidaDetectada ? 1 : 0, agora, id],
   );
 }
 

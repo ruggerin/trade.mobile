@@ -2,7 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { amber, cores, espaco, neutro, raio, verde, vermelho } from '../theme';
+import { amber, cores, espaco, indigo, neutro, raio, verde, vermelho } from '../theme';
 
 interface FinalizarVisitaModalProps {
   visible: boolean;
@@ -15,8 +15,17 @@ interface FinalizarVisitaModalProps {
   /** Obrigatórios que travam o check-out (DIRECIONAMENTO_BLOQUEIA_CHECKOUT). Com algum, não dá pra finalizar. */
   bloqueados?: string[];
   enviando: boolean;
+  lojaNome?: string;
+  /**
+   * Saída detectada (docs/92 peça B): o promotor saiu da loja e não voltou. O sheet compara
+   * "saída detectada" com "agora" e o botão principal finaliza no horário da saída.
+   */
+  saida?: { horaSaida: string; minutosSaida: number; horaAgora: string; minutosAgora: number } | null;
+  /** Longe da loja com a empresa exigindo raio no check-out (docs/92 peça A). */
+  foraDoRaio?: { distanciaTexto: string; bloqueia: boolean } | null;
   onCancelar: () => void;
-  onConfirmar: () => void;
+  /** `usarSaida` = finalizar no horário da saída detectada. */
+  onConfirmar: (usarSaida: boolean) => void;
 }
 
 const TEMPO_SEGURAR_MS = 800;
@@ -35,12 +44,18 @@ export function FinalizarVisitaModal({
   faltando,
   bloqueados = [],
   enviando,
+  lojaNome,
+  saida = null,
+  foraDoRaio = null,
   onCancelar,
   onConfirmar,
 }: FinalizarVisitaModalProps) {
   const insets = useSafeAreaInsets();
-  const bloqueado = bloqueados.length > 0;
+  // Longe da loja e a empresa bloqueia: só a saída detectada (posição de quando ainda estava lá) passa.
+  const bloqueadoRaio = !!foraDoRaio?.bloqueia && !saida;
+  const bloqueado = bloqueados.length > 0 || bloqueadoRaio;
   const pendente = faltando.length > 0 || bloqueado;
+  const usarSaida = !!saida;
   const progresso = useRef(new Animated.Value(0)).current;
   const [larguraBotao, setLarguraBotao] = useState(400);
 
@@ -52,7 +67,7 @@ export function FinalizarVisitaModal({
     if (enviando) return;
     Animated.timing(progresso, { toValue: 1, duration: TEMPO_SEGURAR_MS, easing: Easing.linear, useNativeDriver: true }).start(
       ({ finished }) => {
-        if (finished) onConfirmar();
+        if (finished) onConfirmar(usarSaida);
       },
     );
   }
@@ -73,10 +88,63 @@ export function FinalizarVisitaModal({
 
           <View>
             <Text style={styles.titulo}>
-              {bloqueado ? 'Responda antes de finalizar' : pendente ? 'Finalizar com pendências?' : 'Tudo pronto por aqui'}
+              {bloqueadoRaio
+                ? 'Você está longe da loja'
+                : bloqueado
+                  ? 'Responda antes de finalizar'
+                  : saida
+                    ? `Você saiu da loja às ${saida.horaSaida}?`
+                    : pendente
+                      ? 'Finalizar com pendências?'
+                      : 'Tudo pronto por aqui'}
             </Text>
-            <Text style={styles.subtitulo}>{cronometroTexto} na loja · o check-out usa sua localização atual</Text>
+            <Text style={styles.subtitulo}>
+              {saida && !bloqueado
+                ? `Detectamos que você se afastou${lojaNome ? ` da ${lojaNome}` : ' da loja'} e não voltou. Finalizar nesse horário mantém o seu tempo de loja correto.`
+                : `${cronometroTexto} na loja · o check-out usa sua localização atual`}
+            </Text>
           </View>
+
+          {saida && !bloqueado && (
+            <View style={styles.comparacao}>
+              <View style={[styles.comparacaoLinha, styles.comparacaoSaida]}>
+                <View style={[styles.comparacaoIcone, { backgroundColor: cores.primaria }]}>
+                  <MaterialCommunityIcons name="check" size={18} color={cores.branco} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.comparacaoTitulo, { color: indigo[800] }]}>Saída detectada · {saida.horaSaida}</Text>
+                  <Text style={[styles.comparacaoTexto, { color: indigo[700] }]}>Na loja até {saida.horaSaida}</Text>
+                </View>
+                <Text style={[styles.comparacaoMinutos, { color: indigo[800] }]}>{saida.minutosSaida} min</Text>
+              </View>
+              <View style={styles.comparacaoLinha}>
+                <View style={[styles.comparacaoIcone, { backgroundColor: neutro[100] }]}>
+                  <MaterialCommunityIcons name="clock-outline" size={18} color={neutro[500]} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.comparacaoTitulo}>Se finalizar agora · {saida.horaAgora}</Text>
+                  <Text style={styles.comparacaoTexto}>Conta {Math.max(0, saida.minutosAgora - saida.minutosSaida)} min fora da loja</Text>
+                </View>
+                <Text style={[styles.comparacaoMinutos, { color: neutro[500] }]}>{saida.minutosAgora} min</Text>
+              </View>
+            </View>
+          )}
+
+          {foraDoRaio && !saida && (
+            <View style={foraDoRaio.bloqueia ? styles.bloqueadoBox : styles.faltandoBox}>
+              <View style={styles.bloqueadoCabecalho}>
+                <MaterialCommunityIcons name="map-marker-distance" size={16} color={foraDoRaio.bloqueia ? vermelho[800] : amber[800]} />
+                <Text style={foraDoRaio.bloqueia ? styles.bloqueadoTitulo : styles.faltandoTitulo}>
+                  Você está a {foraDoRaio.distanciaTexto} da loja
+                </Text>
+              </View>
+              <Text style={foraDoRaio.bloqueia ? styles.bloqueadoTexto : styles.faltandoTexto}>
+                {foraDoRaio.bloqueia
+                  ? 'A empresa exige finalizar na loja. Volte à loja para finalizar ou peça ao seu gestor.'
+                  : 'O check-out vai ficar marcado como fora do raio da loja.'}
+              </Text>
+            </View>
+          )}
 
           <View style={styles.resumo}>
             {totalObrigatorias > 0 && (
@@ -114,7 +182,7 @@ export function FinalizarVisitaModal({
             </View>
           </View>
 
-          {bloqueado && (
+          {bloqueados.length > 0 && (
             <View style={styles.bloqueadoBox}>
               <View style={styles.bloqueadoCabecalho}>
                 <MaterialCommunityIcons name="lock-outline" size={16} color={vermelho[800]} />
@@ -144,7 +212,7 @@ export function FinalizarVisitaModal({
 
           {bloqueado ? (
             <Pressable style={styles.botaoSegurar} onPress={onCancelar} accessibilityRole="button">
-              <Text style={styles.botaoSegurarTexto}>Voltar e responder</Text>
+              <Text style={styles.botaoSegurarTexto}>{bloqueadoRaio && bloqueados.length === 0 ? 'Voltar para a visita' : 'Voltar e responder'}</Text>
             </Pressable>
           ) : (
             <Pressable
@@ -157,7 +225,7 @@ export function FinalizarVisitaModal({
               accessibilityLabel={pendente ? 'Finalizar visita com pendências' : 'Finalizar visita'}
               accessibilityHint="Segure até a barra encher"
               accessibilityActions={[{ name: 'activate' }]}
-              onAccessibilityAction={() => onConfirmar()}
+              onAccessibilityAction={() => onConfirmar(usarSaida)}
             >
               <Animated.View
                 style={[
@@ -172,9 +240,19 @@ export function FinalizarVisitaModal({
               {enviando ? (
                 <ActivityIndicator color={cores.branco} />
               ) : (
-                <Text style={styles.botaoSegurarTexto}>{pendente ? 'Segure para finalizar assim' : 'Segure para finalizar'}</Text>
+                <Text style={styles.botaoSegurarTexto}>
+                  {saida ? `Segure para finalizar às ${saida.horaSaida}` : pendente ? 'Segure para finalizar assim' : 'Segure para finalizar'}
+                </Text>
               )}
             </Pressable>
+          )}
+          {saida && !bloqueado && !foraDoRaio?.bloqueia && (
+            <Pressable style={styles.botaoAgora} onPress={() => onConfirmar(false)} disabled={enviando} accessibilityRole="button">
+              <Text style={styles.botaoAgoraTexto}>Finalizar agora ({saida.horaAgora})</Text>
+            </Pressable>
+          )}
+          {saida && !bloqueado && foraDoRaio?.bloqueia && (
+            <Text style={styles.notaRaio}>Você está fora do raio da loja: só dá para finalizar pelo horário da saída.</Text>
           )}
           {!bloqueado && (
             <Pressable style={styles.botaoVoltar} onPress={onCancelar} disabled={enviando}>
@@ -233,5 +311,24 @@ const styles = StyleSheet.create({
   botaoSegurarFill: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(255,255,255,0.25)' },
   botaoSegurarTexto: { color: cores.branco, fontSize: 16, fontWeight: '700' },
   botaoVoltar: { minHeight: 40, alignItems: 'center', justifyContent: 'center', marginTop: -espaco.sm },
+  // Saída detectada (docs/92): "saída detectada" × "se finalizar agora".
+  comparacao: { borderRadius: raio.lg, borderWidth: 1, borderColor: cores.borda, overflow: 'hidden' },
+  comparacaoLinha: { flexDirection: 'row', alignItems: 'center', gap: espaco.md, paddingVertical: 12, paddingHorizontal: 14 },
+  comparacaoSaida: { backgroundColor: indigo[50], borderBottomWidth: 1, borderBottomColor: indigo[100] },
+  comparacaoIcone: { width: 32, height: 32, borderRadius: raio.pill, alignItems: 'center', justifyContent: 'center' },
+  comparacaoTitulo: { fontSize: 14, fontWeight: '700', color: neutro[700] },
+  comparacaoTexto: { fontSize: 13, color: cores.textoSecundario },
+  comparacaoMinutos: { fontSize: 18, fontWeight: '800' },
+  botaoAgora: {
+    minHeight: 48,
+    borderRadius: raio.lg,
+    borderWidth: 1,
+    borderColor: neutro[300],
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -espaco.sm,
+  },
+  botaoAgoraTexto: { color: neutro[700], fontSize: 15, fontWeight: '600' },
+  notaRaio: { fontSize: 12, color: cores.textoSecundario, textAlign: 'center', marginTop: -espaco.sm },
   botaoVoltarTexto: { color: cores.textoSecundario, fontSize: 14, fontWeight: '600' },
 });

@@ -25,7 +25,8 @@ export type AgendaStackParamList = {
   // mensagem de quem vem antes; a tela abre pra consulta, sem iniciar.
   PontoVendaCheckin: { pontoVenda: PontoVenda; ordemServico?: OrdemServico; ordemServicoEscolhida?: boolean; foraDaVez?: string };
   // Ver comentário equivalente em PontosVendaStack.tsx.
-  VisitaAndamento: { visitaLocalId: string };
+  // `abrirFinalizar`: veio do push "visita ainda aberta" (docs/92) — já abre o "Finalizar visita".
+  VisitaAndamento: { visitaLocalId: string; abrirFinalizar?: boolean };
   // Ver comentário equivalente em PontosVendaStack.tsx.
   VisitaDetalhe: VisitaDetalheParams;
   // Detalhe do pedido do ERP (docs/54) — aberto pelo cartão da loja ou pelo sino.

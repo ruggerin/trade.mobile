@@ -495,6 +495,8 @@ export interface Visita {
   fim_latitude: number | null;
   fim_longitude: number | null;
   fim_distancia_metros: number | null;
+  // PROMOTOR, ADMIN, SAIDA_DETECTADA ou AUTOMATICO (docs/92) — null enquanto aberta.
+  checkout_tipo?: 'PROMOTOR' | 'ADMIN' | 'SAIDA_DETECTADA' | 'AUTOMATICO' | null;
   registros?: VisitaRegistro[];
   // Só presente quando a API usa withCount('registros') (ver VisitaController::index) — hoje
   // é o caso de GET /visitas (lista), mas não de GET /visitas/{uuid} (que já carrega

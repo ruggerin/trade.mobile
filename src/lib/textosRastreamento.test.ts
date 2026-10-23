@@ -7,6 +7,7 @@ describe('textoSituacao', () => {
   const todas: SituacaoRastreamento[] = [
     'INDISPONIVEL',
     'FORA_DA_JORNADA',
+    'NO_INTERVALO',
     'DESLIGADO_PELO_PROMOTOR',
     'PRECISA_PERMISSAO',
     'PERMISSAO_RECUSADA',
