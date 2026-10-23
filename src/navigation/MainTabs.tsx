@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import type { NavigatorScreenParams } from '@react-navigation/native';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, StyleSheet, View, type AppStateStatus } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,6 +9,7 @@ import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { OfertaBiometriaModal } from '../components/OfertaBiometriaModal';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
 import { AvisoRastreamento, BloqueioRastreamento } from '../components/RastreamentoExigencia';
+import { buscarPontuacaoHoje } from '../lib/api/xp';
 import { useAuth } from '../lib/auth/AuthContext';
 import { podeTirarPedido } from '../lib/pedidoVenda';
 import { listarVisitasLocaisPendentesOuRejeitadas } from '../lib/db/filaVisitas';
@@ -18,7 +19,9 @@ import { ouvirToquesNasNotificacoes, registrarPush } from '../lib/push';
 import { useAoServidorMudarPelaFila } from '../lib/useFilaEnvioAtualizada';
 import { useRastreamento } from '../lib/useRastreamento';
 import { sincronizarSeNecessario } from '../lib/sync';
+import { formatarXp, xpVisivel } from '../lib/xp';
 import { PerfilScreen } from '../screens/PerfilScreen';
+import { PontosScreen } from '../screens/PontosScreen';
 import { cores, neutro } from '../theme';
 import { AgendaStack, type AgendaStackParamList } from './AgendaStack';
 import { HistoricoStack, type HistoricoStackParamList } from './HistoricoStack';
@@ -34,6 +37,7 @@ const ICONES_TAB: Record<keyof MainTabsParamList, IconeMdi> = {
   Pedidos: 'cart-outline',
   Planogramas: 'view-grid-outline',
   Historico: 'clock-time-four-outline',
+  Pontos: 'trophy-outline',
   Perfil: 'account-circle-outline',
 };
 
@@ -53,6 +57,8 @@ export type MainTabsParamList = {
   // dentro desta aba de qualquer lugar do app — ver components/BotaoNotificacoes.tsx e
   // docs/29-NOTIFICACOES-MOBILE.md §4.
   Historico: NavigatorScreenParams<HistoricoStackParamList>;
+  // Régua de XP (docs/88): só aparece quando a empresa mostra a pontuação ao promotor.
+  Pontos: undefined;
   Perfil: undefined;
 };
 
@@ -166,6 +172,10 @@ export function MainTabs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [usuario?.id]);
 
+  // Selo da aba Pontos: quanto ele já fez hoje (mesma query da tela, sem buscar duas vezes).
+  const xpHojeQuery = useQuery({ queryKey: ['xp', 'hoje'], queryFn: buscarPontuacaoHoje, enabled: xpVisivel(usuario) });
+  const xpHoje = xpHojeQuery.data?.total ?? 0;
+
   return (
     <View style={styles.raiz}>
     <BloqueioRastreamento
@@ -222,6 +232,20 @@ export function MainTabs() {
         options={{ title: 'Planogramas', headerShown: false }}
       />
       <Tab.Screen name="Historico" component={HistoricoStack} options={{ title: 'Histórico', headerShown: false }} />
+      {/* Aba própria da pontuação (régua de XP, docs/88), só com a empresa mostrando ao promotor.
+          O selo diz quanto ele já fez hoje. */}
+      {xpVisivel(usuario) && (
+        <Tab.Screen
+          name="Pontos"
+          component={PontosScreen}
+          options={{
+            title: 'Pontos',
+            headerTitle: 'Seus pontos',
+            tabBarBadge: xpHoje ? `+${formatarXp(xpHoje)}` : undefined,
+            tabBarBadgeStyle: styles.selo,
+          }}
+        />
+      )}
       <Tab.Screen
         name="Perfil"
         component={PerfilScreen}
@@ -255,6 +279,12 @@ const styles = StyleSheet.create({
   tabLabel: {
     fontSize: 11,
     fontWeight: '700',
+  },
+  selo: {
+    backgroundColor: '#f59e0b',
+    color: '#111827',
+    fontSize: 10,
+    fontWeight: '900',
   },
   tabIconePill: {
     width: 46,

@@ -336,7 +336,7 @@ export function AgendaScreen({ navigation }: Props) {
                     )}
                   </View>
                   {comXp && (
-                    <Pressable style={styles.progressoXp} onPress={() => navigation.navigate('MinhaPontuacao')} accessibilityRole="button">
+                    <Pressable style={styles.progressoXp} onPress={() => navigation.getParent()?.navigate('Pontos')} accessibilityRole="button">
                       <MaterialCommunityIcons name="star-four-points-outline" size={16} color={amber[600]} />
                       <Text style={styles.progressoXpTexto}>
                         {xpHojeQuery.data ? `${formatarXp(xpHojeQuery.data.total)} XP hoje` : 'Sua pontuação'}

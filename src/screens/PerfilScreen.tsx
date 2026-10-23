@@ -260,17 +260,6 @@ export function PerfilScreen() {
         </View>
       )}
 
-      {/* Régua de XP (docs/88 §12): "Minha pontuação" também abre pelo Perfil. */}
-      {xpVisivel(usuario) && (
-        <Pressable
-          style={({ pressed }) => [styles.botaoSync, styles.botaoPontuacao, pressed && styles.botaoPressionado]}
-          onPress={() => navigation.navigate('Agenda', { screen: 'MinhaPontuacao' })}
-        >
-          <MaterialCommunityIcons name="star-four-points-outline" size={18} color={cores.primaria} />
-          <Text style={styles.botaoSyncTexto}>Minha pontuação</Text>
-        </Pressable>
-      )}
-
       {/* Sincronizar logo abaixo da empresa — não precisa rolar a tela pra achar. */}
       <View style={styles.syncBox}>
         <Pressable
@@ -531,7 +520,6 @@ const styles = StyleSheet.create({
     color: cores.primaria,
     marginTop: 6,
   },
-  botaoPontuacao: { marginBottom: espaco.md },
   botaoSync: {
     flexDirection: 'row',
     gap: espaco.sm,

@@ -1,6 +1,4 @@
-import { MinhaPontuacaoScreen } from '../screens/MinhaPontuacaoScreen';
 import { PontuacaoVisitaScreen, type PontuacaoVisitaParams } from '../screens/PontuacaoVisitaScreen';
-import { RankingEquipeScreen } from '../screens/RankingEquipeScreen';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { PontoVendaCheckinScreen } from '../screens/PontoVendaCheckinScreen';
 import { PontosVendaListScreen } from '../screens/PontosVendaListScreen';
@@ -37,9 +35,7 @@ export type PontosVendaStackParamList = {
   // Detalhe do pedido do ERP (docs/54) — aberto pelo cartão da loja ou pelo sino.
   PedidoDetalhe: PedidoDetalheParams;
   // Régua de XP (docs/88 §12): Minha pontuação, pontuação da visita e ranking da equipe.
-  MinhaPontuacao: undefined;
   PontuacaoVisita: PontuacaoVisitaParams;
-  RankingEquipe: undefined;
   // Pedido de Venda a partir da visita ("Tirar pedido") — mesma tela da aba Pedidos, ver
   // PedidosStack.tsx e docs/38-PEDIDO-VENDEDOR.md §8.
   PedidoVenda: PedidoVendaParams | undefined;
@@ -63,9 +59,7 @@ export function PontosVendaStack() {
       <Stack.Screen name="VisitaAndamento" component={VisitaAndamentoScreen} options={{ headerShown: false }} />
       <Stack.Screen name="VisitaDetalhe" component={VisitaDetalheScreen} options={{ title: 'Detalhe da visita' }} />
       <Stack.Screen name="PedidoDetalhe" component={PedidoDetalheScreen} options={{ title: 'Pedido' }} />
-      <Stack.Screen name="MinhaPontuacao" component={MinhaPontuacaoScreen} options={{ title: 'Minha pontuação' }} />
       <Stack.Screen name="PontuacaoVisita" component={PontuacaoVisitaScreen} options={{ title: 'Pontuação da visita' }} />
-      <Stack.Screen name="RankingEquipe" component={RankingEquipeScreen} options={{ title: 'Ranking da equipe' }} />
       <Stack.Screen name="PedidoVenda" component={PedidoVendaScreen} options={{ title: 'Pedido' }} />
     </Stack.Navigator>
   );
