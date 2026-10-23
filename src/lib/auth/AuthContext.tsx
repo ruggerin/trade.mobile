@@ -4,6 +4,7 @@ import { AppState } from 'react-native';
 import * as authApi from '../api/auth';
 import { APP_DESATUALIZADO_EVENT, authEvents, SessaoEncerradaEvent, UNAUTHORIZED_EVENT } from '../api/client';
 import { limparCacheLocal } from '../db/database';
+import { lerUsuarioCache, salvarUsuarioCache } from '../db/usuarioCache';
 import { aparelhoTemBiometria, confirmarBiometria, preferenciaBiometria } from './biometria';
 import { credenciaisStorage } from './credentialsStorage';
 import { renovarSessaoSeNecessario } from './renovacaoSessao';
@@ -68,16 +69,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [appDesatualizado, setAppDesatualizado] = useState(false);
   const [bloqueadoPorBiometria, setBloqueadoPorBiometria] = useState(false);
   const [biometria, setBiometria] = useState<EstadoBiometria | null>(null);
+  // Último usuário salvo no aparelho: abre o app sem sinal com a sessão válida (o /auth/me falha).
+  const [usuarioSalvo, setUsuarioSalvo] = useState<Usuario | null>(null);
 
   useEffect(() => {
     let cancelado = false;
     (async () => {
       const valor = await tokenStorage.get();
+      const salvo = valor ? await lerUsuarioCache().catch(() => null) : null;
       // Abrir o app com sessão ativa pede a biometria, se o usuário ligou a opção e o aparelho tem.
       // O login confere que a preferência salva é de quem está logado (ver login abaixo).
       const exigeBiometria = Boolean(valor) && (await biometriaLigadaNoAparelho());
       if (!cancelado) {
         setBloqueadoPorBiometria(exigeBiometria);
+        setUsuarioSalvo(salvo);
         setToken(valor);
         setTokenCarregado(true);
       }
@@ -89,12 +94,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const meQuery = useQuery({
     queryKey: ['auth', 'me'],
-    queryFn: authApi.me,
+    queryFn: async () => {
+      const resposta = await authApi.me();
+      void salvarUsuarioCache(resposta.usuario).catch(() => {});
+      return resposta;
+    },
     enabled: Boolean(token) && !usuarioDoLogin,
     retry: false,
   });
 
-  const usuario = usuarioDoLogin ?? meQuery.data?.usuario ?? null;
+  // Sem sinal, o /auth/me falha: usa a cópia salva e o app abre normal. Sessão revogada de verdade
+  // volta 401 no primeiro pedido com rede e o interceptor leva pro login (limpando a cópia).
+  const usuario = usuarioDoLogin ?? meQuery.data?.usuario ?? usuarioSalvo;
 
   // Sentry: identifica o erro pelo uuid do usuário e da empresa — nunca nome, e-mail nem telefone.
   useEffect(() => {
@@ -150,6 +161,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (evento instanceof SessaoEncerradaEvent && evento.mensagem) setAvisoSessao(evento.mensagem);
       setToken(null);
       setUsuarioDoLogin(null);
+      setUsuarioSalvo(null);
       queryClient.clear();
       // Sessão pode ter sido revogada por outro promotor logando no mesmo dispositivo (trava
       // de 1 sessão, ver docs/02-API-BACKEND.md) — limpa o cache pra não vazar a carteira de
@@ -196,10 +208,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await tokenStorage.set(response.token);
     setToken(response.token);
     setUsuarioDoLogin(response.usuario);
+    await salvarUsuarioCache(response.usuario).catch(() => {});
   }
 
   function atualizarUsuario(usuarioAtualizado: Usuario) {
     setUsuarioDoLogin(usuarioAtualizado);
+    void salvarUsuarioCache(usuarioAtualizado).catch(() => {});
   }
 
   async function logout() {
@@ -218,6 +232,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await preferenciaBiometria.clear();
     setToken(null);
     setUsuarioDoLogin(null);
+    setUsuarioSalvo(null);
     setBloqueadoPorBiometria(false);
     queryClient.clear();
     // Mesmo motivo do handleUnauthorized acima: aparelho pode ser compartilhado entre

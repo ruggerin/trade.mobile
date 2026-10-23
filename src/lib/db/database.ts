@@ -67,6 +67,12 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
 
+    CREATE TABLE IF NOT EXISTS usuario_sessao (
+      id INTEGER PRIMARY KEY NOT NULL,
+      json TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS parametros (
       chave TEXT PRIMARY KEY NOT NULL,
       valor TEXT NOT NULL,
@@ -356,6 +362,7 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
 export async function limparCacheLocal(): Promise<void> {
   const db = await getDatabase();
   await db.execAsync(`
+    DELETE FROM usuario_sessao;
     DELETE FROM parametros;
     DELETE FROM pontos_venda;
     DELETE FROM produtos_disponiveis;
