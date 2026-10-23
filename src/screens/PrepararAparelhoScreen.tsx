@@ -24,6 +24,7 @@ const TEXTOS: Record<ItemPreparoId, { titulo: string; texto: string; icone: Icon
     icone: 'map-marker-path',
   },
   camera: { titulo: 'Câmera', texto: 'Fotos de gôndola, preço e evidências da visita.', icone: 'camera-outline' },
+  notificacoes: { titulo: 'Notificações', texto: 'Avisos do seu gestor e de pedidos das suas lojas.', icone: 'bell-ring-outline' },
   bateria: {
     titulo: 'Bateria sem restrição',
     texto: 'Na lista que abrir, deixe o Horus "sem restrição" pra o Android não pausar o rastreamento.',

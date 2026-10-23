@@ -7,6 +7,7 @@ import { limparCacheLocal } from '../db/database';
 import { aparelhoTemBiometria, confirmarBiometria, preferenciaBiometria } from './biometria';
 import { credenciaisStorage } from './credentialsStorage';
 import { renovarSessaoSeNecessario } from './renovacaoSessao';
+import { apagarPushNoLogout, esquecerPushLocal } from '../push';
 import { encerrarRastreamentoNoLogout } from '../rastreamento';
 import { definirUsuarioSentry } from '../sentry';
 import { tokenStorage } from './tokenStorage';
@@ -155,6 +156,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // PDVs de quem estava logado antes.
       void limparCacheLocal();
       void encerrarRastreamentoNoLogout().catch(() => {});
+      // Sem sessão não dá pra apagar no servidor; o próximo login neste celular reenvia e o
+      // servidor tira o token do vínculo antigo (PushTokenController::salvar).
+      void esquecerPushLocal();
     }
 
     function handleDesatualizado() {
@@ -199,6 +203,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function logout() {
+    // Antes do logout da API: o DELETE do token de push ainda precisa da sessão (docs/77 §3.1).
+    await apagarPushNoLogout();
     try {
       await authApi.logout();
     } catch {

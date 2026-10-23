@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../lib/auth/AuthContext';
 import { avaliarPreparo, preparoCompleto } from '../lib/preparoAparelho';
+import { navegacaoRef } from '../lib/push';
 import { AceiteTermosScreen } from '../screens/AceiteTermosScreen';
 import { AtualizarAppScreen, DesbloqueioScreen } from '../screens/BloqueioScreen';
 import { LoginScreen } from '../screens/LoginScreen';
@@ -21,7 +22,7 @@ export function RootNavigator() {
   const preparo = usePreparoPendente(isAuthenticated && !bloqueadoPorBiometria && !aceitePendente);
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navegacaoRef}>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {appDesatualizado ? (
           // docs/67 Fase 2: API recusou a versão (426) — nada funciona até atualizar.

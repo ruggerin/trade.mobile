@@ -5,6 +5,7 @@ import * as Location from 'expo-location';
 import * as SecureStore from 'expo-secure-store';
 import { Linking, Platform } from 'react-native';
 import { buscarConfigRastreamento } from './api/parametros';
+import { pedirPermissaoNotificacoes, permissaoNotificacoes } from './push';
 
 /**
  * "Preparar o celular" (protótipo "Preparar Aparelho Horus", aprovado em 15/10/2026): no primeiro
@@ -17,7 +18,7 @@ import { buscarConfigRastreamento } from './api/parametros';
  * aviso próprio pra isso (docs/47).
  */
 
-export type ItemPreparoId = 'gps' | 'localizacao' | 'sempre' | 'camera' | 'bateria' | 'biometria';
+export type ItemPreparoId = 'gps' | 'localizacao' | 'sempre' | 'camera' | 'notificacoes' | 'bateria' | 'biometria';
 
 /**
  * - `bloqueado`: o Android não pergunta mais (duas negativas) — só os ajustes do app resolvem.
@@ -90,6 +91,10 @@ export async function avaliarPreparo(ctx: ContextoPreparo): Promise<ItemPreparo[
 
   itens.push({ id: 'camera', obrigatorio: true, estado: estadoDaPermissao(camera) });
 
+  // Push (docs/77): recomendado — o app funciona sem, o sino continua tendo tudo.
+  const notificacoes = await permissaoNotificacoes().catch(() => ({ status: 'granted', canAskAgain: false }));
+  itens.push({ id: 'notificacoes', obrigatorio: false, estado: recomendado('notificacoes', estadoDaPermissao(notificacoes)) });
+
   if (comRastreamento && Platform.OS === 'android') {
     const restrito = await Battery.isBatteryOptimizationEnabledAsync().catch(() => false);
     itens.push({ id: 'bateria', obrigatorio: false, estado: recomendado('bateria', restrito ? 'pendente' : 'ok') });
@@ -104,9 +109,13 @@ export async function avaliarPreparo(ctx: ContextoPreparo): Promise<ItemPreparo[
   return itens;
 }
 
-/** Os obrigatórios estão todos ok — é isso que decide se a tela aparece. */
+/**
+ * Os obrigatórios estão todos ok — é isso que decide se a tela aparece. Exceção: notificação
+ * NUNCA perguntada também abre a tela, uma vez — senão quem já tinha tudo liberado antes do push
+ * (docs/77) nunca veria o pedido. Respondeu (sim, não ou "agora não") → não cobra mais.
+ */
 export function preparoCompleto(itens: ItemPreparo[]): boolean {
-  return itens.every((i) => !i.obrigatorio || i.estado === 'ok');
+  return itens.every((i) => (!i.obrigatorio || i.estado === 'ok') && !(i.id === 'notificacoes' && i.estado === 'pendente'));
 }
 
 /** Ajustes do Horus no Android (permissões, bateria) — saída quando o sistema não pergunta mais. */
@@ -140,6 +149,10 @@ export async function ativarItem(item: ItemPreparo): Promise<void> {
       return;
     case 'camera':
       await ImagePicker.requestCameraPermissionsAsync();
+      return;
+    case 'notificacoes':
+      // Android 13+: diálogo do sistema. Liberado, já registra o token no servidor.
+      await pedirPermissaoNotificacoes();
       return;
     case 'bateria':
       // A lista "Otimização de bateria" do sistema (não pede permissão especial ao Google Play).

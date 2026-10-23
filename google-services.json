@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "530478546635",
+    "project_id": "horus-trade",
+    "storage_bucket": "horus-trade.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:530478546635:android:110a470981e3ae26a8654e",
+        "android_client_info": {
+          "package_name": "com.prossigatec.horus"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBP_FtitCe79P9oJxu_DWaweMjCtGAEf6s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

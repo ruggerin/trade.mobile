@@ -23,6 +23,7 @@
     },
     "android": {
       "package": "com.prossigatec.horus",
+      "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
         "backgroundColor": "#f4ebe3",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -87,6 +88,13 @@
       ],
       "./plugins/withExpoSourcesJarFix",
       "expo-web-browser",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/android-icon-monochrome.png",
+          "color": "#4f46e5"
+        }
+      ],
       [
         "@sentry/react-native/expo",
         {

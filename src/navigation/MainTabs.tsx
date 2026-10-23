@@ -14,6 +14,7 @@ import { podeTirarPedido } from '../lib/pedidoVenda';
 import { listarVisitasLocaisPendentesOuRejeitadas } from '../lib/db/filaVisitas';
 import { desligarRetentativaAutomatica, ligarRetentativaAutomatica, processarFilaEnvio } from '../lib/filaEnvio';
 import { aoReconectar } from '../lib/network';
+import { ouvirToquesNasNotificacoes, registrarPush } from '../lib/push';
 import { useAoServidorMudarPelaFila } from '../lib/useFilaEnvioAtualizada';
 import { useRastreamento } from '../lib/useRastreamento';
 import { sincronizarSeNecessario } from '../lib/sync';
@@ -68,6 +69,13 @@ export function MainTabs() {
   // docs/47-RASTREAMENTO-EXIGENCIA.md: com exigência AVISO/OBRIGATÓRIO, mostra a faixa de aviso ou
   // bloqueia o app até o promotor resolver (visita em andamento → só aviso, deixa terminar).
   const rastreamento = useRastreamento(usuario?.user_type === 'PROMOTOR', true, usuario?.id);
+
+  // Push (docs/77 §3.1): manda o token se mudou e abre o destino quando o promotor toca no aviso.
+  useEffect(() => {
+    if (!usuario?.id) return;
+    void registrarPush();
+    return ouvirToquesNasNotificacoes();
+  }, [usuario?.id]);
 
   // Envios ainda na fila, mostrados na tela de bloqueio ("continuam sendo enviados") — só conta
   // enquanto o bloqueio está aberto.
