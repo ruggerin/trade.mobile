@@ -210,7 +210,8 @@ export interface OrdemServico {
 // Discriminador de vínculo a um recorte do catálogo mais amplo que um produto — mesmo enum de
 // CampanhaItem no backend (TipoItemCampanha), reaproveitado aqui.
 export type TipoVinculoRegistro = 'PRODUTO' | 'SECAO' | 'DEPARTAMENTO' | 'MARCA';
-export type TipoCampoRegistro = 'NUMERO' | 'TEXTO' | 'MOEDA' | 'MULTIPLA_ESCOLHA' | 'BOOLEANO' | 'DATA' | 'SORTIMENTO';
+// FOTO = foto nomeada (docs/98): sem resposta em valores_campos, as fotos vão com o nome da pergunta.
+export type TipoCampoRegistro = 'NUMERO' | 'TEXTO' | 'MOEDA' | 'MULTIPLA_ESCOLHA' | 'BOOLEANO' | 'DATA' | 'SORTIMENTO' | 'FOTO';
 
 // Campo de formulário customizado de um TipoRegistro (ex.: "Quantidade" número, "Valor" R$
 // pra um tipo "Ponto extra") — ver docs/01-MODELO-DE-DADOS.md#54-tipos-de-registro.
@@ -235,6 +236,11 @@ export interface CampoTipoRegistro {
   // saber SE ausência vira ruptura confirmável; a lista de produtos em si vem de
   // lib/api/campoSortimento.ts (o backend resolve o resto — origem/recorte não importam aqui).
   confirmar_ruptura_ausentes: boolean;
+  // Pergunta FOTO (docs/98): quantidade (null = sem limite), de onde pode vir além da câmera e a dica.
+  foto_min?: number | null;
+  foto_max?: number | null;
+  foto_reaproveitar?: 'NAO' | 'VISITA' | 'HISTORICO';
+  foto_dica?: string | null;
   // true = o checklist segue a marca/departamento/seção escolhida no início do formulário
   // (docs/79). Opcional: cache antigo não tem.
   sortimento_segue_escolha?: boolean;
@@ -306,6 +312,10 @@ export interface TipoRegistro {
   // docs/82: lista "Onde é" (o que a loja tem primeiro, ou só ele) e filtro de marca depois da seção.
   lista_recorte?: 'PRIMEIRO_DA_LOJA' | 'SO_DA_LOJA';
   filtra_marca?: boolean;
+  // Botão "Produto em ruptura" no registro; ausente = ligado (API antiga).
+  permite_ruptura?: boolean;
+  // Área de foto livre no registro (docs/98); ausente = ligada (API antiga).
+  permite_foto_livre?: boolean;
   eh_ruptura: boolean;
   // Controla se o tipo aparece solto no dropdown de "criar registro" do promotor — decisão 8 de
   // docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. `false` pra tipos nascidos dentro de uma campanha

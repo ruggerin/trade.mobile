@@ -372,7 +372,7 @@ describe('processarFilaEnvio', () => {
       expect(mockCriarRegistro.mock.calls[0][0]).not.toHaveProperty('imagensUri');
       expect(mockMarcarRegistroCriado).toHaveBeenCalledWith('r1', 'srv-r1', true);
       // Chave estável por foto: id local do registro + posição.
-      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'b.jpg', 'r1:1');
+      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'b.jpg', 'r1:1', undefined);
     });
 
     it('não reenvia foto já confirmada e para na falha passageira, sem check-out', async () => {
@@ -389,9 +389,37 @@ describe('processarFilaEnvio', () => {
 
       expect(mockCriarRegistro).not.toHaveBeenCalled();
       expect(mockEnviarImagemRegistro).toHaveBeenCalledTimes(1);
-      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'b.jpg', 'r1:1');
+      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'b.jpg', 'r1:1', undefined);
       expect(mockMarcarImagemEnviada).not.toHaveBeenCalled();
       expect(mockFinalizarVisita).not.toHaveBeenCalled();
+    });
+
+    it('foto nomeada (docs/98): conta por pergunta, leva a pergunta e a captura, e a reaproveitada usa a chave da original', async () => {
+      mockListarVisitasLocaisPendentesOuRejeitadas.mockResolvedValue([visitaLocal({ servidorId: 'servidor-1' })]);
+      const fotosMeta = {
+        'antes.jpg': { campoChave: 'antes', origem: 'VISITA' as const, chave: 'r0:0', capturadaEm: '2026-10-28T12:00:00Z' },
+        'depois.jpg': { campoChave: 'depois', origem: 'CAMERA' as const, latitude: -3.1, longitude: -60 },
+      };
+      const r1 = registroLocal({
+        id: 'r1',
+        imagensLocais: ['antes.jpg', 'depois.jpg'],
+        fotosMeta,
+        imagensPorCampo: { antes: 1, depois: 1 },
+        imagensHistorico: [{ uuid: 'img-antiga', campoChave: 'antes', url: 'u' }],
+      });
+      mockListarRegistrosLocais.mockResolvedValueOnce([r1]).mockResolvedValue([{ ...r1, servidorId: 'srv-r1' }]);
+      mockCriarRegistro.mockResolvedValue({ id: 'srv-r1' } as any);
+      mockEnviarImagemRegistro.mockResolvedValue({ bytes: 10 });
+
+      await processarFilaEnvio('usuario-1');
+
+      expect(mockCriarRegistro.mock.calls[0][0]).toMatchObject({
+        imagensAEnviar: 2,
+        imagensPorCampo: { antes: 1, depois: 1 },
+        imagensHistorico: [{ uuid: 'img-antiga', campoChave: 'antes' }],
+      });
+      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'antes.jpg', 'r0:0', fotosMeta['antes.jpg']);
+      expect(mockEnviarImagemRegistro).toHaveBeenCalledWith('servidor-1', 'srv-r1', 'depois.jpg', 'r1:1', fotosMeta['depois.jpg']);
     });
 
     it('foto recusada de vez não trava as outras nem o check-out', async () => {

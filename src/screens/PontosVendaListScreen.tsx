@@ -17,6 +17,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/ordensServico';
 import { listarPontosVenda } from '../lib/api/pontosVenda';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
+import { FaixaSaidaDetectada } from '../components/FaixaSaidaDetectada';
 import { useAuth } from '../lib/auth/AuthContext';
 import { calcularDistanciaMetros } from '../lib/location/distancia';
 import { useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
@@ -196,6 +197,10 @@ export function PontosVendaListScreen({ navigation }: Props) {
           <Text style={styles.bannerLink}>{visitaAberta.status === 'FINALIZADA_LOCAL' ? 'Ver' : 'Continuar'}</Text>
         </Pressable>
       )}
+      <FaixaSaidaDetectada
+        usuarioId={usuario?.id}
+        onFinalizar={(id) => navigation.navigate('VisitaAndamento', { visitaLocalId: id, abrirFinalizar: true })}
+      />
 
       <View style={styles.buscaContainer}>
         <MaterialCommunityIcons name="magnify" size={20} color={cores.textoTerciario} />

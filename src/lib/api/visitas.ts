@@ -1,3 +1,4 @@
+import type { FotoMeta } from '../fotosNomeadas';
 import type { PaginatedMeta, TipoVinculoRegistro, Visita, VisitaRegistro } from '../../types/api';
 import { lerVisitasHistoricoCache, salvarVisitasHistoricoCache } from '../db/visitasCache';
 import { apiClient } from './client';
@@ -159,6 +160,10 @@ export interface CriarRegistroPayload {
   marcaNovaDescricao?: string;
   embalagemQuantidade?: number;
   embalagemUnidade?: string;
+  // Fotos nomeadas (docs/98): fotos que vão subir por pergunta FOTO (inclusive 0) e as de visita
+  // anterior reaproveitadas (só vínculo).
+  imagensPorCampo?: Record<string, number>;
+  imagensHistorico?: { uuid: string; campoChave: string }[];
 }
 
 export async function criarRegistro(payload: CriarRegistroPayload): Promise<VisitaRegistro> {
@@ -203,6 +208,13 @@ export async function criarRegistro(payload: CriarRegistroPayload): Promise<Visi
     form.append('embalagem_quantidade', String(payload.embalagemQuantidade));
     form.append('embalagem_unidade', payload.embalagemUnidade);
   }
+  for (const [chave, n] of Object.entries(payload.imagensPorCampo ?? {})) {
+    form.append(`imagens_por_campo[${chave}]`, String(n));
+  }
+  (payload.imagensHistorico ?? []).forEach((foto, i) => {
+    form.append(`imagens_historico[${i}][uuid]`, foto.uuid);
+    form.append(`imagens_historico[${i}][campo_chave]`, foto.campoChave);
+  });
   // Laravel entende a notação `campo[chave]` em multipart/form-data como array associativo —
   // não dá pra mandar um objeto direto num FormData.
   if (payload.valoresCampos) {
@@ -249,11 +261,21 @@ export async function enviarImagemRegistro(
   registroId: string,
   imagemUri: string,
   idempotencyKey: string,
+  // Fotos nomeadas (docs/98): pergunta FOTO, origem e captura da foto.
+  meta?: FotoMeta,
 ): Promise<{ bytes: number }> {
   const nomeArquivo = imagemUri.split('/').pop() ?? 'foto.jpg';
   const extensao = /\.(\w+)$/.exec(nomeArquivo)?.[1]?.toLowerCase();
   const form = new FormData();
   form.append('idempotency_key', idempotencyKey);
+  if (meta?.campoChave) form.append('campo_chave', meta.campoChave);
+  if (meta?.origem) form.append('origem', meta.origem);
+  if (meta?.capturadaEm) form.append('capturada_em', meta.capturadaEm);
+  if (meta?.latitude !== undefined && meta?.longitude !== undefined) {
+    form.append('latitude', String(meta.latitude));
+    form.append('longitude', String(meta.longitude));
+  }
+  if (meta?.precisao !== undefined) form.append('precisao_metros', String(Math.round(meta.precisao)));
   form.append('imagem', {
     uri: imagemUri,
     name: nomeArquivo,
@@ -308,4 +330,21 @@ export async function responderAcompanhamento(
   dados: { resposta: 'CONTINUA' | 'ACABOU' | 'NAO_CONSEGUI_VER'; idempotency_key: string; criado_em: string; registro_uuid?: string },
 ): Promise<void> {
   await apiClient.post(`/visitas/${visitaServidorId}/acompanhamentos/${acompanhamentoUuid}/respostas`, dados);
+}
+
+// Galeria Horus (docs/98 §9.1): fotos de visitas anteriores nesta loja que podem ser reaproveitadas
+// numa pergunta FOTO. Só online; a URL abre com a autenticação do app (ImagemAutenticada).
+export interface FotoAnteriorApi {
+  id: string;
+  url: string;
+  capturada_em: string | null;
+  visita_em: string | null;
+  promotor: string | null;
+  formulario: string | null;
+  pergunta: string | null;
+}
+
+export async function buscarFotosAnteriores(visitaId: string): Promise<{ dias: number; fotos: FotoAnteriorApi[] }> {
+  const { data } = await apiClient.get<{ dias: number; fotos: FotoAnteriorApi[] }>(`/visitas/${visitaId}/fotos-anteriores`);
+  return data;
 }

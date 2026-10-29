@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
+import { FaixaSaidaDetectada } from '../components/FaixaSaidaDetectada';
 import { obterUltimaSincronizacao } from '../lib/db/database';
 import { listarOrdensServicoAgenda } from '../lib/api/ordensServico';
 import { buscarPontuacaoHoje } from '../lib/api/xp';
@@ -304,6 +305,11 @@ export function AgendaScreen({ navigation }: Props) {
                   </View>
                 )}
               </View>
+
+              <FaixaSaidaDetectada
+                usuarioId={usuario?.id}
+                onFinalizar={(id) => navigation.navigate('VisitaAndamento', { visitaLocalId: id, abrirFinalizar: true })}
+              />
 
               {proximaOS ? (
                 <ProximaVisitaCard ordemServico={proximaOS} xp={comXp ? proximaOS.xp_previsto : null} onAbrir={() => void abrirCompromisso(proximaOS)} />

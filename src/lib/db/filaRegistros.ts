@@ -2,6 +2,7 @@
 // submódulo /legacy mantém a API antiga (documentDirectory/copyAsync/deleteAsync), oficialmente
 // suportada, mais simples pro que a gente precisa aqui (copiar/apagar por caminho string).
 import * as FileSystem from 'expo-file-system/legacy';
+import type { FotoHistorico, FotoMeta } from '../fotosNomeadas';
 import type { TipoVinculoRegistro } from '../../types/api';
 import { gerarUuidLocal } from '../uuid';
 import { getDatabase, escrever } from './database';
@@ -42,6 +43,12 @@ export interface RegistroLocal {
   imagensLocais: string[];
   /** Quais de `imagensLocais` o servidor já confirmou. */
   imagensEnviadas: string[];
+  /** Fotos nomeadas (docs/98): pergunta, origem e captura de cada foto local, por caminho. */
+  fotosMeta?: Record<string, FotoMeta> | null;
+  /** Fotos de visita anterior reaproveitadas (já estão no servidor, vão só como vínculo). */
+  imagensHistorico?: FotoHistorico[] | null;
+  /** Fotos por pergunta FOTO (inclusive 0) — `imagens_por_campo` do servidor. null = formulário sem pergunta FOTO. */
+  imagensPorCampo?: Record<string, number> | null;
   /** Registro de resposta a um "ainda está lá?" (docs/83). */
   acompanhamentoUuid?: string | null;
   /** Marca cadastrada pelo promotor nesta visita (docs/85) — `marcaUuid` foi gerado no celular. */
@@ -73,6 +80,9 @@ interface LinhaFilaRegistro {
   imagem_local_path: string | null;
   imagens_locais_json: string | null;
   imagens_enviadas_json?: string | null;
+  fotos_meta_json?: string | null;
+  imagens_historico_json?: string | null;
+  imagens_por_campo_json?: string | null;
   acompanhamento_uuid?: string | null;
   marca_nova_descricao?: string | null;
   embalagem_quantidade?: number | null;
@@ -108,6 +118,9 @@ function paraRegistroLocal(linha: LinhaFilaRegistro): RegistroLocal {
         ? [linha.imagem_local_path]
         : [],
     imagensEnviadas: linha.imagens_enviadas_json ? (JSON.parse(linha.imagens_enviadas_json) as string[]) : [],
+    fotosMeta: linha.fotos_meta_json ? (JSON.parse(linha.fotos_meta_json) as Record<string, FotoMeta>) : null,
+    imagensHistorico: linha.imagens_historico_json ? (JSON.parse(linha.imagens_historico_json) as FotoHistorico[]) : null,
+    imagensPorCampo: linha.imagens_por_campo_json ? (JSON.parse(linha.imagens_por_campo_json) as Record<string, number>) : null,
     acompanhamentoUuid: linha.acompanhamento_uuid ?? null,
     marcaNovaDescricao: linha.marca_nova_descricao ?? null,
     embalagemQuantidade: linha.embalagem_quantidade ?? null,
@@ -133,6 +146,9 @@ export interface NovoRegistroLocal {
   observacao?: string | null;
   /** Caminhos já persistentes (copiados pro FileSystem.documentDirectory) — nunca a uri transitória do image picker. */
   imagensLocais?: string[];
+  fotosMeta?: Record<string, FotoMeta> | null;
+  imagensHistorico?: FotoHistorico[] | null;
+  imagensPorCampo?: Record<string, number> | null;
   acompanhamentoUuid?: string | null;
   marcaNovaDescricao?: string | null;
   embalagemQuantidade?: number | null;
@@ -149,8 +165,9 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
       id, visita_local_id, status, tipo_registro_uuid, produto_auditoria_uuid, produto_descricao,
       tipo_vinculo, secao_uuid, departamento_uuid, marca_uuid, vinculo_descricao,
       valores_campos_json, ruptura, observacao, imagens_locais_json, acompanhamento_uuid,
-      marca_nova_descricao, embalagem_quantidade, embalagem_unidade, erro, criado_em, atualizado_em
-    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      marca_nova_descricao, embalagem_quantidade, embalagem_unidade, fotos_meta_json,
+      imagens_historico_json, imagens_por_campo_json, erro, criado_em, atualizado_em
+    ) VALUES (?, ?, 'PENDENTE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
     [
       id,
       dados.visitaLocalId,
@@ -170,6 +187,9 @@ export async function criarRegistroLocal(dados: NovoRegistroLocal): Promise<Regi
       dados.marcaNovaDescricao ?? null,
       dados.embalagemQuantidade ?? null,
       dados.embalagemUnidade ?? null,
+      dados.fotosMeta && Object.keys(dados.fotosMeta).length > 0 ? JSON.stringify(dados.fotosMeta) : null,
+      dados.imagensHistorico && dados.imagensHistorico.length > 0 ? JSON.stringify(dados.imagensHistorico) : null,
+      dados.imagensPorCampo ? JSON.stringify(dados.imagensPorCampo) : null,
       agora,
       agora,
     ],

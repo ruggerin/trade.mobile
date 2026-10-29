@@ -1,3 +1,4 @@
+import { chaveDaFoto } from './fotosNomeadas';
 import axios from 'axios';
 import { criarRegistro, enviarImagemRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
 import { listarRespostasDaVisita, marcarRespostaComErro, marcarRespostaEnviada } from './db/filaAcompanhamentos';
@@ -355,6 +356,8 @@ async function enviarRegistro(visita: VisitaLocal, registro: RegistroLocal, resu
       marcaNovaDescricao: registro.marcaNovaDescricao ?? undefined,
       embalagemQuantidade: registro.embalagemQuantidade ?? undefined,
       embalagemUnidade: registro.embalagemUnidade ?? undefined,
+      imagensPorCampo: registro.imagensPorCampo ?? undefined,
+      imagensHistorico: registro.imagensHistorico?.map((f) => ({ uuid: f.uuid, campoChave: f.campoChave })),
     });
     await marcarRegistroCriadoNoServidor(registro.id, registroServidor.id, registro.imagensLocais.length > 0);
     console.log(`[fila] registro enviado (visita ${visita.id}, ${registro.imagensLocais.length} foto(s) a seguir)`);
@@ -383,7 +386,9 @@ async function enviarFotosDoRegistro(visita: VisitaLocal, registro: RegistroLoca
     if (registro.imagensEnviadas.includes(uri)) continue;
     const inicio = Date.now();
     try {
-      const { bytes } = await enviarImagemRegistro(visita.servidorId!, registro.servidorId!, uri, `${registro.id}:${indice}`);
+      // Foto reaproveitada desta visita leva a chave da original (docs/98): o servidor não duplica.
+      const meta = registro.fotosMeta?.[uri];
+      const { bytes } = await enviarImagemRegistro(visita.servidorId!, registro.servidorId!, uri, chaveDaFoto(registro.id, indice, meta), meta);
       registrarEnvioFoto({ bytes, duracaoMs: Date.now() - inicio, resultado: 'ok' });
       await marcarImagemEnviada(registro, uri);
     } catch (err) {

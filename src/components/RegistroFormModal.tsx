@@ -1,6 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useQuery } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -18,6 +19,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconeTipoRegistro } from './IconeTipoRegistro';
+import { CampoFoto, GaleriaHorusModal } from './FotosNomeadas';
 import { CampoEmbalagem, ListaMarcasColeta, type MarcaDaColeta } from './ColetaPorMarca';
 import { comprimirFoto } from '../lib/compressaoFoto';
 import { produtosDaListaGuiada } from '../lib/acaoObrigatoria';
@@ -30,6 +32,8 @@ import { listarProdutosCatalogo } from '../lib/api/produtosAuditoria';
 import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } from '../lib/db/filaRegistros';
 import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type RascunhosColeta } from '../lib/db/rascunhosColeta';
 import { mascararMoeda, moedaParaApi } from '../lib/mascaraMoeda';
+import { contagemPorCampo, erroDasFotos, type FotoDaVisita, type FotoHistorico, type FotoMeta } from '../lib/fotosNomeadas';
+import type { FotoAnteriorApi } from '../lib/api/visitas';
 import {
   type OpcaoRecorte,
   ROTULO_RECORTE,
@@ -61,6 +65,11 @@ export interface RegistroFormResultado {
   // capturarFoto abaixo) — nunca a uri transitória do image picker. 0..N fotos por registro, ver
   // docs/21-EVIDENCIA-EM-FOTOS.md.
   imagensUri?: string[];
+  // Fotos nomeadas (docs/98): pergunta/origem/captura de cada foto de `imagensUri`, as fotos de
+  // visita anterior (já no servidor) e a contagem por pergunta FOTO que vai pro servidor.
+  fotosMeta?: Record<string, FotoMeta>;
+  imagensHistorico?: FotoHistorico[];
+  imagensPorCampo?: Record<string, number>;
   produtoAuditoriaUuid?: string;
   tipoVinculo?: TipoVinculoRegistro;
   secaoUuid?: string;
@@ -116,8 +125,11 @@ interface RegistroFormModalProps {
   // Produtos já coletados NESTA visita pra um tipo de registro — alimenta o check verde da
   // coleta guiada. Sem isso, todos aparecem como pendentes.
   produtosColetados?: (tipoRegistroUuid: string) => ReadonlySet<string>;
-  // Visita local — chave do rascunho da coleta guiada (lib/db/rascunhosColeta.ts).
+  // Visita local — chave do rascunho da coleta guiada (lib/db/rascunhosColeta.ts) e origem das
+  // fotos "desta visita" na galeria Horus (docs/98).
   visitaLocalId?: string;
+  // Visita no servidor — fotos de visitas anteriores na loja (galeria Horus). Ainda não enviada = só "desta visita".
+  visitaServidorId?: string | null;
   // Concorrente por marca (docs/85): embalagens já salvas NESTA visita pra um formulário — a lista
   // de marcas mostra "500 ml · 1,5 L" e conta. Sem isso, toda marca aparece vazia.
   embalagensColetadas?: (tipoRegistroUuid: string) => { marcaUuid: string; marcaDescricao: string; embalagem: string }[];
@@ -155,6 +167,7 @@ export function RegistroFormModal({
   onSubmit,
   produtosColetados,
   visitaLocalId,
+  visitaServidorId,
   embalagensColetadas,
   respostaAcompanhamento = null,
 }: RegistroFormModalProps) {
@@ -166,6 +179,11 @@ export function RegistroFormModal({
   // re-buscar a lista lá (o CampoSortimentoInput já buscou, só reporta de volta pra cá).
   const [produtosSortimentoPorUuid, setProdutosSortimentoPorUuid] = useState<Record<string, string>>({});
   const [imagensUri, setImagensUri] = useState<string[]>([]);
+  // Fotos nomeadas (docs/98): o que se sabe de cada foto de `imagensUri` (pergunta, origem, hora e
+  // GPS da captura), as fotos de visita anterior escolhidas e a pergunta com a galeria aberta.
+  const [fotosMeta, setFotosMeta] = useState<Record<string, FotoMeta>>({});
+  const [fotosHistorico, setFotosHistorico] = useState<FotoHistorico[]>([]);
+  const [galeriaCampo, setGaleriaCampo] = useState<CampoTipoRegistro | null>(null);
   const [ruptura, setRuptura] = useState(false);
   const [vinculo, setVinculo] = useState<{ categoria: Categoria; uuid: string; label: string } | null>(null);
   // Onde é o registro, quando o formulário pede essa escolha antes das perguntas (docs/79).
@@ -206,6 +224,9 @@ export function RegistroFormModal({
       setValoresCampos(respostaAcompanhamento?.valoresIniciais ?? {});
       setProdutosSortimentoPorUuid({});
       setImagensUri([]);
+      setFotosMeta({});
+      setFotosHistorico([]);
+      setGaleriaCampo(null);
       setRuptura(false);
       setVinculo(null);
       // Resposta a um acompanhamento: o recorte do registro original já vem escolhido e travado.
@@ -319,7 +340,7 @@ export function RegistroFormModal({
   // Foto de registro é evidência de campo: só câmera, na hora — nunca da galeria (uma foto
   // antiga/de outra loja passaria como coleta de agora). A foto de perfil (PerfilScreen) é outra
   // coisa e continua aceitando galeria.
-  async function capturarFoto() {
+  async function capturarFoto(campo?: CampoTipoRegistro) {
     const permissao = await ImagePicker.requestCameraPermissionsAsync();
 
     if (permissao.status !== 'granted') {
@@ -335,6 +356,9 @@ export function RegistroFormModal({
     if (resultado.canceled) return;
     const asset = resultado.assets[0];
     if (!asset) return;
+    // Hora e posição da captura (docs/98 §9.1) — o GPS não segura a foto: sem ele, vai sem posição.
+    const capturadaEm = new Date().toISOString();
+    const posicao = posicaoDaFoto();
 
     try {
       // Copia pro armazenamento persistente JÁ na captura, não só quando o registro é salvo —
@@ -346,17 +370,40 @@ export function RegistroFormModal({
       const comprimida = await comprimirFoto(asset);
       const caminhoPersistente = await copiarImagemParaArmazenamentoPersistente(comprimida);
       setImagensUri((atual) => [...atual, caminhoPersistente]);
+      const meta: FotoMeta = { campoChave: campo?.chave ?? null, origem: 'CAMERA', capturadaEm, ...(await posicao) };
+      setFotosMeta((atual) => ({ ...atual, [caminhoPersistente]: meta }));
     } catch {
       setErroLocal('Não foi possível salvar a foto. Tente novamente.');
     }
   }
 
-  function removerFoto(indice: number) {
-    const uri = imagensUri[indice];
-    if (uri && !imagensDoRascunhoRef.current.includes(uri)) {
+  function removerFoto(uri: string) {
+    if (!imagensDoRascunhoRef.current.includes(uri)) {
       void apagarImagemPersistente(uri);
     }
-    setImagensUri((atual) => atual.filter((_, i) => i !== indice));
+    setImagensUri((atual) => atual.filter((u) => u !== uri));
+    setFotosMeta((atual) => {
+      const { [uri]: _removida, ...resto } = atual;
+      return resto;
+    });
+  }
+
+  // Galeria Horus (docs/98): foto desta visita vira uma cópia com a chave da original (o servidor
+  // devolve a mesma foto, sem duplicar); a de visita anterior vira só vínculo.
+  async function usarFotoDaVisita(campo: CampoTipoRegistro, foto: FotoDaVisita) {
+    setGaleriaCampo(null);
+    try {
+      const copia = await copiarImagemParaArmazenamentoPersistente(foto.uri);
+      setImagensUri((atual) => [...atual, copia]);
+      setFotosMeta((atual) => ({ ...atual, [copia]: { ...foto.meta, campoChave: campo.chave, origem: 'VISITA', chave: foto.chave } }));
+    } catch {
+      setErroLocal('Não foi possível usar esta foto. Tire uma nova.');
+    }
+  }
+
+  function usarFotoAnterior(campo: CampoTipoRegistro, foto: FotoAnteriorApi) {
+    setGaleriaCampo(null);
+    setFotosHistorico((atual) => [...atual, { uuid: foto.id, campoChave: campo.chave, url: foto.url, capturadaEm: foto.capturada_em }]);
   }
 
   // Ver App\Support\GranularidadeChecklist no backend e
@@ -372,6 +419,12 @@ export function RegistroFormModal({
   const modoLista = !!tipo && !produtoContexto && tipo.granularidade_padrao === 'PRODUTO' && listaGuiada.length > 0;
   // Cada marca concorrente (docs/85 §3.3): lista de marcas → marca → uma embalagem por registro.
   const modoMarca = !!tipo && !produtoContexto && tipo.granularidade_padrao === 'MARCA';
+  // Perguntas FOTO visíveis (docs/98). A coleta guiada por produto e por marca ainda não tem foto
+  // nomeada: lá elas não aparecem e o servidor não cobra (sem `imagens_por_campo`).
+  const camposFoto = modoLista || modoMarca ? [] : camposVisiveis.filter((c) => c.tipo_campo === 'FOTO');
+  const fotosDoCampo = (chave: string) => imagensUri.filter((u) => fotosMeta[u]?.campoChave === chave).map((uri) => ({ uri, meta: fotosMeta[uri] }));
+  const totalFotosDoCampo = (chave: string) => fotosDoCampo(chave).length + fotosHistorico.filter((f) => f.campoChave === chave).length;
+  const fotosLivres = imagensUri.filter((u) => !fotosMeta[u]?.campoChave);
   const embalagensDoTipo = useMemo(
     () => (modoMarca && tipo ? (embalagensColetadas?.(tipo.id) ?? []) : []),
     [modoMarca, tipo, embalagensColetadas],
@@ -452,7 +505,7 @@ export function RegistroFormModal({
   function validar(): string | null {
     if (!tipo) return 'Escolha um tipo de registro.';
     if (pedeRecorte && !recorte) return 'Escolha onde é este registro.';
-    if (tipo.exige_foto && imagensUri.length === 0) return `O tipo "${tipo.descricao}" exige uma foto.`;
+    if (tipo.exige_foto && imagensUri.length + fotosHistorico.length === 0) return `O tipo "${tipo.descricao}" exige uma foto.`;
     if (modoMarca) {
       if (!marcaAtual) return 'Escolha a marca.';
       if (!quantidadeDigitada(embalagemQuantidade)) return 'Informe a quantidade da embalagem.';
@@ -463,7 +516,11 @@ export function RegistroFormModal({
     }
     // Produto em ruptura: não tem o que coletar — as perguntas somem e não são exigidas (o backend
     // aplica a mesma regra, ver StoreVisitaRegistroRequest). Foto obrigatória continua valendo.
+    // Perguntas FOTO (docs/98): mesma regra do servidor (obrigatória, mínimo e máximo).
+    const erroFotos = ruptura ? null : erroDasFotos(camposFoto, totalFotosDoCampo);
+    if (erroFotos) return erroFotos;
     for (const campo of ruptura ? [] : camposVisiveis) {
+      if (campo.tipo_campo === 'FOTO') continue;
       const valor = valoresCampos[campo.chave];
       if (campo.obrigatorio && (!valor || valor.trim() === '')) {
         return `O campo "${campo.rotulo}" é obrigatório.`;
@@ -486,6 +543,8 @@ export function RegistroFormModal({
     setValoresCampos({});
     setProdutosSortimentoPorUuid({});
     setImagensUri([]);
+    setFotosMeta({});
+    setFotosHistorico([]);
     setRuptura(false);
     setVinculo(null);
     setCategoriaAberta(null);
@@ -647,6 +706,9 @@ export function RegistroFormModal({
     const resultado = onSubmit({
       tipoRegistroUuid: tipo.id,
       imagensUri: imagensUri.length > 0 ? imagensUri : undefined,
+      fotosMeta: Object.keys(fotosMeta).length > 0 ? Object.fromEntries(imagensUri.filter((u) => fotosMeta[u]).map((u) => [u, fotosMeta[u]])) : undefined,
+      imagensHistorico: fotosHistorico.length > 0 ? fotosHistorico : undefined,
+      imagensPorCampo: camposFoto.length > 0 ? contagemPorCampo(camposFoto, imagensUri, fotosMeta) : undefined,
       produtoAuditoriaUuid: produtoEfetivo?.uuid ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.uuid : undefined),
       tipoVinculo: recorte ? recorte.tipo : produtoLista ? 'PRODUTO' : !produtoContexto && vinculo ? vinculo.categoria : undefined,
       produtoDescricao: produtoEfetivo?.descricao ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.label : undefined),
@@ -723,7 +785,7 @@ export function RegistroFormModal({
     (categoriaAberta === 'DEPARTAMENTO' && departamentosQuery.isLoading) ||
     (categoriaAberta === 'MARCA' && marcasQuery.isLoading);
 
-  const fotoObrigatoriaFaltando = !!tipo?.exige_foto && imagensUri.length === 0;
+  const fotoObrigatoriaFaltando = !!tipo?.exige_foto && imagensUri.length + fotosHistorico.length === 0;
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -874,9 +936,12 @@ export function RegistroFormModal({
                     )}
                   </View>
                 )}
+                {/* Fotos livres desligadas no formulário (docs/98): só as perguntas FOTO. */}
+                {tipo.permite_foto_livre !== false && (
                 <View style={styles.secaoForm}>
                   <Text style={styles.secaoLabel}>
-                    Fotos <Text style={styles.secaoLabelFraco}>· {imagensUri.length > 0 ? `${imagensUri.length} adicionada${imagensUri.length > 1 ? 's' : ''}` : tipo.exige_foto ? 'obrigatória' : 'opcional'}</Text>
+                    {camposFoto.length > 0 ? 'Outras fotos' : 'Fotos'}{' '}
+                    <Text style={styles.secaoLabelFraco}>· {fotosLivres.length > 0 ? `${fotosLivres.length} adicionada${fotosLivres.length > 1 ? 's' : ''}` : tipo.exige_foto && camposFoto.length === 0 ? 'obrigatória' : 'opcional'}</Text>
                   </Text>
                   <View style={styles.fotosGrade}>
                     <Pressable
@@ -886,21 +951,36 @@ export function RegistroFormModal({
                       <MaterialCommunityIcons name="camera-plus-outline" size={22} color={cores.primaria} />
                       <Text style={styles.fotoTileCameraTexto}>Câmera</Text>
                     </Pressable>
-                    {imagensUri.map((uri, indice) => (
+                    {fotosLivres.map((uri) => (
                       <View key={uri} style={styles.fotoTile}>
                         <Image source={{ uri }} style={styles.fotoTileImagem} />
-                        <Pressable onPress={() => removerFoto(indice)} hitSlop={8} style={styles.fotoTileRemover}>
+                        <Pressable onPress={() => removerFoto(uri)} hitSlop={8} style={styles.fotoTileRemover}>
                           <MaterialCommunityIcons name="close" size={11} color={cores.branco} />
                         </Pressable>
                       </View>
                     ))}
                   </View>
                 </View>
+                )}
 
                 {ruptura && camposVisiveis.length > 0 && (
                   <Text style={styles.contextoTexto}>Produto em ruptura — não precisa responder as perguntas.</Text>
                 )}
-                {!ruptura && camposVisiveis.map((campo) => (
+                {!ruptura && camposVisiveis.map((campo) => campo.tipo_campo === 'FOTO' ? (
+                  camposFoto.includes(campo) ? (
+                    <View key={campo.id} style={campo.depende_de_chave ? styles.campoCondicional : undefined}>
+                      <CampoFoto
+                        campo={campo}
+                        fotos={fotosDoCampo(campo.chave)}
+                        historico={fotosHistorico.filter((f) => f.campoChave === campo.chave)}
+                        onTirar={() => void capturarFoto(campo)}
+                        onUsarJaTirada={() => setGaleriaCampo(campo)}
+                        onRemover={removerFoto}
+                        onRemoverHistorico={(uuid) => setFotosHistorico((atual) => atual.filter((f) => f.uuid !== uuid || f.campoChave !== campo.chave))}
+                      />
+                    </View>
+                  ) : null
+                ) : (
                 <View key={campo.id} style={campo.depende_de_chave ? styles.campoCondicional : undefined}>
                   <CampoInput
                     campo={campo}
@@ -919,7 +999,7 @@ export function RegistroFormModal({
                 </View>
               ))}
 
-              {!modoMarca && (
+              {!modoMarca && tipo.permite_ruptura !== false && (
               <Pressable
                 style={[styles.rupturaLinha, ruptura && styles.rupturaLinhaMarcada]}
                 onPress={() => setRuptura((r) => !r)}
@@ -1018,6 +1098,17 @@ export function RegistroFormModal({
         )}
         </View>
       </KeyboardAvoidingView>
+      <GaleriaHorusModal
+        campo={galeriaCampo}
+        visitaLocalId={visitaLocalId}
+        visitaServidorId={visitaServidorId}
+        tiposRegistro={tiposRegistro}
+        chavesUsadas={imagensUri.map((u) => fotosMeta[u]?.chave).filter((c): c is string => !!c)}
+        uuidsUsados={fotosHistorico.filter((f) => f.campoChave === galeriaCampo?.chave).map((f) => f.uuid)}
+        onEscolherDaVisita={(foto) => galeriaCampo && void usarFotoDaVisita(galeriaCampo, foto)}
+        onEscolherAnterior={(foto) => galeriaCampo && usarFotoAnterior(galeriaCampo, foto)}
+        onClose={() => setGaleriaCampo(null)}
+      />
     </Modal>
   );
 }
@@ -2278,3 +2369,20 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+
+/** Posição da foto (docs/98 §9.1) sem pedir permissão de novo e sem segurar a câmera: até 5 s, senão a última conhecida. */
+async function posicaoDaFoto(): Promise<Pick<FotoMeta, 'latitude' | 'longitude' | 'precisao'>> {
+  try {
+    const { status } = await Location.getForegroundPermissionsAsync();
+    if (status !== 'granted') return {};
+    const atual = await Promise.race([
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 5000)),
+    ]);
+    const posicao = atual ?? (await Location.getLastKnownPositionAsync());
+    if (!posicao) return {};
+    return { latitude: posicao.coords.latitude, longitude: posicao.coords.longitude, precisao: posicao.coords.accuracy ?? undefined };
+  } catch {
+    return {};
+  }
+}

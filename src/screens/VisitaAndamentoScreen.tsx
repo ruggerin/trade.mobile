@@ -1500,6 +1500,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         produtosColetados={produtosColetadosPorTipo}
         embalagensColetadas={embalagensColetadasPorTipo}
         visitaLocalId={visitaLocalId}
+        visitaServidorId={visita?.servidorId ?? null}
       />
 
       {pontoVendaUuid && (

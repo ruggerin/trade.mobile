@@ -6,14 +6,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState } from 'react';
 import { useIsFocused } from '@react-navigation/native';
-import { ActivityIndicator, Alert, Image, Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
 import { textoSituacao } from '../lib/textosRastreamento';
 import { useRastreamento } from '../lib/useRastreamento';
 import { abrirDocumento } from '../lib/api/documentosLegais';
 import { atualizarFotoPerfil, removerFotoPerfil } from '../lib/api/perfil';
 import { useAuth } from '../lib/auth/AuthContext';
-import { useHeadersAutenticados } from '../lib/seguranca/useHeadersAutenticados';
+import { ImagemAutenticada } from '../components/ImagemAutenticada';
 import { obterUltimaSincronizacao } from '../lib/db/database';
 import { processarFilaEnvio } from '../lib/filaEnvio';
 import { sincronizarAgora } from '../lib/sync';
@@ -55,8 +55,6 @@ export function PerfilScreen() {
       setAlterandoBiometria(false);
     }
   }
-  // Authorization + assinatura do aparelho (docs/67 Fase 3) — o <Image> não passa pelo apiClient.
-  const headersFoto = useHeadersAutenticados(usuario?.foto_url);
   const queryClient = useQueryClient();
   const [ultimaSincronizacao, setUltimaSincronizacao] = useState<string | null>(null);
 
@@ -229,10 +227,11 @@ export function PerfilScreen() {
         disabled={fotoMutation.isPending || removerFotoMutation.isPending}
         style={({ pressed }) => [styles.avatarToque, pressed && { opacity: 0.7 }]}
       >
-        {usuario?.foto_url && headersFoto ? (
-          // Sempre a nossa própria API (ver Usuario.foto_url) — o header de autenticação nunca
-          // vaza pra um host externo, diferente de avatar_url (que pode ser qualquer URL).
-          <Image source={{ uri: usuario.foto_url, headers: headersFoto }} style={styles.avatar} />
+        {usuario?.foto_url ? (
+          // <Image> com headers direto na rota autenticada falha em silêncio no Android; o
+          // ImagemAutenticada baixa pra arquivo antes. A URL traz a versão (?v=): foto trocada
+          // é arquivo novo, nunca a foto antiga do cache.
+          <ImagemAutenticada uri={usuario.foto_url} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarSemFoto]}>
             <Text style={styles.avatarTexto}>{usuario?.nome?.charAt(0).toUpperCase() ?? '?'}</Text>

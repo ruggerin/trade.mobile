@@ -337,6 +337,16 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
     // Coluna já existe — nada a fazer.
   }
 
+  // Fotos nomeadas (docs/98): pergunta/origem/captura de cada foto, fotos de visita anterior e a
+  // contagem por pergunta que vai pro servidor.
+  for (const coluna of ['fotos_meta_json TEXT', 'imagens_historico_json TEXT', 'imagens_por_campo_json TEXT']) {
+    try {
+      await db.execAsync(`ALTER TABLE fila_registros ADD COLUMN ${coluna}`);
+    } catch {
+      // Coluna já existe — nada a fazer.
+    }
+  }
+
   // O promotor escolheu finalizar no horário em que saiu da loja (docs/92) — vai no check-out.
   try {
     await db.execAsync('ALTER TABLE fila_visitas ADD COLUMN usar_saida_detectada INTEGER NOT NULL DEFAULT 0');
