@@ -42,6 +42,8 @@ import { listarTiposRegistro } from '../lib/api/tiposRegistro';
 import { useAuth } from '../lib/auth/AuthContext';
 import { acaoConcluida, acaoValeNestaVisita, juntarUltimosRegistros, progressoLista } from '../lib/acaoObrigatoria';
 import { motivoExclusaoVisita } from '../lib/db/filaVisitas';
+import { descartarRascunhoRegistro, listarRascunhosRegistro, type RascunhoRegistro } from '../lib/db/rascunhosRegistro';
+import { resumoRascunho } from '../lib/rascunhoRegistro';
 import { podeTirarPedido } from '../lib/pedidoVenda';
 import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { useEstaOnline } from '../lib/network';
@@ -163,6 +165,13 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // Só preenchido quando o formulário abre a partir da aba Ações — pula a etapa de escolher o
   // tipo, já que a Ação em si já É um TipoRegistro específico. Ver RegistroFormModal.tipoFixo.
   const [tipoFixoModal, setTipoFixoModal] = useState<TipoRegistro | null>(null);
+  // Formulário em andamento aberto no modal (docs/99) — null = formulário novo.
+  const [rascunhoModal, setRascunhoModal] = useState<RascunhoRegistro | null>(null);
+  const rascunhosQuery = useQuery({
+    queryKey: ['rascunhos-registro', visitaLocalId],
+    queryFn: () => listarRascunhosRegistro(visitaLocalId),
+  });
+  const rascunhos = rascunhosQuery.data ?? [];
   // Preenchido quando o formulário abre a partir de um produto do Mix — o produto já é o
   // contexto, não faz sentido pedir "vincular a" de novo. Ver RegistroFormModal.produtoContexto.
   const [produtoContextoModal, setProdutoContextoModal] = useState<{ uuid: string; descricao: string } | null>(null);
@@ -830,6 +839,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   }
 
   function abrirModalGeral() {
+    setRascunhoModal(null);
     setErroRegistro(null);
     setTipoFixoModal(null);
     setProdutoContextoModal(null);
@@ -838,11 +848,79 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   }
 
   function abrirModalAcao(tipo: TipoRegistro) {
+    // Já tem este formulário em andamento? Oferece continuar em vez de começar do zero (docs/99).
+    const emAndamento = rascunhos.filter((r) => r.tipoRegistroUuid === tipo.id);
+    if (emAndamento.length > 0) {
+      Alert.alert('Formulário em andamento', `Você já começou "${emAndamento[0].descricao}". Quer continuar?`, [
+        { text: 'Continuar', onPress: () => continuarRascunho(emAndamento[0]) },
+        { text: 'Começar outro', onPress: () => abrirNovoDaAcao(tipo) },
+        { text: 'Voltar', style: 'cancel' },
+      ]);
+      return;
+    }
+    abrirNovoDaAcao(tipo);
+  }
+
+  function abrirNovoDaAcao(tipo: TipoRegistro) {
+    setRascunhoModal(null);
     setErroRegistro(null);
     setTipoFixoModal(tipo);
     setProdutoContextoModal(null);
     setRespostaPendente(null);
     setModalAberto(true);
+  }
+
+  // Formulário em andamento (docs/99): abre exatamente onde parou.
+  function continuarRascunho(r: RascunhoRegistro) {
+    const tipo = tipoRegistroPorUuid.get(r.tipoRegistroUuid);
+    if (!tipo) {
+      Alert.alert('Formulário indisponível', 'Este formulário não está mais ativo. Você pode descartar o rascunho.');
+      return;
+    }
+    setErroRegistro(null);
+    setRespostaPendente(null);
+    setTipoFixoModal(tipo);
+    setProdutoContextoModal(r.dados.produtoContexto);
+    setRascunhoModal(r);
+    setModalAberto(true);
+  }
+
+  function descartarRascunho(r: RascunhoRegistro) {
+    Alert.alert('Descartar formulário?', `"${r.descricao}" e as fotos dele serão apagados deste aparelho.`, [
+      { text: 'Voltar', style: 'cancel' },
+      {
+        text: 'Descartar',
+        style: 'destructive',
+        onPress: () => void descartarRascunhoRegistro(r).then(() => rascunhosQuery.refetch()),
+      },
+    ]);
+  }
+
+  // Finalizar com formulário em andamento (docs/99): avisa e deixa escolher. Formulário
+  // obrigatório continua travando pelo próprio "Finalizar visita" (a pendência segue aberta).
+  function pedirFinalizar() {
+    if (rascunhos.length === 0) {
+      setFinalizarAberto(true);
+      return;
+    }
+    const nomes = rascunhos.map((r) => `• ${r.descricao}`).join('\n');
+    Alert.alert(
+      rascunhos.length === 1 ? 'Formulário sem enviar' : `${rascunhos.length} formulários sem enviar`,
+      `${nomes}\n\nEles ainda não foram salvos como registro.`,
+      [
+        { text: 'Continuar preenchendo', onPress: () => continuarRascunho(rascunhos[0]) },
+        {
+          text: 'Descartar e finalizar',
+          style: 'destructive',
+          onPress: () =>
+            void Promise.all(rascunhos.map(descartarRascunhoRegistro)).then(() => {
+              void rascunhosQuery.refetch();
+              setFinalizarAberto(true);
+            }),
+        },
+        { text: 'Voltar', style: 'cancel' },
+      ],
+    );
   }
 
   // "Ainda está lá?" — resposta direta (sem formulário) vai pra fila na hora.
@@ -871,6 +949,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       comContexto && uuidRecorte && (o.tipo_vinculo === 'SECAO' || o.tipo_vinculo === 'DEPARTAMENTO' || o.tipo_vinculo === 'MARCA')
         ? { tipoVinculo: o.tipo_vinculo, uuid: uuidRecorte, descricao: o.vinculo_descricao ?? '', marcaUuid: o.marca_uuid }
         : null;
+    setRascunhoModal(null);
     setErroRegistro(null);
     setRespostaPendente({
       acompanhamentoUuid: a.id,
@@ -907,6 +986,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   // Toque num item do Mix: a ação principal é registrar a coleta já vinculada a este produto
   // (era o que abria o detalhe do produto antes, sem opção de coletar). Ver "ⓘ" pro detalhe.
   function abrirModalParaProduto(item: { produtoUuid: string; descricao: string }) {
+    setRascunhoModal(null);
     setErroRegistro(null);
     setTipoFixoModal(null);
     setProdutoContextoModal({ uuid: item.produtoUuid, descricao: item.descricao });
@@ -1158,6 +1238,32 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             <Text style={styles.statusBoxTexto}>{visita.erro}</Text>
           </View>
         ) : null}
+
+        {/* Formulários em andamento (docs/99): começou, saiu pra arrumar e volta pra terminar. */}
+        {rascunhos.length > 0 && visita.status !== 'FINALIZADA_LOCAL' && visita.status !== 'REJEITADA' && (
+          <View style={styles.rascunhosBox}>
+            <Text style={styles.rascunhosTitulo}>Em andamento</Text>
+            {rascunhos.map((r) => {
+              const tipo = tipoRegistroPorUuid.get(r.tipoRegistroUuid);
+              const resumo = tipo ? resumoRascunho(tipo.campos, r.dados) : '';
+              return (
+                <View key={r.id} style={styles.rascunhoLinha}>
+                  <MaterialCommunityIcons name="progress-pencil" size={20} color={cores.acentoEscuro} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.rascunhoNome} numberOfLines={2}>{r.descricao}</Text>
+                    {resumo ? <Text style={styles.rascunhoResumo}>{resumo}</Text> : null}
+                  </View>
+                  <Pressable onPress={() => descartarRascunho(r)} hitSlop={8} accessibilityLabel={`Descartar ${r.descricao}`} style={styles.rascunhoDescartar}>
+                    <MaterialCommunityIcons name="trash-can-outline" size={20} color={cores.textoSecundario} />
+                  </Pressable>
+                  <Pressable onPress={() => continuarRascunho(r)} style={styles.rascunhoContinuar} accessibilityRole="button">
+                    <Text style={styles.rascunhoContinuarTexto}>Continuar</Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+          </View>
+        )}
 
         {/* "Modo Vendedor" (docs/38-PEDIDO-VENDEDOR.md §8) — o pedido nasce no contexto da
             visita. Se o check-in ainda não sincronizou, o pedido sai sem visita_id (mesma loja). */}
@@ -1437,7 +1543,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         {visita.status !== 'FINALIZADA_LOCAL' && visita.status !== 'REJEITADA' && (
         <Pressable
           style={({ pressed }) => [styles.botaoPrimario, pressed && styles.botaoPressionado]}
-          onPress={() => setFinalizarAberto(true)}
+          onPress={pedirFinalizar}
         >
           <MaterialCommunityIcons name="flag-checkered" size={18} color={cores.onPrimaria} />
           <Text style={styles.botaoPrimarioTexto}>Finalizar visita</Text>
@@ -1494,6 +1600,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           setErroRegistro(null);
           setProdutoContextoModal(null);
           setRespostaPendente(null);
+          setRascunhoModal(null);
         }}
         onSubmit={(resultado) => criarRegistroMutation.mutateAsync(resultado)}
         respostaAcompanhamento={respostaPendente}
@@ -1501,6 +1608,8 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         embalagensColetadas={embalagensColetadasPorTipo}
         visitaLocalId={visitaLocalId}
         visitaServidorId={visita?.servidorId ?? null}
+        rascunho={rascunhoModal}
+        onRascunhoAlterado={() => void rascunhosQuery.refetch()}
       />
 
       {pontoVendaUuid && (
@@ -2025,6 +2134,31 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   avisoSaidaBotaoTexto: { color: cores.branco, fontSize: 15, fontWeight: '700' },
+  // Formulários em andamento (docs/99).
+  rascunhosBox: {
+    marginHorizontal: espaco.lg,
+    marginTop: espaco.sm,
+    padding: espaco.md,
+    gap: espaco.sm,
+    borderRadius: raio.lg,
+    borderWidth: 1,
+    borderColor: cores.acentoBorda,
+    backgroundColor: cores.acentoClaro,
+  },
+  rascunhosTitulo: { fontSize: 12, fontWeight: '800', letterSpacing: 0.4, textTransform: 'uppercase', color: cores.acentoTexto },
+  rascunhoLinha: { flexDirection: 'row', alignItems: 'center', gap: espaco.sm, minHeight: 52 },
+  rascunhoNome: { fontSize: 15, fontWeight: '700', color: cores.texto },
+  rascunhoResumo: { fontSize: 13, color: cores.acentoTexto, marginTop: 1 },
+  rascunhoDescartar: { width: 40, height: 44, alignItems: 'center', justifyContent: 'center' },
+  rascunhoContinuar: {
+    minHeight: 44,
+    paddingHorizontal: espaco.md,
+    borderRadius: raio.md,
+    backgroundColor: cores.acentoEscuro,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rascunhoContinuarTexto: { color: cores.branco, fontSize: 14, fontWeight: '700' },
   botaoDescartar: {
     marginTop: espaco.sm,
     alignSelf: 'flex-start',

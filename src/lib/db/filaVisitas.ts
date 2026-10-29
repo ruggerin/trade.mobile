@@ -5,6 +5,7 @@ import { getDatabase, escrever } from './database';
 import { excluirRegistrosDaVisita, listarRegistrosLocais } from './filaRegistros';
 import { excluirRespostasDaVisita } from './filaAcompanhamentos';
 import { apagarRascunhosDaVisita } from './rascunhosColeta';
+import { apagarRascunhosRegistroDaVisita } from './rascunhosRegistro';
 
 /**
  * Ver docs/04-APP-MOBILE.md "Fila offline de envio" e o comentário no topo de `database.ts`.
@@ -311,6 +312,8 @@ export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclu
   await excluirRespostasDaVisita(id);
   // Coleta guiada não salva (rascunho) — sem a visita, não tem mais pra onde ir.
   await apagarRascunhosDaVisita(id);
+  // Formulário em andamento (docs/99) — pertence à visita, some com ela.
+  await apagarRascunhosRegistroDaVisita(id);
 
   const db = await getDatabase();
   await escrever('DELETE FROM fila_visitas WHERE id = ?', [id]);

@@ -31,6 +31,8 @@ import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/cata
 import { listarProdutosCatalogo } from '../lib/api/produtosAuditoria';
 import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } from '../lib/db/filaRegistros';
 import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type RascunhosColeta } from '../lib/db/rascunhosColeta';
+import { concluirRascunhoRegistro, salvarRascunhoRegistro, type DadosRascunhoRegistro, type RascunhoRegistro } from '../lib/db/rascunhosRegistro';
+import { chaveRascunho, descricaoRascunho, temConteudo } from '../lib/rascunhoRegistro';
 import { mascararMoeda, moedaParaApi } from '../lib/mascaraMoeda';
 import { contagemPorCampo, erroDasFotos, type FotoDaVisita, type FotoHistorico, type FotoMeta } from '../lib/fotosNomeadas';
 import type { FotoAnteriorApi } from '../lib/api/visitas';
@@ -130,6 +132,10 @@ interface RegistroFormModalProps {
   visitaLocalId?: string;
   // Visita no servidor — fotos de visitas anteriores na loja (galeria Horus). Ainda não enviada = só "desta visita".
   visitaServidorId?: string | null;
+  // Formulário em andamento (docs/99): abre já preenchido com o rascunho. `onRascunhoAlterado`
+  // avisa a tela da visita pra atualizar o card "Em andamento".
+  rascunho?: RascunhoRegistro | null;
+  onRascunhoAlterado?: () => void;
   // Concorrente por marca (docs/85): embalagens já salvas NESTA visita pra um formulário — a lista
   // de marcas mostra "500 ml · 1,5 L" e conta. Sem isso, toda marca aparece vazia.
   embalagensColetadas?: (tipoRegistroUuid: string) => { marcaUuid: string; marcaDescricao: string; embalagem: string }[];
@@ -168,6 +174,8 @@ export function RegistroFormModal({
   produtosColetados,
   visitaLocalId,
   visitaServidorId,
+  rascunho = null,
+  onRascunhoAlterado,
   embalagensColetadas,
   respostaAcompanhamento = null,
 }: RegistroFormModalProps) {
@@ -250,6 +258,30 @@ export function RegistroFormModal({
       setMarcasNovas([]);
       setEmbalagemQuantidade('');
       setEmbalagemUnidade(null);
+      // Continuar um formulário em andamento (docs/99): volta exatamente onde parou.
+      rascunhoIdRef.current = rascunho?.id ?? null;
+      rascunhoPendenteRef.current = null;
+      acabouDeAbrirRef.current = true;
+      if (rascunho) {
+        const d = rascunho.dados;
+        setValoresCampos(d.valoresCampos);
+        setImagensUri(d.imagensUri);
+        setFotosMeta(d.fotosMeta);
+        setFotosHistorico(d.fotosHistorico);
+        setRuptura(d.ruptura);
+        setVinculo(d.vinculo);
+        setRecorte(d.recorte);
+        recorteJaEscolhidoRef.current = !!d.recorte;
+      }
+    } else if (rascunhoIdRef.current || rascunhoPendenteRef.current) {
+      // Fechou com o formulário em andamento: grava já (sem esperar o atraso) e as fotos ficam,
+      // agora são do rascunho.
+      if (rascunhoTimerRef.current) clearTimeout(rascunhoTimerRef.current);
+      const pendente = rascunhoPendenteRef.current;
+      rascunhoPendenteRef.current = null;
+      rascunhoIdRef.current = null;
+      if (pendente && !submetidoRef.current) void salvarRascunhoRegistro(pendente).then(() => onRascunhoAlterado?.());
+      else onRascunhoAlterado?.();
     } else if (!submetidoRef.current && imagensUriRef.current.some((uri) => !imagensDoRascunhoRef.current.includes(uri))) {
       // Modal fechado sem confirmar (botão Fechar, back do Android, ou o pai desmontou por
       // outro motivo) com fotos já copiadas pro armazenamento persistente (ver capturarFoto) —
@@ -261,6 +293,54 @@ export function RegistroFormModal({
     }
   }, [visible, tipoFixo]);
 
+
+  // Salvamento automático do rascunho (docs/99): a cada resposta, foto ou escolha, grava no
+  // aparelho. Só no formulário comum: a coleta guiada tem rascunho próprio e a resposta de
+  // acompanhamento é rápida. Formulário intocado não vira rascunho; esvaziado, deixa de ser.
+  useEffect(() => {
+    if (acabouDeAbrirRef.current) {
+      acabouDeAbrirRef.current = false;
+      return;
+    }
+    if (!visible || !tipo || !visitaLocalId || submetidoRef.current || respostaAcompanhamento) return;
+    if (modoLista || modoMarca) return;
+    const dados: DadosRascunhoRegistro = {
+      valoresCampos,
+      imagensUri,
+      fotosMeta,
+      fotosHistorico,
+      ruptura,
+      vinculo,
+      recorte,
+      produtoContexto: produtoContexto ?? null,
+    };
+    if (!temConteudo(dados)) {
+      rascunhoPendenteRef.current = null;
+      if (rascunhoIdRef.current) {
+        const id = rascunhoIdRef.current;
+        rascunhoIdRef.current = null;
+        void concluirRascunhoRegistro(id).then(() => onRascunhoAlterado?.());
+      }
+      return;
+    }
+    rascunhoIdRef.current ??= gerarUuidLocal();
+    const linha = {
+      id: rascunhoIdRef.current,
+      visitaLocalId,
+      tipoRegistroUuid: tipo.id,
+      descricao: descricaoRascunho(tipo.descricao, dados),
+      chave: chaveRascunho(tipo.id, dados),
+      dados,
+    };
+    rascunhoPendenteRef.current = linha;
+    if (rascunhoTimerRef.current) clearTimeout(rascunhoTimerRef.current);
+    rascunhoTimerRef.current = setTimeout(() => {
+      if (rascunhoPendenteRef.current?.id !== linha.id || submetidoRef.current) return;
+      void salvarRascunhoRegistro(linha);
+    }, 400);
+    // modoLista/modoMarca vêm do tipo; recalculados a cada render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, tipo, valoresCampos, imagensUri, fotosMeta, fotosHistorico, ruptura, vinculo, recorte, produtoContexto, visitaLocalId]);
 
   const camposOrdenados = useMemo(
     () => (tipo ? [...tipo.campos].sort((a, b) => a.ordem - b.ordem) : []),
@@ -306,6 +386,13 @@ export function RegistroFormModal({
   const listaGuiada = useMemo(() => (tipo ? produtosDaListaGuiada(tipo, mixDaLojaQuery.data) : []), [tipo, mixDaLojaQuery.data]);
   // Já escolheu uma vez neste registro: depois de "Trocar", a escolha automática não volta.
   const recorteJaEscolhidoRef = useRef(false);
+  // Rascunho do formulário (docs/99): id da linha gravada (null = ainda não virou rascunho) e o
+  // último conteúdo, pra gravar na hora de fechar sem esperar o atraso do salvamento automático.
+  const rascunhoIdRef = useRef<string | null>(null);
+  const rascunhoPendenteRef = useRef<Parameters<typeof salvarRascunhoRegistro>[0] | null>(null);
+  const rascunhoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Na passada em que o modal abre, o estado ainda é o da abertura anterior: não salva nada.
+  const acabouDeAbrirRef = useRef(false);
   function escolherRecorte(r: RecorteEscolhido) {
     recorteJaEscolhidoRef.current = true;
     setRecorte(r);
@@ -749,6 +836,14 @@ export function RegistroFormModal({
     // o pai mostra a mensagem em `erro`, e a foto volta a ser "não enviada" pra limpeza ao fechar.
     void Promise.resolve(resultado).then(
       () => {
+        // Virou registro: o rascunho some (as fotos agora são do registro).
+        if (rascunhoTimerRef.current) clearTimeout(rascunhoTimerRef.current);
+        rascunhoPendenteRef.current = null;
+        if (rascunhoIdRef.current) {
+          const id = rascunhoIdRef.current;
+          rascunhoIdRef.current = null;
+          void concluirRascunhoRegistro(id).then(() => onRascunhoAlterado?.());
+        }
         // Por marca: salvou a embalagem → fica na marca pra adicionar outra (ou volta pra lista
         // quando o formulário aceita uma só).
         if (modoMarca) {

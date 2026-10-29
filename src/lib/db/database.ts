@@ -268,6 +268,18 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       atualizado_em TEXT NOT NULL,
       PRIMARY KEY (visita_local_id, tipo_registro_uuid)
     );
+
+    -- Rascunho de formulário comum (docs/99): o promotor começa, sai e volta pra terminar. Um por
+    -- formulário + recorte/produto (chave). Ver lib/db/rascunhosRegistro.ts.
+    CREATE TABLE IF NOT EXISTS rascunhos_registro (
+      id TEXT PRIMARY KEY NOT NULL,
+      visita_local_id TEXT NOT NULL,
+      tipo_registro_uuid TEXT NOT NULL,
+      descricao TEXT NOT NULL,
+      chave TEXT NOT NULL,
+      dados_json TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
   `);
 
   // Aparelho que já tinha o app instalado antes da coluna `ativo` existir — `CREATE TABLE IF
