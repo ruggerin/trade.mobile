@@ -241,6 +241,8 @@ export interface CampoTipoRegistro {
   foto_max?: number | null;
   foto_reaproveitar?: 'NAO' | 'VISITA' | 'HISTORICO';
   foto_dica?: string | null;
+  // Checklist: PRESENTE (tudo marcado de saída) | CONFERIR (Tem / Não tem item a item) — docs/100.
+  sortimento_modo?: 'PRESENTE' | 'CONFERIR';
   // true = o checklist segue a marca/departamento/seção escolhida no início do formulário
   // (docs/79). Opcional: cache antigo não tem.
   sortimento_segue_escolha?: boolean;
@@ -316,6 +318,10 @@ export interface TipoRegistro {
   permite_ruptura?: boolean;
   // Área de foto livre no registro (docs/98); ausente = ligada (API antiga).
   permite_foto_livre?: boolean;
+  // "Cada seção / linha" como lista guiada (docs/100): nível, origem e a lista fixa. Sem nível = livre.
+  linha_nivel?: 'SECAO' | 'DEPARTAMENTO' | 'MARCA' | null;
+  linha_origem?: 'MIX_LOJA' | 'FIXA';
+  linhas_fixas?: { id: string; descricao: string }[] | null;
   eh_ruptura: boolean;
   // Controla se o tipo aparece solto no dropdown de "criar registro" do promotor — decisão 8 de
   // docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. `false` pra tipos nascidos dentro de uma campanha

@@ -20,6 +20,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { IconeTipoRegistro } from './IconeTipoRegistro';
 import { CampoFoto, GaleriaHorusModal } from './FotosNomeadas';
+import { ConferenciaItens } from './ConferenciaItens';
+import { ListaLinhas } from './ListaLinhas';
 import { CampoEmbalagem, ListaMarcasColeta, type MarcaDaColeta } from './ColetaPorMarca';
 import { comprimirFoto } from '../lib/compressaoFoto';
 import { produtosDaListaGuiada } from '../lib/acaoObrigatoria';
@@ -33,6 +35,9 @@ import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } fro
 import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type RascunhosColeta } from '../lib/db/rascunhosColeta';
 import { concluirRascunhoRegistro, salvarRascunhoRegistro, type DadosRascunhoRegistro, type RascunhoRegistro } from '../lib/db/rascunhosRegistro';
 import { chaveRascunho, descricaoRascunho, temConteudo } from '../lib/rascunhoRegistro';
+import { listarRascunhosRegistro } from '../lib/db/rascunhosRegistro';
+import { linhasDoFormulario, type LinhaGuiada } from '../lib/linhasGuiadas';
+import { contagem as contagemConferencia, type EstadoConferencia } from '../lib/conferenciaMix';
 import { mascararMoeda, moedaParaApi } from '../lib/mascaraMoeda';
 import { contagemPorCampo, erroDasFotos, type FotoDaVisita, type FotoHistorico, type FotoMeta } from '../lib/fotosNomeadas';
 import type { FotoAnteriorApi } from '../lib/api/visitas';
@@ -127,6 +132,8 @@ interface RegistroFormModalProps {
   // Produtos já coletados NESTA visita pra um tipo de registro — alimenta o check verde da
   // coleta guiada. Sem isso, todos aparecem como pendentes.
   produtosColetados?: (tipoRegistroUuid: string) => ReadonlySet<string>;
+  // Lista guiada de seções/linhas (docs/100): linhas deste formulário já registradas nesta visita.
+  linhasColetadas?: (tipoRegistroUuid: string, nivel: 'SECAO' | 'DEPARTAMENTO' | 'MARCA') => ReadonlySet<string>;
   // Visita local — chave do rascunho da coleta guiada (lib/db/rascunhosColeta.ts) e origem das
   // fotos "desta visita" na galeria Horus (docs/98).
   visitaLocalId?: string;
@@ -172,6 +179,7 @@ export function RegistroFormModal({
   onClose,
   onSubmit,
   produtosColetados,
+  linhasColetadas,
   visitaLocalId,
   visitaServidorId,
   rascunho = null,
@@ -192,6 +200,10 @@ export function RegistroFormModal({
   const [fotosMeta, setFotosMeta] = useState<Record<string, FotoMeta>>({});
   const [fotosHistorico, setFotosHistorico] = useState<FotoHistorico[]>([]);
   const [galeriaCampo, setGaleriaCampo] = useState<CampoTipoRegistro | null>(null);
+  // Lista guiada (docs/100): a linha aberta agora (null = na lista).
+  const [linhaAtual, setLinhaAtual] = useState<LinhaGuiada | null>(null);
+  // Conferência item a item (docs/100): quanto falta conferir em cada checklist desse formato.
+  const [conferenciaPorCampo, setConferenciaPorCampo] = useState<Record<string, { pendentes: number; conferidos: number }>>({});
   const [ruptura, setRuptura] = useState(false);
   const [vinculo, setVinculo] = useState<{ categoria: Categoria; uuid: string; label: string } | null>(null);
   // Onde é o registro, quando o formulário pede essa escolha antes das perguntas (docs/79).
@@ -235,6 +247,8 @@ export function RegistroFormModal({
       setFotosMeta({});
       setFotosHistorico([]);
       setGaleriaCampo(null);
+      setLinhaAtual(null);
+      setConferenciaPorCampo({});
       setRuptura(false);
       setVinculo(null);
       // Resposta a um acompanhamento: o recorte do registro original já vem escolhido e travado.
@@ -272,6 +286,8 @@ export function RegistroFormModal({
         setVinculo(d.vinculo);
         setRecorte(d.recorte);
         recorteJaEscolhidoRef.current = !!d.recorte;
+        // Rascunho de uma linha da lista guiada: volta direto nela.
+        if (d.vinculo && tipoFixo?.linha_nivel) setLinhaAtual({ uuid: d.vinculo.uuid, descricao: d.vinculo.label });
       }
     } else if (rascunhoIdRef.current || rascunhoPendenteRef.current) {
       // Fechou com o formulário em andamento: grava já (sem esperar o atraso) e as fotos ficam,
@@ -379,7 +395,7 @@ export function RegistroFormModal({
   const mixDaLojaQuery = useQuery({
     queryKey: ['sortimento', pontoVendaUuid],
     queryFn: () => buscarSortimento(pontoVendaUuid!),
-    enabled: (pedeRecorte || tipo?.lista_produtos_origem === 'MIX_LOJA') && !!pontoVendaUuid,
+    enabled: (pedeRecorte || tipo?.lista_produtos_origem === 'MIX_LOJA' || !!linhaPeloMix(tipo, produtoContexto)) && !!pontoVendaUuid,
   });
   // Lista guiada de "Cada produto": a fixa do admin, ou os nossos produtos do Mix desta loja
   // (checklist de presença, docs/85 §7).
@@ -411,17 +427,18 @@ export function RegistroFormModal({
   const secoesQuery = useQuery({
     queryKey: ['secoes-auditoria'],
     queryFn: listarSecoes,
-    enabled: categoriaAberta === 'SECAO' || (pedeRecorte && permitidos.includes('SECAO')),
+    enabled: categoriaAberta === 'SECAO' || (pedeRecorte && permitidos.includes('SECAO')) || linhaPeloMix(tipo, produtoContexto) === 'SECAO',
   });
   const departamentosQuery = useQuery({
     queryKey: ['departamentos-auditoria'],
     queryFn: listarDepartamentos,
-    enabled: categoriaAberta === 'DEPARTAMENTO' || (pedeRecorte && permitidos.includes('DEPARTAMENTO')),
+    enabled: categoriaAberta === 'DEPARTAMENTO' || (pedeRecorte && permitidos.includes('DEPARTAMENTO')) || linhaPeloMix(tipo, produtoContexto) === 'DEPARTAMENTO',
   });
   const marcasQuery = useQuery({
     queryKey: ['marcas-auditoria'],
     queryFn: listarMarcas,
-    enabled: categoriaAberta === 'MARCA' || (pedeRecorte && (permitidos.includes('MARCA') || !!tipo?.filtra_marca)),
+    enabled:
+      categoriaAberta === 'MARCA' || (pedeRecorte && (permitidos.includes('MARCA') || !!tipo?.filtra_marca)) || linhaPeloMix(tipo, produtoContexto) === 'MARCA',
   });
 
   // Foto de registro é evidência de campo: só câmera, na hora — nunca da galeria (uma foto
@@ -506,6 +523,55 @@ export function RegistroFormModal({
   const modoLista = !!tipo && !produtoContexto && tipo.granularidade_padrao === 'PRODUTO' && listaGuiada.length > 0;
   // Cada marca concorrente (docs/85 §3.3): lista de marcas → marca → uma embalagem por registro.
   const modoMarca = !!tipo && !produtoContexto && tipo.granularidade_padrao === 'MARCA';
+  // "Cada seção / linha" como lista guiada (docs/100): o promotor percorre as linhas definidas no admin.
+  const nivelLinha = tipo && !produtoContexto && !respostaAcompanhamento && !pedeRecorte && tipo.granularidade_padrao === 'LINHA' ? (tipo.linha_nivel ?? null) : null;
+  const modoLinha = !!nivelLinha;
+  const catalogoDoNivel =
+    nivelLinha === 'SECAO' ? (secoesQuery.data ?? []) : nivelLinha === 'DEPARTAMENTO' ? (departamentosQuery.data ?? []) : nivelLinha === 'MARCA' ? (marcasQuery.data ?? []) : [];
+  const linhas = tipo && modoLinha ? (linhasDoFormulario(tipo, catalogoDoNivel, mixDaLojaQuery.data) ?? []) : [];
+  const rascunhosDaVisitaQuery = useQuery({
+    queryKey: ['rascunhos-registro', visitaLocalId],
+    queryFn: () => listarRascunhosRegistro(visitaLocalId!),
+    enabled: modoLinha && !!visitaLocalId,
+  });
+  const vinculoDaLinha = (l: LinhaGuiada) => ({ categoria: nivelLinha!, uuid: l.uuid, label: l.descricao });
+  const chaveDaLinha = (l: LinhaGuiada) => chaveRascunho(tipo!.id, { recorte: null, produtoContexto: null, vinculo: vinculoDaLinha(l) });
+  const linhasEmAndamento = new Set(
+    linhas.filter((l) => (rascunhosDaVisitaQuery.data ?? []).some((r) => r.chave === chaveDaLinha(l))).map((l) => l.uuid),
+  );
+
+  function abrirLinha(l: LinhaGuiada) {
+    limparFormulario();
+    const emAndamento = (rascunhosDaVisitaQuery.data ?? []).find((r) => r.chave === chaveDaLinha(l));
+    if (emAndamento) {
+      const d = emAndamento.dados;
+      rascunhoIdRef.current = emAndamento.id;
+      setValoresCampos(d.valoresCampos);
+      setImagensUri(d.imagensUri);
+      setFotosMeta(d.fotosMeta);
+      setFotosHistorico(d.fotosHistorico);
+      setRuptura(d.ruptura);
+    }
+    setVinculo(vinculoDaLinha(l));
+    setLinhaAtual(l);
+  }
+
+  // Volta pra lista sem perder a linha: o que estava preenchido fica como rascunho (docs/99).
+  function voltarParaLinhas() {
+    if (rascunhoTimerRef.current) clearTimeout(rascunhoTimerRef.current);
+    const pendente = rascunhoPendenteRef.current;
+    rascunhoPendenteRef.current = null;
+    rascunhoIdRef.current = null;
+    const depois = () => {
+      void rascunhosDaVisitaQuery.refetch();
+      onRascunhoAlterado?.();
+    };
+    if (pendente) void salvarRascunhoRegistro(pendente).then(depois);
+    else depois();
+    limparFormulario();
+    setLinhaAtual(null);
+  }
+
   // Perguntas FOTO visíveis (docs/98). A coleta guiada por produto e por marca ainda não tem foto
   // nomeada: lá elas não aparecem e o servidor não cobra (sem `imagens_por_campo`).
   const camposFoto = modoLista || modoMarca ? [] : camposVisiveis.filter((c) => c.tipo_campo === 'FOTO');
@@ -606,6 +672,14 @@ export function RegistroFormModal({
     // Perguntas FOTO (docs/98): mesma regra do servidor (obrigatória, mínimo e máximo).
     const erroFotos = ruptura ? null : erroDasFotos(camposFoto, totalFotosDoCampo);
     if (erroFotos) return erroFotos;
+    // Conferência item a item (docs/100): começou ou é obrigatória, confere tudo.
+    for (const campo of ruptura ? [] : camposVisiveis) {
+      if (campo.tipo_campo !== 'SORTIMENTO' || campo.sortimento_modo !== 'CONFERIR') continue;
+      const c = conferenciaPorCampo[campo.chave];
+      if (c && c.pendentes > 0 && (campo.obrigatorio || c.conferidos > 0)) {
+        return `Faltam ${c.pendentes} ${c.pendentes === 1 ? 'produto' : 'produtos'} pra conferir em "${campo.rotulo}".`;
+      }
+    }
     for (const campo of ruptura ? [] : camposVisiveis) {
       if (campo.tipo_campo === 'FOTO') continue;
       const valor = valoresCampos[campo.chave];
@@ -632,6 +706,7 @@ export function RegistroFormModal({
     setImagensUri([]);
     setFotosMeta({});
     setFotosHistorico([]);
+    setConferenciaPorCampo({});
     setRuptura(false);
     setVinculo(null);
     setCategoriaAberta(null);
@@ -799,7 +874,7 @@ export function RegistroFormModal({
       produtoAuditoriaUuid: produtoEfetivo?.uuid ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.uuid : undefined),
       tipoVinculo: recorte ? recorte.tipo : produtoLista ? 'PRODUTO' : !produtoContexto && vinculo ? vinculo.categoria : undefined,
       produtoDescricao: produtoEfetivo?.descricao ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.label : undefined),
-      permanecerAberto: modoLista || undefined,
+      permanecerAberto: modoLista || modoLinha || undefined,
       secaoUuid: recorte ? (recorte.tipo === 'SECAO' ? recorte.uuid : undefined) : vinculo?.categoria === 'SECAO' ? vinculo.uuid : undefined,
       departamentoUuid: recorte
         ? recorte.tipo === 'DEPARTAMENTO' ? recorte.uuid : undefined
@@ -843,6 +918,13 @@ export function RegistroFormModal({
           const id = rascunhoIdRef.current;
           rascunhoIdRef.current = null;
           void concluirRascunhoRegistro(id).then(() => onRascunhoAlterado?.());
+        }
+        // Lista guiada (docs/100): salvou a linha → volta pra lista.
+        if (modoLinha) {
+          limparFormulario();
+          setLinhaAtual(null);
+          void rascunhosDaVisitaQuery.refetch();
+          return;
         }
         // Por marca: salvou a embalagem → fica na marca pra adicionar outra (ou volta pra lista
         // quando o formulário aceita uma só).
@@ -951,6 +1033,21 @@ export function RegistroFormModal({
             </ScrollView>
           )}
 
+          {tipo && nivelLinha && !linhaAtual && (
+            <ListaLinhas
+              nivel={nivelLinha}
+              linhas={linhas}
+              feitas={linhasColetadas?.(tipo.id, nivelLinha) ?? new Set<string>()}
+              emAndamento={linhasEmAndamento}
+              carregando={
+                tipo.linha_origem !== 'FIXA' && (mixDaLojaQuery.isLoading || secoesQuery.isLoading || departamentosQuery.isLoading || marcasQuery.isLoading)
+              }
+              paddingInferior={espaco.lg + insets.bottom}
+              onAbrir={abrirLinha}
+              onConcluir={onClose}
+            />
+          )}
+
           {tipo && modoLista && !produtoLista && (
             <ListaProdutosColeta
               produtos={listaGuiada}
@@ -998,9 +1095,20 @@ export function RegistroFormModal({
             />
           )}
 
-          {tipo && !(modoLista && !produtoLista) && !(modoMarca && !marcaAtual) && !(pedeRecorte && !recorte) && (
+          {tipo && !(modoLista && !produtoLista) && !(modoMarca && !marcaAtual) && !(pedeRecorte && !recorte) && !(modoLinha && !linhaAtual) && (
             <>
               <ScrollView contentContainerStyle={styles.lista}>
+                {modoLinha && linhaAtual && (
+                  <View style={styles.recorteFaixa}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.recorteFaixaTipo}>{ROTULO_RECORTE[nivelLinha!]}</Text>
+                      <Text style={styles.recorteFaixaNome} numberOfLines={2}>{linhaAtual.descricao}</Text>
+                    </View>
+                    <Pressable onPress={voltarParaLinhas} hitSlop={8} style={styles.recorteFaixaBotao}>
+                      <Text style={styles.recorteFaixaBotaoTexto}>Voltar à lista</Text>
+                    </Pressable>
+                  </View>
+                )}
                 {modoMarca && marcaAtual && (
                   <CampoEmbalagem
                     quantidade={embalagemQuantidade}
@@ -1090,6 +1198,7 @@ export function RegistroFormModal({
                         ...Object.fromEntries(produtos.map((p) => [p.produto_uuid, p.descricao])),
                       }))
                     }
+                    onConferencia={(c) => setConferenciaPorCampo((atual) => ({ ...atual, [campo.chave]: c }))}
                   />
                 </View>
               ))}
@@ -1109,7 +1218,7 @@ export function RegistroFormModal({
               </Pressable>
               )}
 
-              {!produtoEfetivo && !modoMarca && !pedeRecorte && !recorte && (tipo.permite_vincular_catalogo || exigeProduto) && (
+              {!produtoEfetivo && !modoMarca && !modoLinha && !pedeRecorte && !recorte && (tipo.permite_vincular_catalogo || exigeProduto) && (
                 <View style={styles.secaoForm}>
                   <Text style={styles.secaoLabel}>Vincular a {exigeProduto ? '(obrigatório)' : '(opcional)'}</Text>
                   <View style={styles.chipsLinha}>
@@ -1216,6 +1325,7 @@ function CampoInput({
   recorte,
   nomesPorUuid,
   onProdutosResolvidos,
+  onConferencia,
 }: {
   campo: CampoTipoRegistro;
   valor: string;
@@ -1224,6 +1334,7 @@ function CampoInput({
   recorte: RecorteEscolhido | null;
   nomesPorUuid: Record<string, string>;
   onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
+  onConferencia?: (c: { pendentes: number; conferidos: number }) => void;
 }) {
   const situacao = campo.tipo_campo === 'DATA' ? situacaoData(valor) : null;
 
@@ -1242,6 +1353,7 @@ function CampoInput({
           recorte={recorte}
           nomesPorUuid={nomesPorUuid}
           onProdutosResolvidos={onProdutosResolvidos}
+          onConferencia={onConferencia}
         />
       </View>
     );
@@ -1317,6 +1429,7 @@ function CampoSortimentoInput({
   recorte,
   nomesPorUuid,
   onProdutosResolvidos,
+  onConferencia,
 }: {
   campo: CampoTipoRegistro;
   valor: string;
@@ -1325,7 +1438,9 @@ function CampoSortimentoInput({
   recorte: RecorteEscolhido | null;
   nomesPorUuid: Record<string, string>;
   onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
+  onConferencia?: (c: { pendentes: number; conferidos: number }) => void;
 }) {
+  const conferir = campo.sortimento_modo === 'CONFERIR';
   const query = useQuery({
     queryKey: ['sortimento-campo', campo.id, pontoVendaUuid],
     queryFn: () => buscarSortimentoCampo(campo.id, pontoVendaUuid!),
@@ -1351,10 +1466,19 @@ function CampoSortimentoInput({
   // sobrescreve o que o promotor já ajustou se o componente re-renderizar).
   useEffect(() => {
     if (query.data && !valor) {
-      onChange(JSON.stringify({ presentes: produtos.map((p) => p.produto_uuid), ausentes: [] } satisfies EstadoSortimento));
+      // Conferir item a item (docs/100): nada vem marcado.
+      onChange(JSON.stringify({ presentes: conferir ? [] : produtos.map((p) => p.produto_uuid), ausentes: [] } satisfies EstadoSortimento));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query.data, valor, produtos]);
+
+  // Conferência item a item: avisa o formulário quanto falta (pra não salvar pela metade).
+  useEffect(() => {
+    if (!conferir || !estado) return;
+    const c = contagemConferencia(produtos.map((p) => p.produto_uuid), estado);
+    onConferencia?.({ pendentes: c.pendentes, conferidos: c.conferidos });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conferir, valor, produtos]);
 
   function alternarProduto(produtoUuid: string) {
     if (!estado) return;
@@ -1403,6 +1527,16 @@ function CampoSortimentoInput({
   }
 
   const podeAdicionar = !!campo.sortimento_segue_escolha && !!recorte;
+
+  if (conferir && estado) {
+    return (
+      <ConferenciaItens
+        produtos={produtos}
+        estado={estado as EstadoConferencia}
+        onChange={(novo) => onChange(JSON.stringify(novo))}
+      />
+    );
+  }
 
   if (produtos.length === 0 && !podeAdicionar) {
     return <Text style={styles.vazioTexto}>Nenhum produto no mix deste PDV pra este recorte.</Text>;
@@ -2480,4 +2614,14 @@ async function posicaoDaFoto(): Promise<Pick<FotoMeta, 'latitude' | 'longitude' 
   } catch {
     return {};
   }
+}
+
+/** Lista guiada pelo Mix da loja (docs/100): o nível cujo catálogo e Mix precisam ser carregados. */
+function linhaPeloMix(
+  tipo: TipoRegistro | null,
+  produtoContexto: { uuid: string } | null | undefined,
+): 'SECAO' | 'DEPARTAMENTO' | 'MARCA' | null {
+  if (!tipo || produtoContexto || tipo.granularidade_padrao !== 'LINHA' || !tipo.linha_nivel || tipo.linha_origem === 'FIXA') return null;
+  if (tipo.escolhe_marca || tipo.escolhe_departamento || tipo.escolhe_secao) return null;
+  return tipo.linha_nivel;
 }

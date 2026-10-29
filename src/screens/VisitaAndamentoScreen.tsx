@@ -44,6 +44,7 @@ import { acaoConcluida, acaoValeNestaVisita, juntarUltimosRegistros, progressoLi
 import { motivoExclusaoVisita } from '../lib/db/filaVisitas';
 import { descartarRascunhoRegistro, listarRascunhosRegistro, type RascunhoRegistro } from '../lib/db/rascunhosRegistro';
 import { resumoRascunho } from '../lib/rascunhoRegistro';
+import { linhasFeitas } from '../lib/linhasGuiadas';
 import { podeTirarPedido } from '../lib/pedidoVenda';
 import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { useEstaOnline } from '../lib/network';
@@ -264,6 +265,13 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           .filter((r) => r.tipoRegistroUuid === tipoRegistroUuid && r.produtoAuditoriaUuid)
           .map((r) => r.produtoAuditoriaUuid as string),
       ),
+    [registrosLocais],
+  );
+
+  // Lista guiada de seções/linhas (docs/100): linhas deste formulário já registradas nesta visita.
+  const linhasColetadasPorTipo = useCallback(
+    (tipoRegistroUuid: string, nivel: 'SECAO' | 'DEPARTAMENTO' | 'MARCA'): ReadonlySet<string> =>
+      linhasFeitas(registrosLocais, tipoRegistroUuid, nivel),
     [registrosLocais],
   );
 
@@ -1605,6 +1613,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         onSubmit={(resultado) => criarRegistroMutation.mutateAsync(resultado)}
         respostaAcompanhamento={respostaPendente}
         produtosColetados={produtosColetadosPorTipo}
+        linhasColetadas={linhasColetadasPorTipo}
         embalagensColetadas={embalagensColetadasPorTipo}
         visitaLocalId={visitaLocalId}
         visitaServidorId={visita?.servidorId ?? null}
