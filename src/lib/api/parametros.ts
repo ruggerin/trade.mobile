@@ -109,9 +109,48 @@ async function lerAutonomia(chave: string, valorPadrao: AutonomiaPromotor): Prom
   return (NIVEIS_AUTONOMIA as string[]).includes(valor) ? (valor as AutonomiaPromotor) : valorPadrao;
 }
 
+// Jornada do próprio promotor de hoje aos próximos 6 dias (docs/102), como vem do servidor.
+export interface JornadaDoDiaApi {
+  data: string;
+  trabalha: boolean;
+  inicio: string | null;
+  fim: string | null;
+  intervalo: { inicio: string; fim: string } | null;
+  escala: string;
+  feriado: string | null;
+}
+
+export interface RespostaParametros {
+  parametros: ParametroApi[];
+  // null/ausente = servidor anterior à doc 102 (ou usuário sem empresa).
+  jornada_semana?: JornadaDoDiaApi[] | null;
+}
+
+// A jornada da semana vai no mesmo cache dos parâmetros, numa linha que nenhuma chave real usa —
+// assim o app funciona offline sem tabela nova no SQLite.
+const CHAVE_JORNADA_SEMANA = '__JORNADA_SEMANA';
+
+/** Parâmetros + a jornada da semana numa linha só, pronto pra ir pro cache. */
+export function parametrosParaCache(resposta: RespostaParametros): ParametroApi[] {
+  return resposta.jornada_semana
+    ? [...resposta.parametros, { chave: CHAVE_JORNADA_SEMANA, valor: JSON.stringify(resposta.jornada_semana), ativo: true }]
+    : resposta.parametros;
+}
+
+function jornadaDeHoje(parametros: ParametroApi[], agora = new Date()): JornadaDoDiaApi | null {
+  const linha = parametros.find((p) => p.chave === CHAVE_JORNADA_SEMANA);
+  if (!linha) return null;
+  const hoje = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}-${String(agora.getDate()).padStart(2, '0')}`;
+  try {
+    return (JSON.parse(linha.valor) as JornadaDoDiaApi[]).find((d) => d.data === hoje) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function buscarParametros(): Promise<ParametroApi[]> {
   return redeComPrazo({
-    rede: async () => (await apiClient.get<{ parametros: ParametroApi[] }>('/parametros')).data.parametros,
+    rede: async () => parametrosParaCache((await apiClient.get<RespostaParametros>('/parametros')).data),
     salvar: salvarParametrosCache,
     lerCache: lerParametrosCache,
   });
@@ -131,10 +170,14 @@ export interface ConfigRastreamento {
   intervaloSegundos: number;
   // docs/47-RASTREAMENTO-EXIGENCIA.md — quanto o app exige do promotor.
   exigencia: ExigenciaRastreamento;
-  // A exigência só vale dentro da jornada (JORNADA_INICIO/FIM)? `jornada` null = o dia inteiro.
+  // A exigência só vale dentro da jornada (a escala do promotor no dia, docs/102)? `jornada` null = o dia inteiro.
   jornada: { inicio: string; fim: string } | null;
+  // Folga (ou feriado) da escala hoje: nada é cobrado, nem com "o dia inteiro" (docs/102).
+  folga: boolean;
   // Intervalo (almoço) que a empresa desconsidera (docs/95) — no intervalo nada é cobrado. null = não desconsidera.
   intervalo: { inicio: string; fim: string } | null;
+  // docs/94: manda o nível da bateria junto da posição (RASTREAMENTO_BATERIA, desligado por padrão).
+  coletarBateria: boolean;
 }
 
 // Mesmos defaults do backend (App\Support\Rastreamento / OperacaoDoDia): OPCIONAL, só na jornada,
@@ -148,16 +191,26 @@ export async function buscarConfigRastreamento(): Promise<ConfigRastreamento> {
   const soNaJornada = ativo('RASTREAMENTO_SO_NA_JORNADA');
   const intervaloLigado = VALORES_VERDADEIROS.includes((ativo('JORNADA_INTERVALO_HABILITADO') ?? '').toLowerCase());
   const intervaloAlmoco = { inicio: ativo('JORNADA_INTERVALO_INICIO') ?? '12:00', fim: ativo('JORNADA_INTERVALO_FIM') ?? '13:30' };
+  const limitaNaJornada = soNaJornada === undefined || ['1', 'true', 'sim', 'yes'].includes(soNaJornada.toLowerCase());
+  // docs/102: a escala do promotor hoje, quando o servidor manda. Sem ela (servidor antigo ou
+  // cache com mais de 7 dias), os parâmetros de antes — o mesmo horário pra todo mundo.
+  const hoje = jornadaDeHoje(parametros);
 
   return {
     intervaloSegundos: Number.isFinite(intervalo) && intervalo > 0 ? intervalo : 0,
     exigencia: exigencia === 'AVISO' || exigencia === 'OBRIGATORIO' ? exigencia : 'OPCIONAL',
-    jornada:
-      soNaJornada === undefined || ['1', 'true', 'sim', 'yes'].includes(soNaJornada.toLowerCase())
-        ? { inicio: ativo('JORNADA_INICIO') ?? '07:00', fim: ativo('JORNADA_FIM') ?? '17:00' }
-        : null,
-    // Fim antes do início (cadastro errado) = sem intervalo, igual ao servidor.
-    intervalo: intervaloLigado && intervaloAlmoco.inicio < intervaloAlmoco.fim ? intervaloAlmoco : null,
+    jornada: !limitaNaJornada
+      ? null
+      : hoje
+        ? hoje.trabalha && hoje.inicio && hoje.fim
+          ? { inicio: hoje.inicio, fim: hoje.fim }
+          : null
+        : { inicio: ativo('JORNADA_INICIO') ?? '07:00', fim: ativo('JORNADA_FIM') ?? '17:00' },
+    folga: hoje !== null && !hoje.trabalha,
+    // Fim antes do início (cadastro errado) = sem intervalo, igual ao servidor. Com a escala, o
+    // servidor já manda o intervalo só quando a empresa desconsidera.
+    intervalo: hoje ? hoje.intervalo : intervaloLigado && intervaloAlmoco.inicio < intervaloAlmoco.fim ? intervaloAlmoco : null,
+    coletarBateria: VALORES_VERDADEIROS.includes((ativo('RASTREAMENTO_BATERIA') ?? '').toLowerCase()),
   };
 }
 

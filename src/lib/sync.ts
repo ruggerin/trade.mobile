@@ -1,5 +1,5 @@
 import type { OrdemServico, PontoVenda, TipoRegistro } from '../types/api';
-import type { ParametroApi } from './api/parametros';
+import { parametrosParaCache, type RespostaParametros } from './api/parametros';
 import { apiClient } from './api/client';
 import { obterUltimaSincronizacao } from './db/database';
 import { salvarOrdensServicoCache } from './db/ordensServicoCache';
@@ -51,7 +51,7 @@ export function sincronizarAgora(): Promise<ResultadoSincronizacao> {
 
 async function executarSincronizacao(): Promise<ResultadoSincronizacao> {
   const [parametrosRes, pontosVendaRes, tiposRegistroRes, ordensServicoRes] = await Promise.all([
-    apiClient.get<{ parametros: ParametroApi[] }>('/parametros'),
+    apiClient.get<RespostaParametros>('/parametros'),
     apiClient.get<{ pontos_venda: PontoVenda[] }>('/pontos-venda', { params: { ativo: 1 } }),
     apiClient.get<{ tipos_registro: TipoRegistro[] }>('/tipos-registro', { params: { ativo: 1 } }),
     apiClient.get<{ ordens_servico: OrdemServico[] }>('/ordens-servico', { params: { status: 'PENDENTE' } }),
@@ -65,7 +65,8 @@ async function executarSincronizacao(): Promise<ResultadoSincronizacao> {
   // outra ainda aberta ("cannot start a transaction within a transaction"), estourando um erro
   // aqui mesmo quando os dados acabam gravados certinho (sintoma exato de "dá erro, mas
   // atualiza tudo" — e, na pior interleaving, uma transação sendo revertida de verdade).
-  await salvarParametrosCache(parametrosRes.data.parametros);
+  // Com a jornada da semana do promotor junto (docs/102), pra cobrança do rastreamento offline.
+  await salvarParametrosCache(parametrosParaCache(parametrosRes.data));
   await salvarPontosVendaCache(pontosVendaRes.data.pontos_venda);
   await salvarTiposRegistroCache(tiposRegistroRes.data.tipos_registro);
   await salvarOrdensServicoCache(ordensServicoRes.data.ordens_servico);
@@ -111,7 +112,7 @@ export async function sincronizarSeNecessario(): Promise<boolean> {
 }
 
 async function buscarIntervaloSincronizacaoHoras(): Promise<number> {
-  const { data } = await apiClient.get<{ parametros: ParametroApi[] }>('/parametros');
+  const { data } = await apiClient.get<RespostaParametros>('/parametros');
   const parametro = data.parametros.find((p) => p.chave === 'SYNC_INTERVALO_HORAS');
 
   return parametro?.ativo && !Number.isNaN(Number(parametro.valor))

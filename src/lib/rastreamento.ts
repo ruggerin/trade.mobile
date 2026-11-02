@@ -1,18 +1,19 @@
 import Constants, { ExecutionEnvironment } from 'expo-constants';
+import * as Battery from 'expo-battery';
 import * as Location from 'expo-location';
 import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
-import axios from 'axios';
 import { Linking } from 'react-native';
-import { apiClient } from './api/client';
 import { buscarConfigRastreamento, type ExigenciaRastreamento } from './api/parametros';
+import { descarregarPosicoes, encerrarFilaPosicoes, guardarPosicoes, guardarSituacao } from './filaLocalizacao';
+import type { BateriaLida } from './db/filaLocalizacoes';
 
 /**
  * Rastreamento em tempo real do promotor — docs/11-RASTREAMENTO-TEMPO-REAL.md. Uma tarefa em
  * segundo plano (expo-location + expo-task-manager) manda a posição pro backend
  * (`PATCH /localizacao`) enquanto o expediente estiver rolando, mesmo com o app fechado/tela
- * apagada. Sem fila offline: posição de 10 minutos atrás não serve pra um mapa "ao vivo" — se o
- * envio falha, a próxima leitura tenta de novo e o promotor só aparece como "visto há X min".
+ * apagada. Com fila offline (docs/101): toda leitura vai pro SQLite e sobe em lote quando a internet
+ * deixa — sem sinal, o trajeto não some da Rota do dia; o mapa ao vivo só anda pra frente.
  *
  * docs/47-RASTREAMENTO-EXIGENCIA.md: o app também descobre POR QUE não está rastreando (permissão
  * só durante o uso, GPS desligado, Expo Go, falha ao iniciar...), avisa o servidor
@@ -36,6 +37,9 @@ const CHAVE_SITUACAO_INFORMADA = 'pdv_rastreamento_situacao_informada';
 // Intervalo (já com o piso) com que a tarefa em execução foi ligada — o expo-location não diz
 // com que opções ela está rodando, e sem isso mudar o parâmetro no admin nunca chegava na tarefa.
 const CHAVE_INTERVALO_TAREFA = 'pdv_rastreamento_intervalo_tarefa';
+// RASTREAMENTO_BATERIA (docs/94) guardado a cada reavaliação — a tarefa em segundo plano lê daqui
+// em vez de buscar os parâmetros na rede a cada leitura.
+const CHAVE_COLETAR_BATERIA = 'pdv_rastreamento_coletar_bateria';
 
 export type SituacaoRastreamento =
   /** Empresa não habilitou o parâmetro — o app nem oferece a opção. */
@@ -89,22 +93,40 @@ export async function registrarAtividadeRastreamento(): Promise<void> {
   await SecureStore.setItemAsync(CHAVE_ULTIMA_ATIVIDADE, String(Date.now()));
 }
 
-async function enviarPosicao(latitude: number, longitude: number, timestamp: number, simulada = false): Promise<void> {
-  try {
-    await apiClient.patch('/localizacao', {
-      latitude,
-      longitude,
-      capturado_em: new Date(timestamp).toISOString(),
+/** Bateria agora (docs/94). Cada leitura que falhar vira null; nunca impede a posição de ir. */
+async function lerBateria(): Promise<BateriaLida> {
+  const [nivel, estado, economia] = await Promise.all([
+    Battery.getBatteryLevelAsync().catch(() => -1),
+    Battery.getBatteryStateAsync().catch(() => Battery.BatteryState.UNKNOWN),
+    Battery.isLowPowerModeEnabledAsync().catch(() => null),
+  ]);
+  return {
+    nivel: nivel >= 0 ? Math.round(nivel * 100) : null,
+    carregando:
+      estado === Battery.BatteryState.UNKNOWN ? null : estado === Battery.BatteryState.CHARGING || estado === Battery.BatteryState.FULL,
+    economia,
+  };
+}
+
+/** Guarda as leituras na fila e tenta mandar tudo o que estiver pendente. */
+async function registrarPosicoes(locations: Location.LocationObject[]): Promise<void> {
+  // A bateria é de agora — só vale pra leitura mais recente do pacote; as outras vão sem.
+  const bateria = (await lerFlag(CHAVE_COLETAR_BATERIA)) ? await lerBateria() : null;
+  const ultima = locations.length - 1;
+  await guardarPosicoes(
+    locations.map((l, i) => ({
+      latitude: l.coords.latitude,
+      longitude: l.coords.longitude,
+      capturadoEm: new Date(l.timestamp).toISOString(),
       // Android marcou a leitura como de app de GPS falso — vira alerta pro ADMIN (docs/67).
-      simulada,
-    });
-  } catch (err) {
-    // 403 = empresa desligou o rastreamento (ou perfil mudou): para de vez em vez de martelar a
-    // API a cada leitura. Qualquer outra falha (sem sinal, 5xx) é transitória — a próxima
-    // leitura tenta de novo, sem fila.
-    if (axios.isAxiosError(err) && err.response?.status === 403) {
-      await pararRastreamento();
-    }
+      simulada: Boolean(l.mocked),
+      bateria: i === ultima ? bateria : null,
+    })),
+  );
+  // 403 = empresa desligou o rastreamento (ou perfil mudou): para de vez em vez de martelar a
+  // API a cada leitura. Sem sinal/5xx: as posições esperam na fila pela próxima leitura.
+  if ((await descarregarPosicoes()) === 'RASTREAMENTO_DESLIGADO') {
+    await pararRastreamento();
   }
 }
 
@@ -121,11 +143,12 @@ TaskManager.defineTask(NOME_TAREFA_RASTREAMENTO, async ({ data, error }) => {
     return;
   }
 
+  // Todas as leituras do pacote (o Android junta várias quando acorda o app) — cada uma é um
+  // ponto real do trajeto.
   const { locations } = data as { locations: Location.LocationObject[] };
-  const maisRecente = locations[locations.length - 1];
-  if (!maisRecente) return;
+  if (!locations?.length) return;
 
-  await enviarPosicao(maisRecente.coords.latitude, maisRecente.coords.longitude, maisRecente.timestamp, Boolean(maisRecente.mocked));
+  await registrarPosicoes(locations).catch(() => {});
 });
 
 export async function rastreamentoRodando(): Promise<boolean> {
@@ -176,7 +199,7 @@ async function iniciarTarefa(intervaloEmpresaSegundos: number): Promise<void> {
   // Manda a posição já, sem esperar o primeiro intervalo (docs/47 §5.5) — o gestor vê o promotor
   // no mapa na hora e o teste fica imediato. Best-effort: se falhar, a tarefa manda na sequência.
   void Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
-    .then((p) => enviarPosicao(p.coords.latitude, p.coords.longitude, p.timestamp, Boolean(p.mocked)))
+    .then((p) => registrarPosicoes([p]))
     .catch(() => {});
 }
 
@@ -209,19 +232,17 @@ function situacaoParaServidor(situacao: SituacaoRastreamento): string | null {
   }
 }
 
-// Avisa o servidor só quando a situação MUDA (evita um PATCH a cada volta do background). Falhou
-// (sem rede) → não grava como informada, tenta de novo na próxima reavaliação.
+// Avisa o servidor só quando a situação MUDA (evita um PATCH a cada volta do background). A
+// mudança entra na fila offline com o horário em que o app viu (docs/94) — sem rede, sobe depois
+// com o horário certo, junto das posições.
 async function informarSituacao(estado: EstadoRastreamento): Promise<void> {
   const situacao = situacaoParaServidor(estado.situacao);
   if (!situacao) return;
   const assinatura = `${situacao}|${estado.detalhe ?? ''}`;
   if ((await SecureStore.getItemAsync(CHAVE_SITUACAO_INFORMADA)) === assinatura) return;
-  try {
-    await apiClient.patch('/localizacao/situacao', { situacao, detalhe: estado.detalhe });
-    await SecureStore.setItemAsync(CHAVE_SITUACAO_INFORMADA, assinatura);
-  } catch {
-    // Sem rede agora — próxima reavaliação tenta de novo.
-  }
+  await guardarSituacao(situacao, estado.detalhe);
+  await SecureStore.setItemAsync(CHAVE_SITUACAO_INFORMADA, assinatura);
+  await descarregarPosicoes().catch(() => undefined);
 }
 
 async function avaliar(): Promise<EstadoRastreamento> {
@@ -233,6 +254,8 @@ async function avaliar(): Promise<EstadoRastreamento> {
     detalhe,
   });
 
+  await gravarFlag(CHAVE_COLETAR_BATERIA, Boolean(config?.coletarBateria));
+
   if (!config || config.intervaloSegundos <= 0) {
     await pararRastreamento();
     return estado('INDISPONIVEL');
@@ -240,7 +263,8 @@ async function avaliar(): Promise<EstadoRastreamento> {
 
   const exigente = exigencia !== 'OPCIONAL';
   // Fora da jornada, nas exigências AVISO/OBRIGATÓRIO, não rastreia nem cobra (docs/47 §5.2).
-  if (exigente && !dentroDaJornada(config.jornada)) {
+  // Folga (ou feriado) da escala do promotor também (docs/102).
+  if (exigente && (config.folga || !dentroDaJornada(config.jornada))) {
     await pararRastreamento();
     return estado('FORA_DA_JORNADA');
   }
@@ -295,7 +319,11 @@ export async function sincronizarRastreamento(): Promise<EstadoRastreamento> {
     const config = await buscarConfigRastreamento().catch(() => null);
     if (noIntervalo(config?.intervalo ?? null)) estado = { ...estado, situacao: 'NO_INTERVALO', detalhe: null };
   }
-  void informarSituacao(estado);
+  // Guarda a mudança de situação (se houve) e manda o que ficou na fila sem esperar a próxima leitura.
+  void informarSituacao(estado)
+    .catch(() => {})
+    .then(() => descarregarPosicoes())
+    .catch(() => {});
   return estado;
 }
 
@@ -350,6 +378,8 @@ export async function definirRastreamentoLigado(ligado: boolean): Promise<Estado
 /** Logout: não deixa a posição de um promotor continuar sendo enviada em nome do próximo login. */
 export async function encerrarRastreamentoNoLogout(): Promise<void> {
   await pararRastreamento();
+  // O que ficou na fila é de quem saiu — não pode subir em nome do próximo login.
+  await encerrarFilaPosicoes();
   // O próximo login (talvez outro promotor) precisa informar a própria situação do zero.
   await SecureStore.deleteItemAsync(CHAVE_SITUACAO_INFORMADA).catch(() => {});
 }

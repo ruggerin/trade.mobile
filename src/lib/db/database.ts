@@ -280,6 +280,30 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       dados_json TEXT NOT NULL,
       atualizado_em TEXT NOT NULL
     );
+
+    -- Posições do GPS ainda não enviadas (docs/101) — sobem em lote quando a internet volta.
+    -- Ver lib/db/filaLocalizacoes.ts.
+    CREATE TABLE IF NOT EXISTS fila_localizacoes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL,
+      capturado_em TEXT NOT NULL,
+      simulada INTEGER NOT NULL DEFAULT 0,
+      -- Bateria do aparelho (docs/94) — só na leitura mais recente de cada pacote, e só com
+      -- RASTREAMENTO_BATERIA ligado.
+      bateria_nivel INTEGER,
+      bateria_carregando INTEGER,
+      bateria_economia INTEGER
+    );
+
+    -- Mudanças da situação do rastreamento (GPS desligado, sem permissão...) com o horário em que
+    -- o app viu — sobem pela mesma descarga das posições (docs/94).
+    CREATE TABLE IF NOT EXISTS fila_situacoes_rastreamento (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      situacao TEXT NOT NULL,
+      detalhe TEXT,
+      ocorrido_em TEXT NOT NULL
+    );
   `);
 
   // Aparelho que já tinha o app instalado antes da coluna `ativo` existir — `CREATE TABLE IF
