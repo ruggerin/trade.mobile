@@ -119,6 +119,9 @@ interface RegistroFormModalProps {
   // Quando vem de uma Ação (aba Ações da visita, ver TipoRegistro.acao_obrigatoria) — pula a
   // etapa de escolher o tipo, o formulário já abre direto nele.
   tipoFixo?: TipoRegistro | null;
+  // Card de uma linha da lista guiada (docs/103): abre direto nela e, ao salvar ou voltar, fecha
+  // (volta pra aba Ações) em vez de mostrar a lista.
+  linhaFixa?: LinhaGuiada | null;
   // Necessário só pra campos SORTIMENTO (resolve o checklist pra este PDV) — ver
   // lib/api/campoSortimento.ts. `undefined` faz o campo aparecer vazio (nunca deveria acontecer
   // na prática, a visita sempre tem um PDV).
@@ -173,6 +176,7 @@ export function RegistroFormModal({
   produtosDisponiveis,
   produtoContexto,
   tipoFixo,
+  linhaFixa = null,
   pontoVendaUuid,
   enviando,
   erro,
@@ -288,6 +292,10 @@ export function RegistroFormModal({
         recorteJaEscolhidoRef.current = !!d.recorte;
         // Rascunho de uma linha da lista guiada: volta direto nela.
         if (d.vinculo && tipoFixo?.linha_nivel) setLinhaAtual({ uuid: d.vinculo.uuid, descricao: d.vinculo.label });
+      } else if (linhaFixa && tipoFixo?.linha_nivel) {
+        // Card da linha (docs/103): já abre nas perguntas dela.
+        setVinculo({ categoria: tipoFixo.linha_nivel, uuid: linhaFixa.uuid, label: linhaFixa.descricao });
+        setLinhaAtual(linhaFixa);
       }
     } else if (rascunhoIdRef.current || rascunhoPendenteRef.current) {
       // Fechou com o formulário em andamento: grava já (sem esperar o atraso) e as fotos ficam,
@@ -307,7 +315,7 @@ export function RegistroFormModal({
         if (!imagensDoRascunhoRef.current.includes(uri)) void apagarImagemPersistente(uri);
       }
     }
-  }, [visible, tipoFixo]);
+  }, [visible, tipoFixo, linhaFixa]);
 
 
   // Salvamento automático do rascunho (docs/99): a cada resposta, foto ou escolha, grava no
@@ -526,6 +534,9 @@ export function RegistroFormModal({
   // "Cada seção / linha" como lista guiada (docs/100): o promotor percorre as linhas definidas no admin.
   const nivelLinha = tipo && !produtoContexto && !respostaAcompanhamento && !pedeRecorte && tipo.granularidade_padrao === 'LINHA' ? (tipo.linha_nivel ?? null) : null;
   const modoLinha = !!nivelLinha;
+  // Veio de um card de linha (docs/103) — ou continua o rascunho de um formulário assim: sair da
+  // linha fecha o modal, não há lista pra voltar.
+  const sozinhaNaLinha = modoLinha && (!!linhaFixa || (!!rascunho && tipoFixo?.linha_exibicao === 'CARDS'));
   const catalogoDoNivel =
     nivelLinha === 'SECAO' ? (secoesQuery.data ?? []) : nivelLinha === 'DEPARTAMENTO' ? (departamentosQuery.data ?? []) : nivelLinha === 'MARCA' ? (marcasQuery.data ?? []) : [];
   const linhas = tipo && modoLinha ? (linhasDoFormulario(tipo, catalogoDoNivel, mixDaLojaQuery.data) ?? []) : [];
@@ -558,6 +569,11 @@ export function RegistroFormModal({
 
   // Volta pra lista sem perder a linha: o que estava preenchido fica como rascunho (docs/99).
   function voltarParaLinhas() {
+    if (sozinhaNaLinha) {
+      // Fechar guarda o rascunho (efeito de `visible`).
+      onClose();
+      return;
+    }
     if (rascunhoTimerRef.current) clearTimeout(rascunhoTimerRef.current);
     const pendente = rascunhoPendenteRef.current;
     rascunhoPendenteRef.current = null;
@@ -874,7 +890,7 @@ export function RegistroFormModal({
       produtoAuditoriaUuid: produtoEfetivo?.uuid ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.uuid : undefined),
       tipoVinculo: recorte ? recorte.tipo : produtoLista ? 'PRODUTO' : !produtoContexto && vinculo ? vinculo.categoria : undefined,
       produtoDescricao: produtoEfetivo?.descricao ?? (vinculo?.categoria === 'PRODUTO' ? vinculo.label : undefined),
-      permanecerAberto: modoLista || modoLinha || undefined,
+      permanecerAberto: modoLista || (modoLinha && !sozinhaNaLinha) || undefined,
       secaoUuid: recorte ? (recorte.tipo === 'SECAO' ? recorte.uuid : undefined) : vinculo?.categoria === 'SECAO' ? vinculo.uuid : undefined,
       departamentoUuid: recorte
         ? recorte.tipo === 'DEPARTAMENTO' ? recorte.uuid : undefined
@@ -920,7 +936,7 @@ export function RegistroFormModal({
           void concluirRascunhoRegistro(id).then(() => onRascunhoAlterado?.());
         }
         // Lista guiada (docs/100): salvou a linha → volta pra lista.
-        if (modoLinha) {
+        if (modoLinha && !sozinhaNaLinha) {
           limparFormulario();
           setLinhaAtual(null);
           void rascunhosDaVisitaQuery.refetch();
@@ -1105,7 +1121,7 @@ export function RegistroFormModal({
                       <Text style={styles.recorteFaixaNome} numberOfLines={2}>{linhaAtual.descricao}</Text>
                     </View>
                     <Pressable onPress={voltarParaLinhas} hitSlop={8} style={styles.recorteFaixaBotao}>
-                      <Text style={styles.recorteFaixaBotaoTexto}>Voltar à lista</Text>
+                      <Text style={styles.recorteFaixaBotaoTexto}>{sozinhaNaLinha ? 'Voltar' : 'Voltar à lista'}</Text>
                     </Pressable>
                   </View>
                 )}

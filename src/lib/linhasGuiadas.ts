@@ -35,3 +35,29 @@ export function linhasFeitas(
   const coluna = nivel === 'SECAO' ? 'secaoUuid' : nivel === 'DEPARTAMENTO' ? 'departamentoUuid' : 'marcaUuid';
   return new Set(registros.filter((r) => r.tipoRegistroUuid === tipoRegistroUuid && r[coluna]).map((r) => r[coluna] as string));
 }
+
+// ---------------------------------------------------------------------------------------------
+// docs/103 — um card por linha na aba Ações ("Planograma › Amaciante"), em vez de um card que abre
+// a lista. Opção do formulário (`linha_exibicao`); sem ela, como antes.
+
+type Nivel = 'SECAO' | 'DEPARTAMENTO' | 'MARCA';
+
+/** Nível da lista guiada quando o formulário pede um card por linha; null = card único (janela). */
+export function nivelDoCardPorLinha(tipo: Pick<TipoRegistro, 'granularidade_padrao' | 'linha_nivel' | 'linha_exibicao'>): Nivel | null {
+  return tipo.granularidade_padrao === 'LINHA' && tipo.linha_nivel && tipo.linha_exibicao === 'CARDS' ? tipo.linha_nivel : null;
+}
+
+/** "Planograma › Amaciante" — nome do card de uma linha. */
+export function nomeDoCardDaLinha(formulario: string, linha: LinhaGuiada): string {
+  return `${formulario} › ${linha.descricao}`;
+}
+
+/** Registros desta visita que são daquela linha (pelo vínculo). */
+export function registrosDaLinha<R extends { secaoUuid: string | null; departamentoUuid: string | null; marcaUuid: string | null }>(
+  registros: R[],
+  nivel: Nivel,
+  linhaUuid: string,
+): R[] {
+  const coluna = nivel === 'SECAO' ? 'secaoUuid' : nivel === 'DEPARTAMENTO' ? 'departamentoUuid' : 'marcaUuid';
+  return registros.filter((r) => r[coluna] === linhaUuid);
+}

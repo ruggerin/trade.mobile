@@ -322,6 +322,8 @@ export interface TipoRegistro {
   linha_nivel?: 'SECAO' | 'DEPARTAMENTO' | 'MARCA' | null;
   linha_origem?: 'MIX_LOJA' | 'FIXA';
   linhas_fixas?: { id: string; descricao: string }[] | null;
+  // docs/103: CARDS = um card por linha na aba Ações; JANELA (ou ausente, API antiga) = um card que abre a lista.
+  linha_exibicao?: 'JANELA' | 'CARDS';
   eh_ruptura: boolean;
   // Controla se o tipo aparece solto no dropdown de "criar registro" do promotor — decisão 8 de
   // docs/20-FORMULARIO-DINAMICO-CAMPANHA.md. `false` pra tipos nascidos dentro de uma campanha

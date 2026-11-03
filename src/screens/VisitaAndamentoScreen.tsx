@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useEspacoInferior } from '../lib/useEspacoInferior';
@@ -44,7 +44,9 @@ import { acaoConcluida, acaoValeNestaVisita, juntarUltimosRegistros, progressoLi
 import { motivoExclusaoVisita } from '../lib/db/filaVisitas';
 import { descartarRascunhoRegistro, listarRascunhosRegistro, type RascunhoRegistro } from '../lib/db/rascunhosRegistro';
 import { resumoRascunho } from '../lib/rascunhoRegistro';
-import { linhasFeitas } from '../lib/linhasGuiadas';
+import { linhasDoFormulario, linhasFeitas, nivelDoCardPorLinha, nomeDoCardDaLinha, registrosDaLinha, type LinhaGuiada } from '../lib/linhasGuiadas';
+import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
+import { chaveRascunho } from '../lib/rascunhoRegistro';
 import { podeTirarPedido } from '../lib/pedidoVenda';
 import { obterLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import { useEstaOnline } from '../lib/network';
@@ -168,6 +170,8 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const [tipoFixoModal, setTipoFixoModal] = useState<TipoRegistro | null>(null);
   // Formulário em andamento aberto no modal (docs/99) — null = formulário novo.
   const [rascunhoModal, setRascunhoModal] = useState<RascunhoRegistro | null>(null);
+  // Card de uma linha da lista guiada (docs/103) que abriu o formulário.
+  const [linhaModal, setLinhaModal] = useState<LinhaGuiada | null>(null);
   const rascunhosQuery = useQuery({
     queryKey: ['rascunhos-registro', visitaLocalId],
     queryFn: () => listarRascunhosRegistro(visitaLocalId),
@@ -522,6 +526,20 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     [tiposRegistro, campanhasDaVisita, pontoVenda, sortimentoQuery.data, ultimosRegistrosQuery.data, visita?.inicioEm],
   );
 
+  // Um card por linha (docs/103): as linhas de cada Ação assim, com o mesmo cálculo da janela
+  // (Mix da loja em cache + catálogo do nível, ou a lista fixa).
+  const precisaCatalogo = (n: 'SECAO' | 'DEPARTAMENTO' | 'MARCA') =>
+    acoesPendentes.some((t) => nivelDoCardPorLinha(t) === n && t.linha_origem !== 'FIXA');
+  const secoesCardsQuery = useQuery({ queryKey: ['secoes-auditoria'], queryFn: listarSecoes, enabled: precisaCatalogo('SECAO') });
+  const departamentosCardsQuery = useQuery({ queryKey: ['departamentos-auditoria'], queryFn: listarDepartamentos, enabled: precisaCatalogo('DEPARTAMENTO') });
+  const marcasCardsQuery = useQuery({ queryKey: ['marcas-auditoria'], queryFn: listarMarcas, enabled: precisaCatalogo('MARCA') });
+  function linhasDaAcao(t: TipoRegistro): LinhaGuiada[] {
+    const n = nivelDoCardPorLinha(t);
+    if (!n) return [];
+    const catalogo = n === 'SECAO' ? secoesCardsQuery.data : n === 'DEPARTAMENTO' ? departamentosCardsQuery.data : marcasCardsQuery.data;
+    return linhasDoFormulario(t, catalogo ?? [], sortimentoQuery.data) ?? [];
+  }
+
   // "Ainda está lá?" (docs/83 §3.2) — os acompanhamentos abertos da loja vêm junto do Mix
   // (buscarSortimento grava o cache), então funciona offline; as respostas ficam na fila local.
   const acompanhamentosQuery = useQuery({
@@ -869,7 +887,21 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     abrirNovoDaAcao(tipo);
   }
 
+  // Card de uma linha (docs/103): continua o rascunho daquela linha, se houver; senão abre nela.
+  function abrirLinhaDaAcao(tipo: TipoRegistro, linha: LinhaGuiada) {
+    const nivel = nivelDoCardPorLinha(tipo)!;
+    const chave = chaveRascunho(tipo.id, { recorte: null, produtoContexto: null, vinculo: { categoria: nivel, uuid: linha.uuid, label: linha.descricao } });
+    const emAndamento = rascunhos.find((r) => r.chave === chave);
+    if (emAndamento) {
+      continuarRascunho(emAndamento);
+      return;
+    }
+    abrirNovoDaAcao(tipo);
+    setLinhaModal(linha);
+  }
+
   function abrirNovoDaAcao(tipo: TipoRegistro) {
+    setLinhaModal(null);
     setRascunhoModal(null);
     setErroRegistro(null);
     setTipoFixoModal(tipo);
@@ -887,6 +919,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
     }
     setErroRegistro(null);
     setRespostaPendente(null);
+    setLinhaModal(null);
     setTipoFixoModal(tipo);
     setProdutoContextoModal(r.dados.produtoContexto);
     setRascunhoModal(r);
@@ -1325,17 +1358,44 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
             ) : acoesPendentes.length === 0 ? (
               <Text style={styles.vazioTexto}>Nenhuma ação obrigatória pra esta visita.</Text>
             ) : (
-              acoesPendentes.map((acao) => (
-                <AcaoItem
-                  key={acao.id}
-                  icone={acao.icone}
-                  nome={acao.descricao}
-                  sub={acao.exige_foto ? 'Exige foto' : undefined}
-                  registros={registrosPorTipoRegistro.get(acao.id) ?? []}
-                  progresso={progressoLista(acao, (registrosPorTipoRegistro.get(acao.id) ?? []).map((r) => r.produtoAuditoriaUuid), sortimentoQuery.data)}
-                  onPress={() => abrirModalAcao(acao)}
-                />
-              ))
+              acoesPendentes.map((acao) => {
+                // Um card por linha (docs/103). Sem linhas ainda (Mix carregando, loja sem nada do
+                // nível), cai no card único, que abre a lista como antes.
+                const nivel = nivelDoCardPorLinha(acao);
+                const linhas = nivel ? linhasDaAcao(acao) : [];
+                if (nivel && linhas.length > 0) {
+                  const doFormulario = registrosPorTipoRegistro.get(acao.id) ?? [];
+                  return (
+                    <Fragment key={acao.id}>
+                      {linhas.map((l) => {
+                        const chave = chaveRascunho(acao.id, { recorte: null, produtoContexto: null, vinculo: { categoria: nivel, uuid: l.uuid, label: l.descricao } });
+                        const emAndamento = rascunhos.some((r) => r.chave === chave);
+                        return (
+                          <AcaoItem
+                            key={`${acao.id}:${l.uuid}`}
+                            icone={acao.icone}
+                            nome={nomeDoCardDaLinha(acao.descricao, l)}
+                            sub={emAndamento ? 'Em andamento' : acao.exige_foto ? 'Exige foto' : undefined}
+                            registros={registrosDaLinha(doFormulario, nivel, l.uuid)}
+                            onPress={() => abrirLinhaDaAcao(acao, l)}
+                          />
+                        );
+                      })}
+                    </Fragment>
+                  );
+                }
+                return (
+                  <AcaoItem
+                    key={acao.id}
+                    icone={acao.icone}
+                    nome={acao.descricao}
+                    sub={acao.exige_foto ? 'Exige foto' : undefined}
+                    registros={registrosPorTipoRegistro.get(acao.id) ?? []}
+                    progresso={progressoLista(acao, (registrosPorTipoRegistro.get(acao.id) ?? []).map((r) => r.produtoAuditoriaUuid), sortimentoQuery.data)}
+                    onPress={() => abrirModalAcao(acao)}
+                  />
+                );
+              })
             )}
           </View>
 
@@ -1600,6 +1660,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         produtosDisponiveis={produtosParaVincular}
         produtoContexto={produtoContextoModal}
         tipoFixo={tipoFixoModal}
+        linhaFixa={linhaModal}
         pontoVendaUuid={pontoVendaUuid}
         enviando={criarRegistroMutation.isPending}
         erro={erroRegistro}
@@ -1609,6 +1670,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           setProdutoContextoModal(null);
           setRespostaPendente(null);
           setRascunhoModal(null);
+          setLinhaModal(null);
         }}
         onSubmit={(resultado) => criarRegistroMutation.mutateAsync(resultado)}
         respostaAcompanhamento={respostaPendente}
