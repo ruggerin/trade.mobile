@@ -1,5 +1,36 @@
-import { linhasDoFormulario, linhasFeitas } from './linhasGuiadas';
+import { estadoSoDaLinha, linhasDoFormulario, linhasFeitas, produtosDaLinha } from './linhasGuiadas';
 import type { SortimentoPontoVenda } from '../types/api';
+
+describe('produtosDaLinha', () => {
+  const produtos = [
+    { id: 'a', secao_uuid: 's1', departamento_uuid: 'd1', marca_uuid: 'm1' },
+    { id: 'b', secao_uuid: 's2', departamento_uuid: 'd1', marca_uuid: 'm2' },
+    { id: 'c', secao_uuid: null, departamento_uuid: 'd2', marca_uuid: null },
+  ];
+  const ids = (l: { id: string }[]) => l.map((p) => p.id);
+
+  it('filtra por seção, departamento e marca', () => {
+    expect(ids(produtosDaLinha(produtos, 'SECAO', 's1'))).toEqual(['a']);
+    expect(ids(produtosDaLinha(produtos, 'DEPARTAMENTO', 'd1'))).toEqual(['a', 'b']);
+    expect(ids(produtosDaLinha(produtos, 'MARCA', 'm2'))).toEqual(['b']);
+  });
+
+  it('cache antigo sem o dado não vira card vazio', () => {
+    const cacheAntigo: { id: string; secao_uuid?: string | null }[] = [{ id: 'x' }];
+    expect(ids(produtosDaLinha(cacheAntigo, 'SECAO', 's1'))).toEqual(['x']);
+  });
+});
+
+describe('estadoSoDaLinha', () => {
+  it('tira de presentes e ausentes o que é de outra linha', () => {
+    expect(estadoSoDaLinha({ presentes: ['a', 'b'], ausentes: ['c', 'd'] }, new Set(['a', 'c']))).toEqual({ presentes: ['a'], ausentes: ['c'] });
+  });
+
+  it('sem sobra devolve o mesmo objeto', () => {
+    const estado = { presentes: ['a'], ausentes: [] };
+    expect(estadoSoDaLinha(estado, new Set(['a']))).toBe(estado);
+  });
+});
 
 // docs/100 — "Cada seção / linha" como lista guiada.
 const catalogo = [

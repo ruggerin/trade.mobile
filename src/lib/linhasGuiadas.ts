@@ -26,6 +26,29 @@ export function linhasDoFormulario(
     .map((o) => ({ uuid: o.uuid, descricao: o.descricao }));
 }
 
+/**
+ * Produtos do Mix que pertencem à linha aberta. O app busca o Mix inteiro uma vez e filtra aqui, pra
+ * funcionar offline em qualquer linha. Cache antigo, sem o dado de nível em nenhum produto, não dá
+ * pra filtrar: devolve tudo até recarregar online, em vez de um card vazio.
+ */
+export function produtosDaLinha<P extends { secao_uuid?: string | null; departamento_uuid?: string | null; marca_uuid?: string | null }>(
+  produtos: P[],
+  nivel: 'SECAO' | 'DEPARTAMENTO' | 'MARCA',
+  linhaUuid: string,
+): P[] {
+  const coluna = nivel === 'SECAO' ? 'secao_uuid' : nivel === 'DEPARTAMENTO' ? 'departamento_uuid' : 'marca_uuid';
+  if (produtos.every((p) => p[coluna] === undefined)) return produtos;
+  return produtos.filter((p) => p[coluna] === linhaUuid);
+}
+
+/** Tira do checklist o que não é da linha (rascunho antigo guardava o Mix inteiro). Sem sobra, devolve o mesmo objeto. */
+export function estadoSoDaLinha<E extends { presentes: string[]; ausentes: string[] }>(estado: E, uuidsDaLinha: Set<string>): E {
+  const presentes = estado.presentes.filter((u) => uuidsDaLinha.has(u));
+  const ausentes = estado.ausentes.filter((u) => uuidsDaLinha.has(u));
+  if (presentes.length === estado.presentes.length && ausentes.length === estado.ausentes.length) return estado;
+  return { ...estado, presentes, ausentes };
+}
+
 /** Linhas que já viraram registro nesta visita (pelo vínculo do registro). */
 export function linhasFeitas(
   registros: { tipoRegistroUuid: string; secaoUuid: string | null; departamentoUuid: string | null; marcaUuid: string | null }[],

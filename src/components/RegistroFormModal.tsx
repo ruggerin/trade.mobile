@@ -36,7 +36,7 @@ import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type R
 import { concluirRascunhoRegistro, salvarRascunhoRegistro, type DadosRascunhoRegistro, type RascunhoRegistro } from '../lib/db/rascunhosRegistro';
 import { chaveRascunho, descricaoRascunho, temConteudo } from '../lib/rascunhoRegistro';
 import { listarRascunhosRegistro } from '../lib/db/rascunhosRegistro';
-import { linhasDoFormulario, type LinhaGuiada } from '../lib/linhasGuiadas';
+import { estadoSoDaLinha, linhasDoFormulario, produtosDaLinha, type LinhaGuiada } from '../lib/linhasGuiadas';
 import { contagem as contagemConferencia, type EstadoConferencia } from '../lib/conferenciaMix';
 import { mascararMoeda, moedaParaApi } from '../lib/mascaraMoeda';
 import { contagemPorCampo, erroDasFotos, type FotoDaVisita, type FotoHistorico, type FotoMeta } from '../lib/fotosNomeadas';
@@ -1207,6 +1207,7 @@ export function RegistroFormModal({
                     onChange={(valor) => definirValorCampo(campo.chave, valor)}
                     pontoVendaUuid={pontoVendaUuid}
                     recorte={campo.sortimento_segue_escolha ? recorte : null}
+                    linha={nivelLinha && linhaAtual ? { nivel: nivelLinha, uuid: linhaAtual.uuid } : null}
                     nomesPorUuid={produtosSortimentoPorUuid}
                     onProdutosResolvidos={(produtos) =>
                       setProdutosSortimentoPorUuid((atual) => ({
@@ -1339,6 +1340,7 @@ function CampoInput({
   onChange,
   pontoVendaUuid,
   recorte,
+  linha,
   nomesPorUuid,
   onProdutosResolvidos,
   onConferencia,
@@ -1348,6 +1350,7 @@ function CampoInput({
   onChange: (valor: string) => void;
   pontoVendaUuid?: string;
   recorte: RecorteEscolhido | null;
+  linha: { nivel: 'SECAO' | 'DEPARTAMENTO' | 'MARCA'; uuid: string } | null;
   nomesPorUuid: Record<string, string>;
   onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
   onConferencia?: (c: { pendentes: number; conferidos: number }) => void;
@@ -1367,6 +1370,7 @@ function CampoInput({
           onChange={onChange}
           pontoVendaUuid={pontoVendaUuid}
           recorte={recorte}
+          linha={linha}
           nomesPorUuid={nomesPorUuid}
           onProdutosResolvidos={onProdutosResolvidos}
           onConferencia={onConferencia}
@@ -1443,6 +1447,7 @@ function CampoSortimentoInput({
   onChange,
   pontoVendaUuid,
   recorte,
+  linha: linhaAberta,
   nomesPorUuid,
   onProdutosResolvidos,
   onConferencia,
@@ -1452,6 +1457,7 @@ function CampoSortimentoInput({
   onChange: (valor: string) => void;
   pontoVendaUuid?: string;
   recorte: RecorteEscolhido | null;
+  linha: { nivel: 'SECAO' | 'DEPARTAMENTO' | 'MARCA'; uuid: string } | null;
   nomesPorUuid: Record<string, string>;
   onProdutosResolvidos: (produtos: ProdutoSortimento[]) => void;
   onConferencia?: (c: { pendentes: number; conferidos: number }) => void;
@@ -1467,11 +1473,20 @@ function CampoSortimentoInput({
 
   const produtos = useMemo(() => {
     const todos = query.data?.produtos ?? [];
-    return campo.sortimento_segue_escolha && recorte ? produtosDoRecorte(todos, recorte, query.data?.recortes) : todos;
-  }, [query.data, campo.sortimento_segue_escolha, recorte]);
+    if (campo.sortimento_segue_escolha) return recorte ? produtosDoRecorte(todos, recorte, query.data?.recortes) : todos;
+    return linhaAberta ? produtosDaLinha(todos, linhaAberta.nivel, linhaAberta.uuid) : todos;
+  }, [query.data, campo.sortimento_segue_escolha, recorte, linhaAberta?.nivel, linhaAberta?.uuid]);
 
   const estado: EstadoSortimento | null = valor ? (JSON.parse(valor) as EstadoSortimento) : null;
   const foraDoMix = estado?.fora_do_mix ?? [];
+
+  // Rascunho de antes do filtro guardou o Mix inteiro: mantém só o que é desta linha.
+  useEffect(() => {
+    if (!query.data || !linhaAberta || campo.sortimento_segue_escolha || !estado) return;
+    const limpo = estadoSoDaLinha(estado, new Set(produtos.map((p) => p.produto_uuid)));
+    if (limpo !== estado) onChange(JSON.stringify(limpo));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.data, valor, produtos]);
 
   useEffect(() => {
     if (query.data) onProdutosResolvidos(query.data.produtos);
