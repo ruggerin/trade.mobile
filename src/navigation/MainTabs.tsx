@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AppState, StyleSheet, View, type AppStateStatus } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
+import { FaixaAtualizacao } from '../components/FaixaAtualizacao';
 import { FaixaModoOffline } from '../components/FaixaModoOffline';
 import { OfertaBiometriaModal } from '../components/OfertaBiometriaModal';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
@@ -202,6 +203,8 @@ export function MainTabs() {
     />
     {/* docs/108 §5.5 — "entrou sem internet" / "sem internet ou conexão lenta". */}
     <FaixaModoOffline />
+    {/* docs/112 — update OTA baixado: um toque aplica, sem "Forçar parada". Some durante visita. */}
+    <FaixaAtualizacao />
     <Tab.Navigator
       screenOptions={({ route }) => ({
         tabBarActiveTintColor: cores.primaria,

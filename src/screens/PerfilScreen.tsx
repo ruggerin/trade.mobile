@@ -12,6 +12,9 @@ import { textoSituacao } from '../lib/textosRastreamento';
 import { useRastreamento } from '../lib/useRastreamento';
 import { abrirDocumento } from '../lib/api/documentosLegais';
 import { atualizarFotoPerfil, removerFotoPerfil } from '../lib/api/perfil';
+import * as Updates from 'expo-updates';
+import { atualizacaoDisponivelNoBuild, baixarAtualizacaoSeHouver } from '../lib/atualizacao';
+import { buscarVisitaEmAndamento } from '../lib/visitaLocal';
 import { validadeDoAcesso } from '../lib/auth/acessoOffline';
 import { useAuth } from '../lib/auth/AuthContext';
 import { ImagemAutenticada } from '../components/ImagemAutenticada';
@@ -200,6 +203,32 @@ export function PerfilScreen() {
       );
     },
   });
+
+  // docs/112: o suporte pede "toque em Procurar atualização" em vez de "force a parada do app".
+  const [procurando, setProcurando] = useState(false);
+  const { isUpdatePending } = Updates.useUpdates();
+  async function procurarAtualizacao() {
+    setProcurando(true);
+    try {
+      const baixou = await baixarAtualizacaoSeHouver();
+      if (!baixou && !isUpdatePending) {
+        Alert.alert('Horus atualizado', `Você já está na versão mais recente (${textoVersaoApp()}).`);
+        return;
+      }
+      if (usuario && (await buscarVisitaEmAndamento(usuario.id))) {
+        Alert.alert('Atualização pronta', 'Ela entra quando você finalizar a visita em andamento.');
+        return;
+      }
+      Alert.alert('Atualização pronta', 'O Horus vai reiniciar para aplicar. Nada do que você fez se perde.', [
+        { text: 'Depois', style: 'cancel' },
+        { text: 'Atualizar agora', onPress: () => void Updates.reloadAsync().catch(() => {}) },
+      ]);
+    } catch {
+      Alert.alert('Sem conexão', 'Não deu para procurar atualização agora. Tente de novo com internet.');
+    } finally {
+      setProcurando(false);
+    }
+  }
 
   // "Sair" tranca a sessão (docs/108 §9.1): o promotor entra de novo com a senha, mesmo sem internet.
   function confirmarSaida() {
@@ -436,6 +465,12 @@ export function PerfilScreen() {
       <Pressable style={({ pressed }) => [styles.botaoLimpar, pressed && styles.botaoPressionado]} onPress={confirmarSaidaELimpeza} hitSlop={8}>
         <Text style={styles.botaoLimparTexto}>Sair e limpar este aparelho</Text>
       </Pressable>
+
+      {atualizacaoDisponivelNoBuild() && (
+        <Pressable style={({ pressed }) => [styles.botaoLimpar, pressed && styles.botaoPressionado]} onPress={() => void procurarAtualizacao()} disabled={procurando} hitSlop={8}>
+          <Text style={styles.botaoLimparTexto}>{procurando ? 'Procurando atualização…' : 'Procurar atualização'}</Text>
+        </Pressable>
+      )}
 
       {/* Versões do app e da API (+ ambiente) — o suporte pede isso quando algo não bate. */}
       <Text style={styles.versao} onPress={aoTocarNaVersao}>
