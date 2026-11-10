@@ -3,7 +3,8 @@ import axios from 'axios';
 import { tokenStorage } from '../auth/tokenStorage';
 import { registrarFalhaDeRede, registrarResposta } from '../qualidadeRede';
 import { assinarRequisicao, caminhoDaRequisicao, registrarHorarioServidor } from '../seguranca/chaveAparelho';
-import { registrarVersaoApi, VERSAO_APP } from '../versao';
+import { identificacaoDoUpdate } from '../atualizacao';
+import { BUILD_APP, registrarVersaoApi, VERSAO_APP } from '../versao';
 
 // Disparado quando a API responde 401 — o AuthContext escuta isso pra limpar a sessão e
 // voltar pro Login. Mesmo padrão do admin (admin/src/lib/api/client.ts), só que aqui não tem
@@ -62,6 +63,10 @@ export const apiClient = axios.create({
     'X-Client': 'mobile',
     // Versão mínima aceita pela API (docs/67 Fase 2).
     'X-App-Version': VERSAO_APP,
+    // Rastreabilidade (docs/111): build do APK e update OTA em uso — o admin mostra por aparelho e
+    // o mesmo id do update está no Sentry (tag expo-update-id).
+    ...(BUILD_APP ? { 'X-App-Build': BUILD_APP } : {}),
+    ...(identificacaoDoUpdate() ? { 'X-App-Update': identificacaoDoUpdate() as string } : {}),
   },
 });
 
