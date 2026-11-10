@@ -70,6 +70,7 @@ import {
   listarRegistrosLocais,
   reabrirVisitaLocal,
   responderAcompanhamentoLocal,
+  RascunhosPendentesError,
   tentarEnviarAgora,
 } from '../lib/visitaLocal';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
@@ -742,8 +743,11 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   const [finalizarAberto, setFinalizarAberto] = useState(false);
   // Veio do push "visita ainda aberta" (docs/92): já abre o "Finalizar visita" — também quando a
   // tela já estava aberta e só os parâmetros mudaram.
+  // docs/112: passa pelo mesmo aviso de formulário sem enviar — esperando os rascunhos carregarem,
+  // senão a lista vazia do primeiro render deixava passar direto.
+  const [pedirFinalizarAoCarregar, setPedirFinalizarAoCarregar] = useState(false);
   useEffect(() => {
-    if (route.params.abrirFinalizar) setFinalizarAberto(true);
+    if (route.params.abrirFinalizar) setPedirFinalizarAoCarregar(true);
   }, [route.params.abrirFinalizar]);
   // Números mostrados na VisitaConcluida — guardados na hora do check-out, porque online a visita
   // (e os registros dela) some do aparelho logo depois que a fila confirma.
@@ -785,7 +789,14 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
       });
     },
     onSuccess: () => setFinalizarAberto(false),
-    onError: () => Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.'),
+    onError: (err) => {
+      if (err instanceof RascunhosPendentesError) {
+        setFinalizarAberto(false);
+        pedirFinalizar();
+        return;
+      }
+      Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.');
+    },
   });
 
   const descartarMutation = useMutation({
@@ -927,15 +938,27 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
   }
 
   function descartarRascunho(r: RascunhoRegistro) {
-    Alert.alert('Descartar formulário?', `"${r.descricao}" e as fotos dele serão apagados deste aparelho.`, [
+    const fotos = r.dados.imagensUri.length;
+    Alert.alert(
+      'Descartar formulário?',
+      `"${r.descricao}"${fotos > 0 ? ` e ${fotos === 1 ? 'a foto' : `as ${fotos} fotos`} dele` : ''} serão apagados deste aparelho. Não dá para recuperar.`,
+      [
       { text: 'Voltar', style: 'cancel' },
       {
         text: 'Descartar',
         style: 'destructive',
         onPress: () => void descartarRascunhoRegistro(r).then(() => rascunhosQuery.refetch()),
       },
-    ]);
+    ],
+    );
   }
+
+  useEffect(() => {
+    if (!pedirFinalizarAoCarregar || !rascunhosQuery.isSuccess) return;
+    setPedirFinalizarAoCarregar(false);
+    pedirFinalizar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pedirFinalizarAoCarregar, rascunhosQuery.isSuccess]);
 
   // Finalizar com formulário em andamento (docs/99): avisa e deixa escolher. Formulário
   // obrigatório continua travando pelo próprio "Finalizar visita" (a pendência segue aberta).
@@ -953,11 +976,24 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
         {
           text: 'Descartar e finalizar',
           style: 'destructive',
-          onPress: () =>
-            void Promise.all(rascunhos.map((r) => descartarRascunhoRegistro(r, 'rascunho_descartado_pelo_promotor'))).then(() => {
-              void rascunhosQuery.refetch();
-              setFinalizarAberto(true);
-            }),
+          onPress: () => {
+            const fotos = rascunhos.reduce((n, r) => n + r.dados.imagensUri.length, 0);
+            const descartarTudo = () =>
+              void Promise.all(rascunhos.map((r) => descartarRascunhoRegistro(r, 'rascunho_descartado_pelo_promotor'))).then(() => {
+                void rascunhosQuery.refetch();
+                setFinalizarAberto(true);
+              });
+            if (fotos === 0) return descartarTudo();
+            // docs/112: segunda confirmação — era fácil tocar aqui achando que salvava.
+            Alert.alert(
+              `Apagar ${fotos} ${fotos === 1 ? 'foto' : 'fotos'}?`,
+              `${fotos === 1 ? 'A foto tirada' : 'As fotos tiradas'} nesses formulários (ex.: o "antes") ainda não foram enviadas e serão apagadas deste celular. Não dá para recuperar.`,
+              [
+                { text: 'Voltar e salvar', style: 'cancel', onPress: () => continuarRascunho(rascunhos[0]) },
+                { text: 'Apagar e finalizar', style: 'destructive', onPress: descartarTudo },
+              ],
+            );
+          },
         },
         { text: 'Voltar', style: 'cancel' },
       ],
@@ -1279,7 +1315,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
                 : `${(saida.distancia_atual_metros / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} km`}{' '}
               e a visita ainda está aberta. Finalize com o horário em que você saiu.
             </Text>
-            <Pressable style={styles.avisoSaidaBotao} onPress={() => setFinalizarAberto(true)} accessibilityRole="button">
+            <Pressable style={styles.avisoSaidaBotao} onPress={pedirFinalizar} accessibilityRole="button">
               <Text style={styles.avisoSaidaBotaoTexto}>Finalizar visita</Text>
             </Pressable>
           </View>

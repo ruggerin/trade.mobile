@@ -2,7 +2,7 @@
   "expo": {
     "name": "Horus",
     "slug": "horus",
-    "version": "1.3.3",
+    "version": "1.3.4",
     "runtimeVersion": {
       "policy": "fingerprint"
     },

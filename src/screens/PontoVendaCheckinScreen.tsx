@@ -21,7 +21,7 @@ import { calcularDistanciaMetros } from '../lib/location/distancia';
 import { LocalizacaoDemorouError, obterLocalizacaoAtual, useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import type { OrdemServico } from '../types/api';
-import { buscarVisitaEmAndamento, finalizarVisitaLocal, iniciarVisitaLocal, VisitaEmAndamentoError } from '../lib/visitaLocal';
+import { buscarVisitaEmAndamento, finalizarVisitaLocal, iniciarVisitaLocal, RascunhosPendentesError, VisitaEmAndamentoError } from '../lib/visitaLocal';
 import { amber, cores, espaco, indigo, neutro, raio as raioUI, sombraCard, tipografia, verde } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'PontoVendaCheckin'>;
@@ -122,7 +122,24 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
       await emAndamentoQuery.refetch();
     },
     onSuccess: () => setIniciarAposFinalizar(true),
-    onError: () => Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.'),
+    onError: (err) => {
+      if (err instanceof RascunhosPendentesError) {
+        // docs/112: finalizar daqui apagava o formulário em andamento (e o "antes") sem aviso.
+        Alert.alert(
+          'Formulário sem enviar',
+          `${err.message} Termine ou descarte ${err.quantidade === 1 ? 'ele' : 'eles'} na visita da ${visitaEmAndamento?.pontoVenda.fantasia ?? 'outra loja'} antes de finalizar.`,
+          [
+            { text: 'Agora não', style: 'cancel' },
+            {
+              text: 'Abrir a visita',
+              onPress: () => visitaEmAndamento && navigation.navigate('VisitaAndamento', { visitaLocalId: visitaEmAndamento.id }),
+            },
+          ],
+        );
+        return;
+      }
+      Alert.alert('Erro ao finalizar', 'Não foi possível confirmar sua localização. Tente de novo.');
+    },
   });
 
   // Perfil obrigado a seguir a agenda (docs/74): pela aba Lojas a tela fica só pra consulta, e na

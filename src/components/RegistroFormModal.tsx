@@ -363,10 +363,14 @@ export function RegistroFormModal({
     };
     rascunhoPendenteRef.current = linha;
     if (rascunhoTimerRef.current) clearTimeout(rascunhoTimerRef.current);
+    // Foto nova grava na hora (docs/112): o promotor costuma tirar o "antes" e minimizar logo em
+    // seguida — os 400 ms de espera eram justamente a janela em que o Android podia matar o app.
+    const fotoNova = imagensUri.length > fotosGravadasRef.current;
+    fotosGravadasRef.current = imagensUri.length;
     rascunhoTimerRef.current = setTimeout(() => {
       if (rascunhoPendenteRef.current?.id !== linha.id || submetidoRef.current) return;
       void salvarRascunhoRegistro(linha);
-    }, 400);
+    }, fotoNova ? 0 : 400);
     // modoLista/modoMarca vêm do tipo; recalculados a cada render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, tipo, valoresCampos, imagensUri, fotosMeta, fotosHistorico, ruptura, vinculo, recorte, produtoContexto, visitaLocalId]);
@@ -418,6 +422,7 @@ export function RegistroFormModal({
   // Rascunho do formulário (docs/99): id da linha gravada (null = ainda não virou rascunho) e o
   // último conteúdo, pra gravar na hora de fechar sem esperar o atraso do salvamento automático.
   const rascunhoIdRef = useRef<string | null>(null);
+  const fotosGravadasRef = useRef(0);
   const rascunhoPendenteRef = useRef<Parameters<typeof salvarRascunhoRegistro>[0] | null>(null);
   const rascunhoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Na passada em que o modal abre, o estado ainda é o da abertura anterior: não salva nada.

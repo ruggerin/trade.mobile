@@ -1,4 +1,5 @@
 import type { RegistroFormResultado } from '../components/RegistroFormModal';
+import { listarRascunhosRegistro } from './db/rascunhosRegistro';
 import { registrarEvento } from './diario';
 import type { RespostaAcompanhamento } from '../types/api';
 import { gerarUuidLocal } from './uuid';
@@ -158,7 +159,26 @@ export interface FinalizarVisitaLocalParams {
   usarSaidaDetectada?: boolean;
 }
 
+/**
+ * Visita com formulário em andamento (docs/99) não finaliza por nenhum caminho: o checkout
+ * confirmado apaga a visita do aparelho e os rascunhos iam junto, com as fotos (docs/112 §2). Quem
+ * chama precisa antes resolver (continuar ou descartar com confirmação) — é o `pedirFinalizar` da
+ * tela da visita.
+ */
+export class RascunhosPendentesError extends Error {
+  constructor(readonly quantidade: number, readonly fotos: number) {
+    super(quantidade === 1 ? 'Há um formulário sem enviar nesta visita.' : `Há ${quantidade} formulários sem enviar nesta visita.`);
+    this.name = 'RascunhosPendentesError';
+  }
+}
+
 export async function finalizarVisitaLocal(params: FinalizarVisitaLocalParams): Promise<void> {
+  const rascunhos = await listarRascunhosRegistro(params.visitaLocalId);
+  if (rascunhos.length > 0) {
+    const fotos = rascunhos.reduce((n, r) => n + r.dados.imagensUri.length, 0);
+    registrarEvento('visita_finalizada', { bloqueada: 'rascunhos_pendentes', rascunhos: rascunhos.length, fotos }, params.visitaLocalId);
+    throw new RascunhosPendentesError(rascunhos.length, fotos);
+  }
   console.log(`[fila] promotor tocou em Finalizar (visita ${params.visitaLocalId})`);
   registrarEvento('visita_finalizada', { saidaDetectada: params.usarSaidaDetectada ?? false }, params.visitaLocalId);
   await finalizarVisitaLocalDb(params.visitaLocalId, params.latitude, params.longitude, params.obrigatorias, params.usarSaidaDetectada ?? false);
