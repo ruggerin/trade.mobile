@@ -16,6 +16,8 @@ import { useAuth } from '../lib/auth/AuthContext';
 import { useEstaOnline } from '../lib/network';
 import { usePendenciasEnvio } from '../lib/useFilaEnvioAtualizada';
 import { buscarVisitaEmAndamento } from '../lib/visitaLocal';
+import { useSelosEnvio, type SeloEnvio } from '../lib/statusEnvioVisita';
+import { SeloEnvioVisita } from '../components/SeloEnvioVisita';
 import type { AgendaStackParamList } from '../navigation/AgendaStack';
 import type { MainTabsParamList } from '../navigation/MainTabs';
 import type { OrdemServico, StatusOrdemServico } from '../types/api';
@@ -133,6 +135,8 @@ export function AgendaScreen({ navigation }: Props) {
   const { usuario } = useAuth();
   const online = useEstaOnline();
   const envio = usePendenciasEnvio(usuario?.id);
+  // Selo da fila local por OS (docs/110): "Salva no celular", "Enviando", "✓ Enviada", "Não enviada".
+  const selos = useSelosEnvio(usuario?.id);
   // Header nativo desligado nesta tela (ver AgendaStack.tsx) — sem ele, ninguém mais protege o
   // topo do notch/barra de status, então o cabeçalho próprio precisa do inset manualmente.
   const insets = useSafeAreaInsets();
@@ -184,6 +188,12 @@ export function AgendaScreen({ navigation }: Props) {
   }, [pontosVendaQuery.data]);
 
   async function abrirCompromisso(os: OrdemServico) {
+    // Visita desta OS ainda na fila (finalizada aguardando envio ou recusada, docs/110): abre ela.
+    const visitaNaFila = selos.porOrdemServico.has(os.id) ? selos.visitaPorPontoVenda.get(os.ponto_venda.id) : undefined;
+    if (visitaNaFila) {
+      navigation.navigate('VisitaAndamento', { visitaLocalId: visitaNaFila });
+      return;
+    }
     // Já existe visita em andamento nesta loja? Vai direto pra ela — passar pelo check-in de novo
     // obrigava o promotor a "iniciar" outra vez algo que já estava aberto.
     const emAndamento = usuario ? await buscarVisitaEmAndamento(usuario.id) : null;
@@ -410,6 +420,7 @@ export function AgendaScreen({ navigation }: Props) {
                   ordemServico={os}
                   xp={comXp ? (xpGanhoPorOs.has(os.id) ? { ganho: xpGanhoPorOs.get(os.id)! } : { possivel: os.xp_previsto ?? null }) : null}
                   aguardando={antesDaVez(os, fila)?.ponto_venda.fantasia}
+                  seloEnvio={selos.porOrdemServico.get(os.id)}
                   onPress={() => void abrirCompromisso(os)}
                 />
               ))}
@@ -508,9 +519,12 @@ function CompromissoCard({
   ordemServico,
   aguardando,
   xp,
+  seloEnvio,
   onPress,
 }: {
   ordemServico: OrdemServico;
+  /** Estado da visita na fila do celular (docs/110) — vale mais que o status do servidor enquanto existir. */
+  seloEnvio?: SeloEnvio;
   /** Régua de XP (docs/88 §12.2): possível antes da visita, ganho depois. */
   xp?: { possivel?: number | null; ganho?: number } | null;
   // Loja que vem antes na sequência do dia (docs/74) — o card abre pra leitura, sem iniciar.
@@ -542,10 +556,14 @@ function CompromissoCard({
       )}
 
       <View style={styles.cardLinhaInferior}>
-        {status && (
-          <View style={[styles.badge, { backgroundColor: `${status.cor}1A`, borderColor: status.cor }]}>
-            <Text style={[styles.badgeTexto, { color: status.cor }]}>{status.label}</Text>
-          </View>
+        {seloEnvio ? (
+          <SeloEnvioVisita selo={seloEnvio} />
+        ) : (
+          status && (
+            <View style={[styles.badge, { backgroundColor: `${status.cor}1A`, borderColor: status.cor }]}>
+              <Text style={[styles.badgeTexto, { color: status.cor }]}>{status.label}</Text>
+            </View>
+          )
         )}
         {!!ordemServico.objetivo_visita && (
           <Text style={styles.cardObjetivo}>Objetivo: {ordemServico.objetivo_visita.descricao}</Text>

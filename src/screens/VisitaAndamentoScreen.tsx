@@ -76,7 +76,7 @@ import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import { descreverEmbalagem } from '../lib/embalagem';
 import { useDescarteVisita } from '../lib/useDescarteVisita';
 import { IconeTipoRegistro } from '../components/IconeTipoRegistro';
-import { amber, cores, espaco, indigo, neutro, raio, sombraCard, sombraFlutuante, tipografia } from '../theme';
+import { amber, cores, espaco, indigo, neutro, raio, sombraCard, sombraFlutuante, tipografia, verde, vermelho } from '../theme';
 
 type Props = NativeStackScreenProps<PontosVendaStackParamList, 'VisitaAndamento'>;
 // Só 4 abas — Dados cadastrais e Histórico da loja vivem JUNTOS em "Loja" (uma rolagem só, dados
@@ -1201,9 +1201,19 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           // tela não dizia nada disso e ainda oferecia "Finalizar visita" de novo — parecia uma
           // visita nova, e não havia como sair. Agora mostra o motivo e as três saídas.
           <View style={[styles.statusBox, !!visita.erro && styles.statusBoxErro]}>
+            <PassosEnvio
+              finalizadaEm={visita.fimEm}
+              online={online}
+              enviados={registrosLocais.filter((r) => r.status === 'ENVIADO').length}
+              total={registrosLocais.length}
+              comErro={!!visita.erro}
+            />
             <Text style={styles.statusBoxTexto}>
-              Visita finalizada, aguardando confirmação do servidor.
-              {visita.erro ? `\n${visita.erro}` : online ? '' : '\nSem conexão — envia sozinha quando o sinal voltar.'}
+              {visita.erro
+                ? visita.erro
+                : online
+                  ? 'Visita salva neste celular. Falta a confirmação do servidor.'
+                  : 'Visita salva neste celular. Nada se perde: ela é enviada sozinha quando a conexão voltar. Você já pode ir para a próxima loja.'}
               {/formul[aá]rio/i.test(visita.erro ?? '')
                 ? '\nÉ só responder o formulário pendente em Ações: assim que ele sobe, a visita é enviada sozinha.'
                 : ''}
@@ -2657,4 +2667,48 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: cores.texto,
   },
+});
+
+// docs/110 — os três passos depois de finalizar: o promotor vê que a visita está guardada e o que
+// ainda falta, em vez de "aguardando confirmação" sem mais nada.
+function PassosEnvio({
+  finalizadaEm,
+  online,
+  enviados,
+  total,
+  comErro,
+}: {
+  finalizadaEm: string | null;
+  online: boolean;
+  enviados: number;
+  total: number;
+  comErro: boolean;
+}) {
+  const hora = finalizadaEm ? new Date(finalizadaEm).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : null;
+  const envio = comErro
+    ? { texto: 'Envio ao servidor · precisa de atenção', cor: vermelho[600], icone: 'alert-circle' as const }
+    : online
+      ? { texto: total > 0 ? `Enviando ao servidor · ${enviados} de ${total} registros` : 'Enviando ao servidor', cor: indigo[600], icone: 'cloud-upload' as const }
+      : { texto: 'Envio ao servidor · aguardando internet', cor: amber[700], icone: 'cloud-off-outline' as const };
+  return (
+    <View style={{ gap: 6, marginBottom: espaco.sm }}>
+      <View style={estilosPassos.linha}>
+        <MaterialCommunityIcons name="check-circle" size={16} color={verde[700]} />
+        <Text style={estilosPassos.texto}>Salva no celular{hora ? ` · ${hora}` : ''}</Text>
+      </View>
+      <View style={estilosPassos.linha}>
+        <MaterialCommunityIcons name={envio.icone} size={16} color={envio.cor} />
+        <Text style={estilosPassos.texto}>{envio.texto}</Text>
+      </View>
+      <View style={estilosPassos.linha}>
+        <MaterialCommunityIcons name="circle-outline" size={16} color={cores.textoTerciario} />
+        <Text style={[estilosPassos.texto, { color: cores.textoSecundario }]}>Confirmação do servidor</Text>
+      </View>
+    </View>
+  );
+}
+
+const estilosPassos = StyleSheet.create({
+  linha: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  texto: { fontSize: 13, color: cores.texto },
 });

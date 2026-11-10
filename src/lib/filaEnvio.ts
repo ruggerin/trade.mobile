@@ -30,6 +30,8 @@ import { estaOnline } from './network';
 // barato, mais simples que rastrear se algo de fato mudou).
 export const filaEnvioEvents = new EventTarget();
 export const FILA_ENVIO_ATUALIZADA_EVENT = 'fila-envio:atualizada';
+/** Começou uma passada com rede — selo "Enviando ao servidor" (docs/110). */
+export const FILA_ENVIO_INICIOU_EVENT = 'fila-envio:iniciou';
 // Diferente do de cima (que dispara em toda passada): este só dispara quando a passada MUDOU algo no
 // servidor (check-in, registro ou checkout confirmado) — é o gatilho pra recarregar Agenda/Histórico,
 // que mostram dado do servidor e ficavam com "Em andamento" depois da visita já finalizada.
@@ -93,6 +95,12 @@ let pedidoPendente = false;
 // tentativa seguinte era descartada em silêncio — a fila inteira parava até fechar o app. Passou
 // do limite, a passada nova assume.
 let inicioDaPassada = 0;
+let enviandoAgora = false;
+
+/** A fila está mandando coisas pro servidor neste momento (com rede). */
+export function filaEnviandoAgora(): boolean {
+  return enviandoAgora;
+}
 const LIMITE_PASSADA_MS = 3 * 60_000;
 
 export async function processarFilaEnvio(usuarioId: string): Promise<ResultadoFilaEnvio> {
@@ -108,6 +116,10 @@ export async function processarFilaEnvio(usuarioId: string): Promise<ResultadoFi
 
   try {
     if (!(await estaOnline())) return resultado;
+
+    // Selo "Enviando ao servidor" (docs/110): só durante uma passada que de fato vai à rede.
+    enviandoAgora = true;
+    filaEnvioEvents.dispatchEvent(new Event(FILA_ENVIO_INICIOU_EVENT));
 
     const visitas = await listarVisitasLocaisPendentesOuRejeitadas(usuarioId);
     const ordenadas = [...visitas].sort((a, b) => a.criadoEm.localeCompare(b.criadoEm));
@@ -126,6 +138,7 @@ export async function processarFilaEnvio(usuarioId: string): Promise<ResultadoFi
     if (__DEV__) console.warn('[filaEnvio] falha inesperada processando a fila', err);
   } finally {
     emAndamento = false;
+    enviandoAgora = false;
     ultimaPassadaEm = new Date().toISOString();
     filaEnvioEvents.dispatchEvent(new Event(FILA_ENVIO_ATUALIZADA_EVENT));
     if (houveProgresso(resultado)) {

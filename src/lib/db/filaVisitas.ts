@@ -297,10 +297,32 @@ export function motivoExclusaoVisita(id: string): MotivoExclusaoVisita | null {
   return motivosExclusao.get(id) ?? null;
 }
 
+/**
+ * Visitas confirmadas pelo servidor nesta sessão (docs/110): a linha sai da fila no checkout, mas o
+ * card da Agenda só vira "Realizada" quando a lista da API for relida — até lá mostra "✓ Enviada"
+ * em vez de voltar pra "Pendente"/"Atrasada". Só memória.
+ */
+export interface VisitaConfirmada {
+  ordemServicoId: string | null;
+  pontoVendaId: string;
+  confirmadaEm: string;
+}
+const confirmadas = new Map<string, VisitaConfirmada>();
+
+export function visitasConfirmadasNestaSessao(): VisitaConfirmada[] {
+  return [...confirmadas.values()];
+}
+
 export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclusaoVisita): Promise<void> {
   // Log pra rastrear "a visita sumiu": sempre diz QUEM apagou a visita do aparelho.
   console.log(`[fila] visita ${id} removida do aparelho — motivo: ${motivo}`);
   motivosExclusao.set(id, motivo);
+  if (motivo === 'checkout-confirmado') {
+    const visita = await lerVisitaLocal(id).catch(() => null);
+    if (visita) {
+      confirmadas.set(id, { ordemServicoId: visita.ordemServicoId, pontoVendaId: visita.pontoVenda.id, confirmadaEm: new Date().toISOString() });
+    }
+  }
   const registros = await listarRegistrosLocais(id);
   for (const registro of registros) {
     for (const uri of registro.imagensLocais) {

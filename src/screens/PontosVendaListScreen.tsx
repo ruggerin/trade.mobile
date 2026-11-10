@@ -1,4 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useSelosEnvio, type SeloEnvio } from '../lib/statusEnvioVisita';
+import { SeloEnvioVisita } from '../components/SeloEnvioVisita';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
@@ -74,6 +76,8 @@ const FILTROS_BASE: DefinicaoFiltro[] = [FILTRO_TODAS, FILTRO_PENDENCIA];
 // costuma virar problema visual, mas é uma simplificação consciente, não um esquecimento.
 export function PontosVendaListScreen({ navigation }: Props) {
   const { usuario } = useAuth();
+  // Selo da visita na fila do celular por loja (docs/110).
+  const selos = useSelosEnvio(usuario?.id);
   const queryClient = useQueryClient();
   // Header nativo desligado nesta tela (ver PontosVendaStack.tsx) — o cabeçalho próprio precisa
   // do inset do topo manualmente, sem ele o texto entra embaixo da barra de status/notch.
@@ -300,7 +304,14 @@ export function PontosVendaListScreen({ navigation }: Props) {
               pontoVenda={item}
               pendencia={pendenciaPorPdv.get(item.id) ?? null}
               distanciaMetros={distanciaPorPdv.get(item.id) ?? null}
-              onPress={() => irParaCheckin(item)}
+              seloEnvio={selos.porPontoVenda.get(item.id)}
+              onPress={() => {
+                // Visita desta loja finalizada aguardando envio ou recusada: abre ela, não um check-in novo.
+                const naFila = selos.visitaPorPontoVenda.get(item.id);
+                const selo = selos.porPontoVenda.get(item.id);
+                if (naFila && selo && selo.tipo !== 'EM_ANDAMENTO') navigation.navigate('VisitaAndamento', { visitaLocalId: naFila });
+                else irParaCheckin(item);
+              }}
             />
           )}
         />
@@ -374,11 +385,13 @@ function PontoVendaCard({
   pontoVenda,
   pendencia,
   distanciaMetros,
+  seloEnvio,
   onPress,
 }: {
   pontoVenda: PontoVenda;
   pendencia: OrdemServico | null;
   distanciaMetros: number | null;
+  seloEnvio?: SeloEnvio;
   onPress: () => void;
 }) {
   const endereco = [pontoVenda.bairro, pontoVenda.cidade].filter(Boolean).join(' · ');
@@ -441,6 +454,7 @@ function PontoVendaCard({
             )}
           </View>
         )}
+        {seloEnvio && <SeloEnvioVisita selo={seloEnvio} />}
         {!!contexto && (
           <Text style={styles.cardContexto} numberOfLines={1}>
             {contexto}
