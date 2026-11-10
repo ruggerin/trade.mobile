@@ -68,6 +68,12 @@ export async function lerLotePosicoes(limite: number): Promise<PosicaoNaFila[]> 
   }));
 }
 
+export async function contarPosicoes(): Promise<number> {
+  const db = await getDatabase();
+  const linha = await db.getFirstAsync<{ total: number }>('SELECT COUNT(*) AS total FROM fila_localizacoes');
+  return linha?.total ?? 0;
+}
+
 export async function apagarPosicoes(ids: number[]): Promise<void> {
   if (ids.length === 0) return;
   await escrever(`DELETE FROM fila_localizacoes WHERE id IN (${ids.map(() => '?').join(',')})`, ids);

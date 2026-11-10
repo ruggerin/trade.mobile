@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -468,6 +469,31 @@ export function RegistroFormModal({
     if (resultado.canceled) return;
     const asset = resultado.assets[0];
     if (!asset) return;
+    await incorporarFotoCapturada(asset, campo);
+  }
+
+  // Android pode matar o app enquanto a câmera está aberta (celular com pouca memória). A foto que
+  // acabou de ser tirada não volta pelo `launchCameraAsync` — fica guardada pelo sistema e é
+  // recuperada aqui na próxima abertura do formulário (docs/109). Como não dá pra saber de qual
+  // campo era, entra como foto geral do registro; o promotor pode remover se não for.
+  useEffect(() => {
+    if (!visible || Platform.OS !== 'android') return;
+    let cancelado = false;
+    ImagePicker.getPendingResultAsync()
+      .then(async (pendente) => {
+        if (cancelado || !pendente || !('assets' in pendente) || pendente.canceled) return;
+        const asset = pendente.assets?.[0];
+        if (asset) await incorporarFotoCapturada(asset);
+      })
+      .catch(() => {});
+    return () => {
+      cancelado = true;
+    };
+    // Só na abertura.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  async function incorporarFotoCapturada(asset: ImagePicker.ImagePickerAsset, campo?: CampoTipoRegistro) {
     // Hora e posição da captura (docs/98 §9.1) — o GPS não segura a foto: sem ele, vai sem posição.
     const capturadaEm = new Date().toISOString();
     const posicao = posicaoDaFoto();

@@ -5,8 +5,10 @@ import * as SecureStore from 'expo-secure-store';
 import * as TaskManager from 'expo-task-manager';
 import { Linking } from 'react-native';
 import { buscarConfigRastreamento, type ExigenciaRastreamento } from './api/parametros';
-import { descarregarPosicoes, encerrarFilaPosicoes, guardarPosicoes, guardarSituacao } from './filaLocalizacao';
+import { deveDescarregar } from './cadenciaEnvio';
+import { contarPosicoesPendentes, descarregarPosicoes, encerrarFilaPosicoes, guardarPosicoes, guardarSituacao } from './filaLocalizacao';
 import type { BateriaLida } from './db/filaLocalizacoes';
+import { reportarErro } from './sentry';
 
 /**
  * Rastreamento em tempo real do promotor — docs/11-RASTREAMENTO-TEMPO-REAL.md. Uma tarefa em
@@ -40,6 +42,10 @@ const CHAVE_INTERVALO_TAREFA = 'pdv_rastreamento_intervalo_tarefa';
 // RASTREAMENTO_BATERIA (docs/94) guardado a cada reavaliação — a tarefa em segundo plano lê daqui
 // em vez de buscar os parâmetros na rede a cada leitura.
 const CHAVE_COLETAR_BATERIA = 'pdv_rastreamento_coletar_bateria';
+// RASTREAMENTO_ENVIO_MINUTOS (docs/109) e a última descarga que chegou no servidor — mesma lógica:
+// a tarefa em segundo plano lê do SecureStore, nunca da rede.
+const CHAVE_ENVIO_MINUTOS = 'pdv_rastreamento_envio_minutos';
+const CHAVE_ULTIMA_DESCARGA = 'pdv_rastreamento_ultima_descarga';
 
 export type SituacaoRastreamento =
   /** Empresa não habilitou o parâmetro — o app nem oferece a opção. */
@@ -108,10 +114,23 @@ async function lerBateria(): Promise<BateriaLida> {
   };
 }
 
-/** Guarda as leituras na fila e tenta mandar tudo o que estiver pendente. */
+/**
+ * Guarda as leituras na fila e, conforme a cadência da empresa (docs/109), manda o que estiver
+ * pendente: RASTREAMENTO_ENVIO_MINUTOS = 0 descarrega a cada leitura; > 0 só a cada N minutos (ou
+ * com a fila grande). A bateria também só é lida nas acordadas que descarregam — menos trabalho
+ * nativo por ciclo em celular fraco.
+ */
 async function registrarPosicoes(locations: Location.LocationObject[]): Promise<void> {
+  const envioMinutos = Number((await SecureStore.getItemAsync(CHAVE_ENVIO_MINUTOS)) ?? 0) || 0;
+  const ultimaDescarga = await SecureStore.getItemAsync(CHAVE_ULTIMA_DESCARGA);
+  const descarregar = deveDescarregar({
+    envioMinutos,
+    ultimaDescargaMs: ultimaDescarga ? Number(ultimaDescarga) : null,
+    agoraMs: Date.now(),
+    pendentes: await contarPosicoesPendentes().catch(() => 0),
+  });
   // A bateria é de agora — só vale pra leitura mais recente do pacote; as outras vão sem.
-  const bateria = (await lerFlag(CHAVE_COLETAR_BATERIA)) ? await lerBateria() : null;
+  const bateria = descarregar && (await lerFlag(CHAVE_COLETAR_BATERIA)) ? await lerBateria() : null;
   const ultima = locations.length - 1;
   await guardarPosicoes(
     locations.map((l, i) => ({
@@ -123,11 +142,16 @@ async function registrarPosicoes(locations: Location.LocationObject[]): Promise<
       bateria: i === ultima ? bateria : null,
     })),
   );
+  if (!descarregar) return;
   // 403 = empresa desligou o rastreamento (ou perfil mudou): para de vez em vez de martelar a
   // API a cada leitura. Sem sinal/5xx: as posições esperam na fila pela próxima leitura.
-  if ((await descarregarPosicoes()) === 'RASTREAMENTO_DESLIGADO') {
+  const resultado = await descarregarPosicoes();
+  if (resultado === 'RASTREAMENTO_DESLIGADO') {
     await pararRastreamento();
+    return;
   }
+  // Só conta como descarga o que chegou no servidor — sem rede, a próxima leitura tenta de novo.
+  if (resultado !== 'SEM_REDE') await SecureStore.setItemAsync(CHAVE_ULTIMA_DESCARGA, String(Date.now()));
 }
 
 // Definida no nível do módulo de propósito: o sistema operacional pode acordar o app só pra
@@ -137,18 +161,24 @@ async function registrarPosicoes(locations: Location.LocationObject[]): Promise<
 TaskManager.defineTask(NOME_TAREFA_RASTREAMENTO, async ({ data, error }) => {
   if (error || !data) return;
 
-  const ultimaAtividade = Number((await SecureStore.getItemAsync(CHAVE_ULTIMA_ATIVIDADE)) ?? 0);
-  if (Date.now() - ultimaAtividade > LIMITE_SEM_ATIVIDADE_MS) {
-    await pararRastreamento();
-    return;
+  // Tudo dentro de um try: no modo headless não há tela nem ErrorBoundary, e uma exceção que
+  // escapasse daqui derrubava o processo (docs/109). Vai pro Sentry e a próxima leitura segue.
+  try {
+    const ultimaAtividade = Number((await SecureStore.getItemAsync(CHAVE_ULTIMA_ATIVIDADE)) ?? 0);
+    if (Date.now() - ultimaAtividade > LIMITE_SEM_ATIVIDADE_MS) {
+      await pararRastreamento();
+      return;
+    }
+
+    // Todas as leituras do pacote (o Android junta várias quando acorda o app) — cada uma é um
+    // ponto real do trajeto.
+    const { locations } = data as { locations: Location.LocationObject[] };
+    if (!locations?.length) return;
+
+    await registrarPosicoes(locations);
+  } catch (err) {
+    reportarErro(err, 'outro');
   }
-
-  // Todas as leituras do pacote (o Android junta várias quando acorda o app) — cada uma é um
-  // ponto real do trajeto.
-  const { locations } = data as { locations: Location.LocationObject[] };
-  if (!locations?.length) return;
-
-  await registrarPosicoes(locations).catch(() => {});
 });
 
 export async function rastreamentoRodando(): Promise<boolean> {
@@ -255,6 +285,7 @@ async function avaliar(): Promise<EstadoRastreamento> {
   });
 
   await gravarFlag(CHAVE_COLETAR_BATERIA, Boolean(config?.coletarBateria));
+  await SecureStore.setItemAsync(CHAVE_ENVIO_MINUTOS, String(config?.envioMinutos ?? 0));
 
   if (!config || config.intervaloSegundos <= 0) {
     await pararRastreamento();

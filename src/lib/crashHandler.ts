@@ -17,6 +17,22 @@ declare const global: { ErrorUtils: ErrorUtilsType };
  * ADICIONA a captura, nunca substitui — só em produção é que o padrão vira "mata o processo
  * calado", e é isso que este handler evita.
  */
+/**
+ * Mesmo handler, pro modo HEADLESS (docs/109): quando o Android acorda o app só pra rodar a tarefa
+ * de rastreamento, o componente `App` não é montado e o handler acima nunca é instalado — qualquer
+ * exceção JS nesse contexto caía no padrão do RN e virava SIGABRT (Sentry 7813436308). Instalado
+ * no index.ts, antes do registerRootComponent; quando o `App` monta, o dele substitui este.
+ * Não há tela pra mostrar: só reporta e não deixa o processo cair.
+ */
+export function instalarTratadorHeadless(reportar: (erro: unknown, fatal: boolean) => void): void {
+  const handlerOriginal = global.ErrorUtils.getGlobalHandler();
+
+  global.ErrorUtils.setGlobalHandler((erro, ehFatal) => {
+    reportar(erro, Boolean(ehFatal));
+    if (__DEV__) handlerOriginal(erro, ehFatal);
+  });
+}
+
 export function instalarTratadorGlobalDeErros(aoCapturar: (erro: unknown) => void): void {
   const handlerOriginal = global.ErrorUtils.getGlobalHandler();
 

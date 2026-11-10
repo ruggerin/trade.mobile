@@ -3,6 +3,7 @@ import { apiClient } from './api/client';
 import {
   apagarPosicoes,
   apagarSituacao,
+  contarPosicoes,
   enfileirarPosicoes,
   enfileirarSituacao,
   lerSituacoes,
@@ -34,6 +35,11 @@ let descarregando: Promise<ResultadoDescarga> | null = null;
 
 export async function guardarPosicoes(posicoes: Omit<PosicaoNaFila, 'id'>[]): Promise<void> {
   await enfileirarPosicoes(posicoes);
+}
+
+/** Quantas posições esperam na fila (cadência de envio, docs/109). */
+export async function contarPosicoesPendentes(): Promise<number> {
+  return contarPosicoes();
 }
 
 export async function guardarSituacao(situacao: string, detalhe: string | null, ocorridoEm = new Date()): Promise<void> {

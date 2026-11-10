@@ -189,6 +189,13 @@ export interface ConfigRastreamento {
   intervalo: { inicio: string; fim: string } | null;
   // docs/94: manda o nível da bateria junto da posição (RASTREAMENTO_BATERIA, desligado por padrão).
   coletarBateria: boolean;
+  // docs/109: junta as leituras e sobe em lote a cada N minutos; 0 = manda a cada leitura (padrão).
+  envioMinutos: number;
+}
+
+function inteiroOuZero(valor: string | undefined): number {
+  const n = Number(valor);
+  return Number.isInteger(n) && n > 0 ? n : 0;
 }
 
 // Mesmos defaults do backend (App\Support\Rastreamento / OperacaoDoDia): OPCIONAL, só na jornada,
@@ -222,6 +229,7 @@ export async function buscarConfigRastreamento(): Promise<ConfigRastreamento> {
     // servidor já manda o intervalo só quando a empresa desconsidera.
     intervalo: hoje ? hoje.intervalo : intervaloLigado && intervaloAlmoco.inicio < intervaloAlmoco.fim ? intervaloAlmoco : null,
     coletarBateria: VALORES_VERDADEIROS.includes((ativo('RASTREAMENTO_BATERIA') ?? '').toLowerCase()),
+    envioMinutos: inteiroOuZero(ativo('RASTREAMENTO_ENVIO_MINUTOS')),
   };
 }
 
