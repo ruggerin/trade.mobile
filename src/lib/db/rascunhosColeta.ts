@@ -1,4 +1,5 @@
 import { apagarImagemPersistente } from './filaRegistros';
+import { avisarPerdaDeFoto, registrarEvento } from '../diario';
 import { escrever, getDatabase } from './database';
 
 // Rascunho da coleta guiada (formulário com lista predefinida de produtos): o promotor preenche
@@ -52,7 +53,8 @@ export async function salvarRascunhosColeta(
 }
 
 /** Visita descartada/excluída: some o rascunho e as fotos dele (ninguém mais aponta pra elas). */
-export async function apagarRascunhosDaVisita(visitaLocalId: string): Promise<void> {
+export async function apagarRascunhosDaVisita(visitaLocalId: string, motivoVisita: string): Promise<void> {
+  const motivo = `coleta_apagada_com_visita:${motivoVisita}` as const;
   const db = await getDatabase();
   const linhas = await db.getAllAsync<{ dados_json: string }>(
     'SELECT dados_json FROM rascunhos_coleta WHERE visita_local_id = ?',
@@ -61,7 +63,12 @@ export async function apagarRascunhosDaVisita(visitaLocalId: string): Promise<vo
   for (const linha of linhas) {
     try {
       const rascunhos = JSON.parse(linha.dados_json) as RascunhosColeta;
-      for (const r of Object.values(rascunhos)) for (const uri of r.imagensUri) void apagarImagemPersistente(uri);
+      const fotos = Object.values(rascunhos).reduce((n, r) => n + r.imagensUri.length, 0);
+      if (fotos > 0) {
+        registrarEvento('rascunho_descartado', { motivo, coleta: true, fotos }, visitaLocalId);
+        avisarPerdaDeFoto(motivo, fotos, visitaLocalId);
+      }
+      for (const r of Object.values(rascunhos)) for (const uri of r.imagensUri) void apagarImagemPersistente(uri, motivo, visitaLocalId);
     } catch {
       // JSON corrompido — só apaga a linha.
     }

@@ -304,6 +304,16 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       detalhe TEXT,
       ocorrido_em TEXT NOT NULL
     );
+
+    -- Diário de eventos (docs/112): o que aconteceu com fotos, rascunhos, registros e o ciclo do
+    -- app, pra provar (ou descartar) "sumiu minha foto". 7 dias. Ver lib/diario.ts.
+    CREATE TABLE IF NOT EXISTS diario_eventos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      em TEXT NOT NULL,
+      tipo TEXT NOT NULL,
+      visita_local_id TEXT,
+      dados_json TEXT
+    );
   `);
 
   // Aparelho que já tinha o app instalado antes da coluna `ativo` existir — `CREATE TABLE IF

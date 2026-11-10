@@ -954,7 +954,7 @@ export function VisitaAndamentoScreen({ route, navigation }: Props) {
           text: 'Descartar e finalizar',
           style: 'destructive',
           onPress: () =>
-            void Promise.all(rascunhos.map(descartarRascunhoRegistro)).then(() => {
+            void Promise.all(rascunhos.map((r) => descartarRascunhoRegistro(r, 'rascunho_descartado_pelo_promotor'))).then(() => {
               void rascunhosQuery.refetch();
               setFinalizarAberto(true);
             }),

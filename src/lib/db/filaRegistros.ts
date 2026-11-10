@@ -1,6 +1,7 @@
 // SDK 57 trocou expo-file-system pra uma API baseada em classes (Paths/File/Directory) — o
 // submódulo /legacy mantém a API antiga (documentDirectory/copyAsync/deleteAsync), oficialmente
 // suportada, mais simples pro que a gente precisa aqui (copiar/apagar por caminho string).
+import { registrarEvento, type MotivoApagarFoto } from '../diario';
 import * as FileSystem from 'expo-file-system/legacy';
 import type { FotoHistorico, FotoMeta } from '../fotosNomeadas';
 import type { TipoVinculoRegistro } from '../../types/api';
@@ -209,6 +210,7 @@ export async function listarRegistrosLocais(visitaLocalId: string): Promise<Regi
 }
 
 export async function marcarRegistroEnviado(id: string, servidorId: string): Promise<void> {
+  registrarEvento('registro_enviado', { registroLocalId: id, servidorId });
   const db = await getDatabase();
   await escrever(
     `UPDATE fila_registros SET status = 'ENVIADO', servidor_id = ?, erro = NULL, atualizado_em = ? WHERE id = ?`,
@@ -307,6 +309,8 @@ export async function copiarImagemParaArmazenamentoPersistente(uriTemporaria: st
  * isso, a cópia (feita logo na captura, ver RegistroFormModal.capturarFoto) ficava no disco pra
  * sempre, sem nenhuma linha de fila_registros referenciando ela.
  */
-export async function apagarImagemPersistente(caminho: string): Promise<void> {
+export async function apagarImagemPersistente(caminho: string, motivo: MotivoApagarFoto, visitaLocalId?: string | null): Promise<void> {
+  // docs/112: todo apagar diz por quê — é o rastro de "sumiu minha foto".
+  registrarEvento('foto_apagada', { motivo, arquivo: caminho.split('/').pop() }, visitaLocalId);
   await FileSystem.deleteAsync(caminho, { idempotent: true }).catch(() => {});
 }

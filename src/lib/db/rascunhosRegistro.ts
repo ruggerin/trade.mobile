@@ -1,4 +1,5 @@
 import { apagarImagemPersistente } from './filaRegistros';
+import { avisarPerdaDeFoto, registrarEvento, type MotivoApagarFoto } from '../diario';
 import { escrever, getDatabase } from './database';
 import type { FotoHistorico, FotoMeta } from '../fotosNomeadas';
 import type { RecorteEscolhido } from '../recorteEscolhido';
@@ -87,12 +88,19 @@ export async function concluirRascunhoRegistro(id: string): Promise<void> {
 }
 
 /** Descartado pelo promotor: some a linha e as fotos (ninguém mais aponta pra elas). */
-export async function descartarRascunhoRegistro(r: RascunhoRegistro): Promise<void> {
-  for (const uri of r.dados.imagensUri) void apagarImagemPersistente(uri);
+export async function descartarRascunhoRegistro(
+  r: RascunhoRegistro,
+  motivo: MotivoApagarFoto = 'rascunho_descartado_pelo_promotor',
+): Promise<void> {
+  registrarEvento('rascunho_descartado', { motivo, descricao: r.descricao, fotos: r.dados.imagensUri.length }, r.visitaLocalId);
+  avisarPerdaDeFoto(motivo, r.dados.imagensUri.length, r.visitaLocalId);
+  for (const uri of r.dados.imagensUri) void apagarImagemPersistente(uri, motivo, r.visitaLocalId);
   await concluirRascunhoRegistro(r.id);
 }
 
 /** Visita finalizada, cancelada ou excluída do aparelho: some todo rascunho dela, com as fotos. */
-export async function apagarRascunhosRegistroDaVisita(visitaLocalId: string): Promise<void> {
-  for (const r of await listarRascunhosRegistro(visitaLocalId)) await descartarRascunhoRegistro(r);
+export async function apagarRascunhosRegistroDaVisita(visitaLocalId: string, motivoVisita: string): Promise<void> {
+  for (const r of await listarRascunhosRegistro(visitaLocalId)) {
+    await descartarRascunhoRegistro(r, `rascunho_apagado_com_visita:${motivoVisita}`);
+  }
 }

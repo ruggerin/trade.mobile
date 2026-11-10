@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import type { PontoVenda } from '../../types/api';
 import { gerarUuidLocal } from '../uuid';
+import { avisarPerdaDeFoto, registrarEvento } from '../diario';
 import { getDatabase, escrever } from './database';
 import { excluirRegistrosDaVisita, listarRegistrosLocais } from './filaRegistros';
 import { excluirRespostasDaVisita } from './filaAcompanhamentos';
@@ -324,6 +325,11 @@ export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclu
     }
   }
   const registros = await listarRegistrosLocais(id);
+  // docs/112: visita saindo do aparelho. Confirmada = fotos já no servidor; qualquer outro motivo
+  // com foto de registro ainda não enviado é perda e vira evento no Sentry.
+  const fotosNaoEnviadas = registros.filter((r) => r.status !== 'ENVIADO').reduce((n, r) => n + r.imagensLocais.length, 0);
+  registrarEvento('visita_removida', { motivo, registros: registros.length, fotosNaoEnviadas }, id);
+  if (motivo !== 'checkout-confirmado') avisarPerdaDeFoto(`rascunho_apagado_com_visita:${motivo}`, fotosNaoEnviadas, id);
   for (const registro of registros) {
     for (const uri of registro.imagensLocais) {
       await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
@@ -333,9 +339,9 @@ export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclu
   // Respostas ao "ainda está lá?" desta visita (docs/83) — já foram ou não vão mais.
   await excluirRespostasDaVisita(id);
   // Coleta guiada não salva (rascunho) — sem a visita, não tem mais pra onde ir.
-  await apagarRascunhosDaVisita(id);
+  await apagarRascunhosDaVisita(id, motivo);
   // Formulário em andamento (docs/99) — pertence à visita, some com ela.
-  await apagarRascunhosRegistroDaVisita(id);
+  await apagarRascunhosRegistroDaVisita(id, motivo);
 
   const db = await getDatabase();
   await escrever('DELETE FROM fila_visitas WHERE id = ?', [id]);

@@ -9,6 +9,7 @@ import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { TelaErro } from './src/components/TelaErro';
 import { useBaixarAtualizacao } from './src/lib/atualizacao';
 import { instalarTratadorGlobalDeErros } from './src/lib/crashHandler';
+import { registrarEvento } from './src/lib/diario';
 import { reportarErro } from './src/lib/sentry';
 // Efeito colateral proposital: registra a tarefa de rastreamento em segundo plano (defineTask) já
 // na inicialização do módulo, antes de qualquer tela — o SO pode acordar o app só pra rodá-la.
@@ -56,6 +57,15 @@ export default function App() {
 
   // OTA (docs/107): baixa o update ao voltar pro primeiro plano; aplica só no próximo cold start.
   useBaixarAtualizacao();
+
+  // Diário (docs/112): minimizou / voltou.
+  useEffect(() => {
+    const assinatura = AppState.addEventListener('change', (estado) => {
+      if (estado === 'background') registrarEvento('app_segundo_plano');
+      else if (estado === 'active') registrarEvento('app_primeiro_plano');
+    });
+    return () => assinatura.remove();
+  }, []);
 
   useEffect(() => {
     instalarTratadorGlobalDeErros((erro) => {

@@ -1,4 +1,5 @@
 import type { RegistroFormResultado } from '../components/RegistroFormModal';
+import { registrarEvento } from './diario';
 import type { RespostaAcompanhamento } from '../types/api';
 import { gerarUuidLocal } from './uuid';
 import { criarRespostaLocal } from './db/filaAcompanhamentos';
@@ -131,6 +132,7 @@ export async function criarRegistroVisitaLocal(params: CriarRegistroLocalParams)
       embalagemUnidade: params.resultado.embalagemUnidade ?? null,
     });
 
+    registrarEvento('registro_criado', { registroLocalId: registro.id, fotos: params.resultado.imagensUri?.length ?? 0 }, params.visitaLocalId);
     sincronizarEmSegundoPlano(params.usuarioId);
     return registro;
   } catch (err) {
@@ -139,7 +141,7 @@ export async function criarRegistroVisitaLocal(params: CriarRegistroLocalParams)
     // nenhuma linha de fila_registros apontando pra eles (o modal não limpa mais nesse caso,
     // porque já marcou como "submetido" antes de chamar esta função).
     for (const uri of params.resultado.imagensUri ?? []) {
-      void apagarImagemPersistente(uri);
+      void apagarImagemPersistente(uri, 'falha_ao_gravar_registro', params.visitaLocalId);
     }
     throw err;
   }
@@ -158,6 +160,7 @@ export interface FinalizarVisitaLocalParams {
 
 export async function finalizarVisitaLocal(params: FinalizarVisitaLocalParams): Promise<void> {
   console.log(`[fila] promotor tocou em Finalizar (visita ${params.visitaLocalId})`);
+  registrarEvento('visita_finalizada', { saidaDetectada: params.usarSaidaDetectada ?? false }, params.visitaLocalId);
   await finalizarVisitaLocalDb(params.visitaLocalId, params.latitude, params.longitude, params.obrigatorias, params.usarSaidaDetectada ?? false);
   sincronizarEmSegundoPlano(params.usuarioId);
 }
@@ -234,7 +237,7 @@ export async function cancelarRegistroVisitaLocal(visitaServidorId: string | nul
   }
 
   for (const uri of registro.imagensLocais) {
-    void apagarImagemPersistente(uri);
+    void apagarImagemPersistente(uri, 'registro_cancelado', registro.visitaLocalId);
   }
   await excluirRegistroLocal(registro.id);
 }

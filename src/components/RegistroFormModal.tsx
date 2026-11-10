@@ -33,6 +33,7 @@ import { buscarSortimentoCampo, type ProdutoSortimento, type RecortesDoMix } fro
 import { listarDepartamentos, listarMarcas, listarSecoes } from '../lib/api/catalogo';
 import { listarProdutosCatalogo } from '../lib/api/produtosAuditoria';
 import { apagarImagemPersistente, copiarImagemParaArmazenamentoPersistente } from '../lib/db/filaRegistros';
+import { avisarPerdaDeFoto, registrarEvento } from '../lib/diario';
 import { lerRascunhosColeta, salvarRascunhosColeta, type RascunhoProduto, type RascunhosColeta } from '../lib/db/rascunhosColeta';
 import { concluirRascunhoRegistro, salvarRascunhoRegistro, type DadosRascunhoRegistro, type RascunhoRegistro } from '../lib/db/rascunhosRegistro';
 import { chaveRascunho, descricaoRascunho, temConteudo } from '../lib/rascunhoRegistro';
@@ -312,9 +313,9 @@ export function RegistroFormModal({
       // outro motivo) com fotos já copiadas pro armazenamento persistente (ver capturarFoto) —
       // sem essa limpeza, os arquivos ficavam no disco pra sempre, sem nenhum registro apontando
       // pra eles.
-      for (const uri of imagensUriRef.current) {
-        if (!imagensDoRascunhoRef.current.includes(uri)) void apagarImagemPersistente(uri);
-      }
+      const perdidas = imagensUriRef.current.filter((uri) => !imagensDoRascunhoRef.current.includes(uri));
+      avisarPerdaDeFoto('formulario_fechado_sem_salvar', perdidas.length, visitaLocalId);
+      for (const uri of perdidas) void apagarImagemPersistente(uri, 'formulario_fechado_sem_salvar', visitaLocalId);
     }
   }, [visible, tipoFixo, linhaFixa]);
 
@@ -348,7 +349,10 @@ export function RegistroFormModal({
       }
       return;
     }
-    rascunhoIdRef.current ??= gerarUuidLocal();
+    if (!rascunhoIdRef.current) {
+      rascunhoIdRef.current = gerarUuidLocal();
+      registrarEvento('rascunho_criado', { formulario: tipo.descricao, fotos: imagensUri.length }, visitaLocalId);
+    }
     const linha = {
       id: rascunhoIdRef.current,
       visitaLocalId,
@@ -508,6 +512,7 @@ export function RegistroFormModal({
       const comprimida = await comprimirFoto(asset);
       const caminhoPersistente = await copiarImagemParaArmazenamentoPersistente(comprimida);
       setImagensUri((atual) => [...atual, caminhoPersistente]);
+      registrarEvento('foto_capturada', { formulario: tipo?.descricao ?? null, campo: campo?.chave ?? null, arquivo: caminhoPersistente.split('/').pop() }, visitaLocalId);
       const meta: FotoMeta = { campoChave: campo?.chave ?? null, origem: 'CAMERA', capturadaEm, ...(await posicao) };
       setFotosMeta((atual) => ({ ...atual, [caminhoPersistente]: meta }));
     } catch {
@@ -517,7 +522,7 @@ export function RegistroFormModal({
 
   function removerFoto(uri: string) {
     if (!imagensDoRascunhoRef.current.includes(uri)) {
-      void apagarImagemPersistente(uri);
+      void apagarImagemPersistente(uri, 'promotor_removeu', visitaLocalId);
     }
     setImagensUri((atual) => atual.filter((u) => u !== uri));
     setFotosMeta((atual) => {
@@ -679,7 +684,8 @@ export function RegistroFormModal({
   }
 
   function voltarParaMarcas() {
-    for (const uri of imagensUri) void apagarImagemPersistente(uri);
+    avisarPerdaDeFoto('produto_voltou_sem_salvar', imagensUri.length, visitaLocalId);
+    for (const uri of imagensUri) void apagarImagemPersistente(uri, 'produto_voltou_sem_salvar', visitaLocalId);
     limparFormulario();
     setMarcaAtual(null);
   }
@@ -777,9 +783,9 @@ export function RegistroFormModal({
   // Voltar pra lista sem salvar descarta as fotos já copiadas (mesmo raciocínio da limpeza ao
   // fechar o modal sem confirmar).
   function voltarParaLista() {
-    for (const uri of imagensUri) {
-      if (!imagensDoRascunhoRef.current.includes(uri)) void apagarImagemPersistente(uri);
-    }
+    const perdidas = imagensUri.filter((uri) => !imagensDoRascunhoRef.current.includes(uri));
+    avisarPerdaDeFoto('produto_voltou_sem_salvar', perdidas.length, visitaLocalId);
+    for (const uri of perdidas) void apagarImagemPersistente(uri, 'produto_voltou_sem_salvar', visitaLocalId);
     imagensDoRascunhoRef.current = [];
     limparFormulario();
     setProdutoLista(null);
@@ -812,7 +818,7 @@ export function RegistroFormModal({
     }
     // Foto que estava no rascunho e foi tirada nesta edição: agora sim o arquivo pode ir embora.
     for (const uri of anterior?.imagensUri ?? []) {
-      if (!imagensUri.includes(uri)) void apagarImagemPersistente(uri);
+      if (!imagensUri.includes(uri)) void apagarImagemPersistente(uri, 'produto_salvo_sem_esta_foto', visitaLocalId);
     }
     setRascunhos(atualizados);
     imagensDoRascunhoRef.current = [];

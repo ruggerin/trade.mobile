@@ -15,6 +15,7 @@ import { atualizarFotoPerfil, removerFotoPerfil } from '../lib/api/perfil';
 import * as Updates from 'expo-updates';
 import { atualizacaoDisponivelNoBuild, baixarAtualizacaoSeHouver } from '../lib/atualizacao';
 import { buscarVisitaEmAndamento } from '../lib/visitaLocal';
+import { enviarDiagnostico } from '../lib/diario';
 import { validadeDoAcesso } from '../lib/auth/acessoOffline';
 import { useAuth } from '../lib/auth/AuthContext';
 import { ImagemAutenticada } from '../components/ImagemAutenticada';
@@ -203,6 +204,31 @@ export function PerfilScreen() {
       );
     },
   });
+
+  // docs/112: manda o diário do aparelho (fotos, rascunhos, registros, app aberto/minimizado) pro
+  // Sentry. O suporte acha pelo código que aparece aqui.
+  const [enviandoDiagnostico, setEnviandoDiagnostico] = useState(false);
+  function confirmarDiagnostico() {
+    Alert.alert(
+      'Enviar diagnóstico',
+      'Manda ao suporte o histórico dos últimos 7 dias deste celular: fotos tiradas e apagadas, formulários, envios e quando o app abriu ou fechou. Não vai foto, localização nem o que você digitou.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Enviar',
+          onPress: () => {
+            setEnviandoDiagnostico(true);
+            void enviarDiagnostico(usuario?.nome ?? 'sem usuário')
+              .then((id) =>
+                Alert.alert('Diagnóstico enviado', id ? `Informe este código ao suporte: ${id.slice(0, 8)}` : 'Enviado.'),
+              )
+              .catch(() => Alert.alert('Não foi possível enviar', 'Tente de novo com internet.'))
+              .finally(() => setEnviandoDiagnostico(false));
+          },
+        },
+      ],
+    );
+  }
 
   // docs/112: o suporte pede "toque em Procurar atualização" em vez de "force a parada do app".
   const [procurando, setProcurando] = useState(false);
@@ -471,6 +497,10 @@ export function PerfilScreen() {
           <Text style={styles.botaoLimparTexto}>{procurando ? 'Procurando atualização…' : 'Procurar atualização'}</Text>
         </Pressable>
       )}
+
+      <Pressable style={({ pressed }) => [styles.botaoLimpar, pressed && styles.botaoPressionado]} onPress={confirmarDiagnostico} disabled={enviandoDiagnostico} hitSlop={8}>
+        <Text style={styles.botaoLimparTexto}>{enviandoDiagnostico ? 'Enviando diagnóstico…' : 'Enviar diagnóstico ao suporte'}</Text>
+      </Pressable>
 
       {/* Versões do app e da API (+ ambiente) — o suporte pede isso quando algo não bate. */}
       <Text style={styles.versao} onPress={aoTocarNaVersao}>
