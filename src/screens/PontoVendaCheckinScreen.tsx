@@ -18,7 +18,7 @@ import { escolherOrdemDaLoja, listarOrdensServicoPendentes } from '../lib/api/or
 import { buscarConfigCheckout, buscarRaioCheckinMetros } from '../lib/api/parametros';
 import { buscarAgendaSemanal } from '../lib/api/pontosVenda';
 import { calcularDistanciaMetros } from '../lib/location/distancia';
-import { obterLocalizacaoAtual, useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
+import { LocalizacaoDemorouError, obterLocalizacaoAtual, useLocalizacaoAtual } from '../lib/location/useLocalizacaoAtual';
 import type { PontosVendaStackParamList } from '../navigation/PontosVendaStack';
 import type { OrdemServico } from '../types/api';
 import { buscarVisitaEmAndamento, finalizarVisitaLocal, iniciarVisitaLocal, VisitaEmAndamentoError } from '../lib/visitaLocal';
@@ -253,9 +253,13 @@ export function PontoVendaCheckinScreen({ route, navigation }: Props) {
         return;
       }
       // Só chega aqui se a própria localização falhar (permissão negada a caminho, GPS
-      // indisponível) — gravar a visita local não depende de rede nem pode falhar por conta
-      // dela, ver lib/db/filaVisitas.ts::criarVisitaLocal.
-      setErroCheckin('Não foi possível confirmar sua localização. Tente novamente.');
+      // indisponível ou demorando demais sem posição recente, docs/109 §3.4) — gravar a visita
+      // local não depende de rede nem pode falhar por conta dela, ver lib/db/filaVisitas.ts.
+      setErroCheckin(
+        err instanceof LocalizacaoDemorouError
+          ? 'O GPS demorou demais para responder. Vá para um lugar mais aberto e tente de novo.'
+          : 'Não foi possível confirmar sua localização. Tente novamente.',
+      );
     },
     onSettled: () => {
       iniciandoRef.current = false;
