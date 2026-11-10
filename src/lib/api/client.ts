@@ -1,6 +1,7 @@
 import Constants from 'expo-constants';
 import axios from 'axios';
 import { tokenStorage } from '../auth/tokenStorage';
+import { registrarFalhaDeRede, registrarResposta } from '../qualidadeRede';
 import { assinarRequisicao, caminhoDaRequisicao, registrarHorarioServidor } from '../seguranca/chaveAparelho';
 import { registrarVersaoApi, VERSAO_APP } from '../versao';
 
@@ -64,7 +65,11 @@ export const apiClient = axios.create({
   },
 });
 
+// Quando a chamada saiu — o disjuntor de rede lenta (lib/qualidadeRede.ts) mede o tempo de resposta.
+const inicioPorConfig = new WeakMap<object, number>();
+
 apiClient.interceptors.request.use(async (config) => {
+  inicioPorConfig.set(config, Date.now());
   const token = await tokenStorage.get();
 
   if (token) {
@@ -87,6 +92,7 @@ apiClient.interceptors.request.use(async (config) => {
 apiClient.interceptors.response.use(
   (response) => {
     if (__DEV__) console.log('[api] <-', response.status, response.config.url);
+    registrarResposta(duracaoDesde(response.config));
     registrarHorarioServidor(response.headers.date as string | undefined);
     registrarVersaoApi(response.headers['x-api-version'] as string | undefined);
     return response;
@@ -110,6 +116,11 @@ apiClient.interceptors.response.use(
         );
       }
 
+      // Sem resposta nenhuma (timeout, DNS, conexão recusada) conta pro disjuntor de rede lenta; um
+      // 4xx/5xx prova que o servidor respondeu — a rede está de pé.
+      if (error.response) registrarResposta(duracaoDesde(error.config));
+      else if (error.code !== 'ERR_CANCELED') registrarFalhaDeRede();
+
       registrarHorarioServidor(error.response?.headers?.date as string | undefined);
       registrarVersaoApi(error.response?.headers?.['x-api-version'] as string | undefined);
 
@@ -128,3 +139,8 @@ apiClient.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+function duracaoDesde(config: object | undefined): number {
+  const inicio = config ? inicioPorConfig.get(config) : undefined;
+  return inicio ? Date.now() - inicio : 0;
+}

@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AppState, StyleSheet, View, type AppStateStatus } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
+import { FaixaModoOffline } from '../components/FaixaModoOffline';
 import { OfertaBiometriaModal } from '../components/OfertaBiometriaModal';
 import { PermissaoRastreamentoModal } from '../components/PermissaoRastreamentoModal';
 import { AvisoRastreamento, BloqueioRastreamento } from '../components/RastreamentoExigencia';
@@ -199,6 +200,8 @@ export function MainTabs() {
       visible={Boolean(biometria?.perguntar) && !rastreamento.explicando && !rastreamento.bloquear}
       onResponder={definirBiometria}
     />
+    {/* docs/108 §5.5 — "entrou sem internet" / "sem internet ou conexão lenta". */}
+    <FaixaModoOffline />
     <Tab.Navigator
       screenOptions={({ route }) => ({
         tabBarActiveTintColor: cores.primaria,

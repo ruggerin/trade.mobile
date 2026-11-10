@@ -7,6 +7,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { TelaErro } from './src/components/TelaErro';
+import { useBaixarAtualizacao } from './src/lib/atualizacao';
 import { instalarTratadorGlobalDeErros } from './src/lib/crashHandler';
 import { reportarErro } from './src/lib/sentry';
 // Efeito colateral proposital: registra a tarefa de rastreamento em segundo plano (defineTask) já
@@ -52,6 +53,9 @@ export default function App() {
   // não enxerga isso, só cobre erro de render. Ver lib/crashHandler.ts pro porquê disso importar
   // de verdade em build de produção/preview (sem isso, o app fecha sem nenhuma mensagem).
   const [erroFatal, setErroFatal] = useState<unknown>(null);
+
+  // OTA (docs/107): baixa o update ao voltar pro primeiro plano; aplica só no próximo cold start.
+  useBaixarAtualizacao();
 
   useEffect(() => {
     instalarTratadorGlobalDeErros((erro) => {

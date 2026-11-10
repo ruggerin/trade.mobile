@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/react-native';
+import * as Updates from 'expo-updates';
 
 // Sentry no app (docs/70 e docs/72): só erro e crash. Tracing, profiling, replay, logs e métricas
 // ficam DESLIGADOS de propósito. O app lida com localização, foto e dados de loja — nada disso pode
@@ -102,9 +103,23 @@ export function iniciarSentry(): void {
       beforeBreadcrumb: limparBreadcrumb,
       ...configuracaoReplay(),
     });
+    etiquetarUpdate();
   } catch (erro) {
     if (__DEV__) console.log("[sentry] não iniciou", erro);
   }
+}
+
+/**
+ * Qual update OTA está rodando (docs/107 §4.7): sem isso não dá pra filtrar os erros de uma publicação
+ * nem casar o stack com os source maps enviados pelo `scripts/ota.js`.
+ */
+function etiquetarUpdate(): void {
+  if (!Updates.isEnabled) return;
+  Sentry.setTag('expo-update-id', Updates.updateId ?? 'embutido');
+  Sentry.setTag('expo-is-embedded-update', String(Updates.isEmbeddedLaunch));
+  if (Updates.channel) Sentry.setTag('expo-channel', Updates.channel);
+  const grupo = (Updates.manifest as { metadata?: { updateGroup?: string } } | undefined)?.metadata?.updateGroup;
+  if (grupo) Sentry.setTag('expo-update-group-id', grupo);
 }
 
 /** Quem está logado: só o id (uuid) e a empresa — nunca nome, e-mail nem telefone. */

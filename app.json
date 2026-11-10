@@ -2,7 +2,15 @@
   "expo": {
     "name": "Horus",
     "slug": "horus",
-    "version": "1.2.5",
+    "version": "1.3.0",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/ddef4169-e19c-4fc8-9a55-5adbbc269c7e",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",

@@ -3,7 +3,12 @@ import * as Device from 'expo-device';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 import { apiClient } from '../api/client';
+import { comPrazo } from '../prazo';
 import { sha256Hex } from './chaveAparelho';
+
+/** Prazos da atestação em rede lenta (docs/108 §5.2): estourou → login segue sem atestação. */
+export const PRAZO_DESAFIO_MS = 3_000;
+export const PRAZO_ATESTACAO_MS = 4_000;
 
 // Atestação do app (docs/67 Fase 3): prova pro servidor que é o app oficial do Horus num aparelho
 // real — Play Integrity no Android, App Attest no iOS. A atestação vai amarrada a um desafio de uso
@@ -58,27 +63,34 @@ export async function obterAtestacao(chavePublica: string, momento: 'login' | 'r
 
   try {
     if (!AppIntegrity) throw new Error('módulo de atestação indisponível neste build');
-    const { data } = await apiClient.post<Desafio>('/auth/desafio');
+    // Prazos curtos (docs/108 §5.2): em rede lenta o desafio levava até 8 s e o Play Integrity (que
+    // fala com o Google) não tinha limite nenhum — a tela de login girava sem fim.
+    const { data } = await apiClient.post<Desafio>('/auth/desafio', undefined, { timeout: PRAZO_DESAFIO_MS });
     const hash = sha256Hex(`${data.desafio}|${chavePublica}`);
 
     if (Platform.OS === 'android') {
       if (!data.play_integrity_projeto) return data.obrigatoria ? { desafio: data.desafio, plataforma: 'android' } : null;
-      if (!provedorAndroidPronto) {
-        await AppIntegrity.prepareIntegrityTokenProviderAsync(data.play_integrity_projeto);
-        provedorAndroidPronto = true;
-      }
-      const token = await AppIntegrity.requestIntegrityCheckAsync(hash);
+      const token = await comPrazo(
+        (async () => {
+          if (!provedorAndroidPronto) {
+            await AppIntegrity.prepareIntegrityTokenProviderAsync(data.play_integrity_projeto!);
+            provedorAndroidPronto = true;
+          }
+          return AppIntegrity.requestIntegrityCheckAsync(hash);
+        })(),
+        PRAZO_ATESTACAO_MS,
+      );
       return { desafio: data.desafio, plataforma: 'android', token };
     }
 
     if (Platform.OS === 'ios' && AppIntegrity.isSupported) {
       const chaveAtestada = await SecureStore.getItemAsync(APP_ATTEST_KEY_ID);
       if (momento === 'refresh' && chaveAtestada) {
-        const assercao = await AppIntegrity.generateAssertionAsync(chaveAtestada, hash);
+        const assercao = await comPrazo(AppIntegrity.generateAssertionAsync(chaveAtestada, hash), PRAZO_ATESTACAO_MS);
         return { desafio: data.desafio, plataforma: 'ios', assercao };
       }
       const keyId = await AppIntegrity.generateKeyAsync();
-      const objeto = await AppIntegrity.attestKeyAsync(keyId, hash);
+      const objeto = await comPrazo(AppIntegrity.attestKeyAsync(keyId, hash), PRAZO_ATESTACAO_MS);
       await SecureStore.setItemAsync(APP_ATTEST_KEY_ID, keyId);
       return { desafio: data.desafio, plataforma: 'ios', key_id: keyId, objeto };
     }

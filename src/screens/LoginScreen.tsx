@@ -13,9 +13,19 @@ import {
 import axios from 'axios';
 import { useAuth } from '../lib/auth/AuthContext';
 import { abrirDocumento } from '../lib/api/documentosLegais';
+import type { MotivoRecusaOffline } from '../lib/auth/acessoOffline';
 import { credenciaisStorage } from '../lib/auth/credentialsStorage';
+import { ErroLoginOffline, PRAZO_LOGIN_ONLINE_MS } from '../lib/auth/loginComPrazo';
 import { textoVersaoApp } from '../lib/versao';
 import { cores, espaco, raio, sombraFlutuante, tipografia } from '../theme';
+
+// docs/108 §7 — por que não deu pra entrar sem internet.
+const MENSAGEM_OFFLINE: Record<MotivoRecusaOffline, string> = {
+  sem_acesso: 'Sem internet. O primeiro acesso neste celular precisa de conexão.',
+  vencido: 'Seu acesso sem internet venceu. Conecte-se para entrar.',
+  senha_incorreta: 'E-mail ou senha incorretos.',
+  desligado: 'Sua empresa exige internet para entrar.',
+};
 
 // docs/05-APP-MOBILE-UX.md §3.2 — campo e-mail, campo senha (toggle mostrar/ocultar), botão
 // "Entrar", estados padrão/carregando/erro inline/sem conexão.
@@ -26,6 +36,9 @@ export function LoginScreen() {
   const [mostrarSenha, setMostrarSenha] = useState(false);
   const [lembrar, setLembrar] = useState(false);
   const [carregando, setCarregando] = useState(false);
+  // Passou do prazo do login online (docs/108 §5.5): avisa que a rede está lenta e que o app está
+  // tentando entrar sem internet, em vez de girar em silêncio.
+  const [lento, setLento] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
   // Pré-preenche o e-mail se o promotor marcou "lembrar" numa sessão anterior — a senha não é
@@ -50,6 +63,8 @@ export function LoginScreen() {
 
     setErro(null);
     setCarregando(true);
+    setLento(false);
+    const avisoLento = setTimeout(() => setLento(true), PRAZO_LOGIN_ONLINE_MS);
 
     try {
       await login(email.trim(), senha);
@@ -61,7 +76,10 @@ export function LoginScreen() {
         await credenciaisStorage.clear();
       }
     } catch (err) {
-      if (axios.isAxiosError<{ errors?: Record<string, string[]>; message?: string }>(err)) {
+      if (err instanceof ErroLoginOffline) {
+        // Sem rede (ou lenta demais) e sem acesso offline que sirva — docs/108 §7.
+        setErro(MENSAGEM_OFFLINE[err.motivo]);
+      } else if (axios.isAxiosError<{ errors?: Record<string, string[]>; message?: string }>(err)) {
         if (!err.response) {
           setErro('Não foi possível conectar. Verifique sua internet e tente novamente.');
         } else if (err.response.status === 429) {
@@ -73,11 +91,15 @@ export function LoginScreen() {
             : err.response.data.message;
           setErro(primeiraMensagem ?? 'Credenciais inválidas.');
         }
+      } else if (err instanceof Error && err.message) {
+        setErro(err.message);
       } else {
         setErro('Algo deu errado. Tente novamente.');
       }
     } finally {
+      clearTimeout(avisoLento);
       setCarregando(false);
+      setLento(false);
     }
   }
 
@@ -168,6 +190,9 @@ export function LoginScreen() {
             <Text style={styles.botaoTexto}>Entrar</Text>
           )}
         </Pressable>
+        {carregando && (
+          <Text style={styles.progresso}>{lento ? 'Internet lenta — tentando entrar sem internet…' : 'Conectando…'}</Text>
+        )}
 
         {/* docs/58 §6 — o aceite de verdade é na tela seguinte ao login; aqui só o aviso com os textos. */}
         <Text style={styles.legal}>
@@ -299,6 +324,12 @@ const styles = StyleSheet.create({
   },
   botaoPressionado: {
     opacity: 0.85,
+  },
+  progresso: {
+    fontSize: 13,
+    color: cores.textoSecundario,
+    textAlign: 'center',
+    marginTop: espaco.md,
   },
   botaoTexto: {
     ...tipografia.botao,

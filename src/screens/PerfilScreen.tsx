@@ -12,6 +12,7 @@ import { textoSituacao } from '../lib/textosRastreamento';
 import { useRastreamento } from '../lib/useRastreamento';
 import { abrirDocumento } from '../lib/api/documentosLegais';
 import { atualizarFotoPerfil, removerFotoPerfil } from '../lib/api/perfil';
+import { validadeDoAcesso } from '../lib/auth/acessoOffline';
 import { useAuth } from '../lib/auth/AuthContext';
 import { ImagemAutenticada } from '../components/ImagemAutenticada';
 import { obterUltimaSincronizacao } from '../lib/db/database';
@@ -45,7 +46,7 @@ export function PerfilScreen() {
     ]);
   }
 
-  const { usuario, logout, atualizarUsuario, biometria, definirBiometria } = useAuth();
+  const { usuario, logout, sairELimpar, modoOffline, acessoOffline, atualizarUsuario, biometria, definirBiometria } = useAuth();
   const [alterandoBiometria, setAlterandoBiometria] = useState(false);
   async function alternarBiometria(ativa: boolean) {
     setAlterandoBiometria(true);
@@ -200,24 +201,45 @@ export function PerfilScreen() {
     },
   });
 
+  // "Sair" tranca a sessão (docs/108 §9.1): o promotor entra de novo com a senha, mesmo sem internet.
   function confirmarSaida() {
     const totalPendente = pendentes.length + rejeitadas.length;
-    if (totalPendente > 0) {
-      Alert.alert(
-        'Sair com envios pendentes?',
-        `Você tem ${totalPendente} visita(s) ainda não confirmadas pelo servidor. Elas ficam guardadas neste aparelho e só são enviadas quando você entrar de novo aqui com conexão — não são perdidas, mas também não sincronizam enquanto você estiver deslogado.`,
-        [
-          { text: 'Cancelar', style: 'cancel' },
-          { text: 'Sair mesmo assim', style: 'destructive', onPress: () => void logout() },
-        ],
-      );
-      return;
-    }
-    Alert.alert('Sair', 'Deseja realmente sair da sua conta?', [
+    const aviso =
+      totalPendente > 0
+        ? `Você tem ${totalPendente} visita(s) ainda não confirmadas pelo servidor. Elas ficam guardadas e só são enviadas quando você entrar de novo. `
+        : '';
+    Alert.alert('Sair', `${aviso}Sua conta continua neste aparelho: para entrar de novo basta a senha, mesmo sem internet.`, [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Sair', style: 'destructive', onPress: () => void logout() },
     ]);
   }
+
+  // O logout completo de antes — celular compartilhado ou troca de promotor.
+  function confirmarSaidaELimpeza() {
+    const totalPendente = pendentes.length + rejeitadas.length;
+    const aviso =
+      totalPendente > 0
+        ? `Você tem ${totalPendente} visita(s) ainda não confirmadas pelo servidor. Elas ficam guardadas neste aparelho e só são enviadas quando você entrar de novo aqui com conexão — não são perdidas. `
+        : '';
+    Alert.alert(
+      'Sair e limpar este aparelho?',
+      `${aviso}Isso apaga sua sessão, os dados baixados e o acesso sem internet. O próximo login precisa de conexão.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        { text: 'Sair e limpar', style: 'destructive', onPress: () => void sairELimpar() },
+      ],
+    );
+  }
+
+  const validadeOffline = validadeDoAcesso(acessoOffline);
+  const textoAcessoOffline =
+    acessoOffline && acessoOffline.horasPermitidas <= 0
+      ? 'Sua empresa exige internet para entrar.'
+      : validadeOffline
+        ? validadeOffline > Date.now()
+          ? `Acesso sem internet válido até ${new Date(validadeOffline).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.`
+          : 'Acesso sem internet vencido — entre com conexão para renovar.'
+        : null;
 
   return (
     // Rola em celular pequeno — os cards de localização, biometria e fila podem aparecer juntos.
@@ -399,12 +421,20 @@ export function PerfilScreen() {
         </View>
       </View>
 
+      {modoOffline && (
+        <Text style={styles.acessoOffline}>Você entrou sem internet. A sessão é confirmada assim que a conexão voltar.</Text>
+      )}
+      {textoAcessoOffline && !modoOffline && <Text style={styles.acessoOffline}>{textoAcessoOffline}</Text>}
+
       <Pressable
         style={({ pressed }) => [styles.botaoSair, pressed && styles.botaoSairPressionado]}
         onPress={confirmarSaida}
       >
         <MaterialCommunityIcons name="logout" size={18} color={cores.erro} />
         <Text style={styles.botaoSairTexto}>Sair</Text>
+      </Pressable>
+      <Pressable style={({ pressed }) => [styles.botaoLimpar, pressed && styles.botaoPressionado]} onPress={confirmarSaidaELimpeza} hitSlop={8}>
+        <Text style={styles.botaoLimparTexto}>Sair e limpar este aparelho</Text>
       </Pressable>
 
       {/* Versões do app e da API (+ ambiente) — o suporte pede isso quando algo não bate. */}
@@ -639,6 +669,25 @@ const styles = StyleSheet.create({
     color: cores.erro,
     fontSize: 16,
     fontWeight: '700',
+  },
+  botaoLimpar: {
+    alignSelf: 'center',
+    marginTop: espaco.md,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  botaoLimparTexto: {
+    color: cores.textoSecundario,
+    fontSize: 14,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
+  },
+  acessoOffline: {
+    marginTop: espaco.lg,
+    fontSize: 13,
+    color: cores.textoSecundario,
+    textAlign: 'center',
+    lineHeight: 19,
   },
   versao: {
     marginTop: 'auto',

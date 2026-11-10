@@ -1,4 +1,5 @@
 import type { AutonomiaPromotor } from '../../types/api';
+import { HORAS_OFFLINE_PADRAO } from '../auth/acessoOffline';
 import { lerParametrosCache, salvarParametrosCache } from '../db/parametrosCache';
 import { apiClient } from './client';
 import { redeComPrazo } from '../redeComPrazo';
@@ -154,6 +155,16 @@ async function buscarParametros(): Promise<ParametroApi[]> {
     salvar: salvarParametrosCache,
     lerCache: lerParametrosCache,
   });
+}
+
+// Login sem internet (docs/108): por quantas horas, desde o último contato online, a senha pode ser
+// conferida no próprio aparelho. Ausente/inativo/inválido = padrão (24); 0 = a empresa exige internet.
+export async function buscarLoginOfflineHoras(): Promise<number> {
+  const parametros = await buscarParametros();
+  const parametro = parametros.find((p) => p.chave === 'LOGIN_OFFLINE_HORAS');
+  if (!parametro || !parametro.ativo) return HORAS_OFFLINE_PADRAO;
+  const valor = Number(parametro.valor);
+  return Number.isInteger(valor) && valor >= 0 ? valor : HORAS_OFFLINE_PADRAO;
 }
 
 // Rastreamento em tempo real (docs/11-RASTREAMENTO-TEMPO-REAL.md) — 0 (ausente/inativo/inválido)

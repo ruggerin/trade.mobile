@@ -1,4 +1,5 @@
 import { ehErroDeRede } from './db/database';
+import { redeEstaRuim } from './qualidadeRede';
 
 /**
  * Quanto a tela espera a rede antes de usar o que já está no aparelho. Sem sinal o erro vem na
@@ -38,9 +39,12 @@ export async function redeComPrazo<T>({ rede, salvar, lerCache, prazoMs = PRAZO_
   // Quem responder pelo cache abandona a chamada: o erro dela não pode virar rejeição sem handler.
   chamada.catch(() => {});
 
+  // Rede já marcada como ruim pelo disjuntor (docs/108 §5.3): não espera nada — responde pelo cache
+  // na hora; a chamada segue em segundo plano e é ela que vai provar que a rede voltou.
+  const esperaMs = redeEstaRuim() ? 0 : prazoMs;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const prazo = new Promise<'prazo'>((resolve) => {
-    timer = setTimeout(() => resolve('prazo'), prazoMs);
+    timer = setTimeout(() => resolve('prazo'), esperaMs);
   });
 
   try {

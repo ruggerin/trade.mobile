@@ -1,12 +1,25 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import axios from 'axios';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import * as authApi from '../api/auth';
 import { APP_DESATUALIZADO_EVENT, authEvents, SessaoEncerradaEvent, UNAUTHORIZED_EVENT } from '../api/client';
+import { buscarLoginOfflineHoras } from '../api/parametros';
 import { limparCacheLocal } from '../db/database';
 import { lerUsuarioCache, salvarUsuarioCache } from '../db/usuarioCache';
+import { aoReconectar, estaOnline } from '../network';
+import {
+  apagarAcessoOffline,
+  gravarAcessoOffline,
+  HORAS_OFFLINE_PADRAO,
+  lerAcessoOffline,
+  renovarContatoOnline,
+  sessaoTrancada,
+  type AcessoOffline,
+} from './acessoOffline';
 import { aparelhoTemBiometria, confirmarBiometria, preferenciaBiometria } from './biometria';
 import { credenciaisStorage } from './credentialsStorage';
+import { loginComPrazo } from './loginComPrazo';
 import { renovarSessaoSeNecessario } from './renovacaoSessao';
 import { apagarPushNoLogout, esquecerPushLocal } from '../push';
 import { encerrarRastreamentoNoLogout } from '../rastreamento';
@@ -24,8 +37,25 @@ interface AuthContextValue {
   // A RootNavigator usa isso pra decidir quando sair da Splash.
   isLoading: boolean;
   isAuthenticated: boolean;
+  /**
+   * Rede primeiro, com prazo; sem resposta a tempo, confere a senha no aparelho (docs/108 §4).
+   * Lança `ErroLoginOffline` quando nem a rede nem o acesso offline servem.
+   */
   login: (email: string, senha: string) => Promise<void>;
+  /**
+   * "Sair" TRANCA a sessão (docs/108 §9.1): token, cache e acesso offline ficam no aparelho e o app
+   * volta pro Login — o promotor entra de novo com a senha mesmo sem internet. Não revoga no servidor.
+   */
   logout: () => Promise<void>;
+  /**
+   * "Sair e limpar este aparelho": o logout de antes — revoga no servidor e apaga token, cache, e-mail
+   * lembrado, biometria e acesso offline. Pra celular compartilhado / troca de promotor.
+   */
+  sairELimpar: () => Promise<void>;
+  /** Entrou pelo acesso offline e o servidor ainda não confirmou a sessão (docs/108 §4.5). */
+  modoOffline: boolean;
+  /** Acesso offline guardado neste aparelho (pra mostrar até quando vale) — `null` sem acesso. */
+  acessoOffline: AcessoOffline | null;
   // Atualiza o usuário em memória direto pela resposta de uma mutação própria (ex.: trocar a
   // foto de perfil) — sem isso, `usuarioDoLogin` (a fonte de verdade depois do login, ver
   // abaixo) ficaria com o dado antigo pro resto da sessão, já que meQuery.enabled desliga assim
@@ -71,19 +101,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [biometria, setBiometria] = useState<EstadoBiometria | null>(null);
   // Último usuário salvo no aparelho: abre o app sem sinal com a sessão válida (o /auth/me falha).
   const [usuarioSalvo, setUsuarioSalvo] = useState<Usuario | null>(null);
+  const [modoOffline, setModoOffline] = useState(false);
+  const [acessoOffline, setAcessoOffline] = useState<AcessoOffline | null>(null);
+  // Revalidação do modo offline em andamento — uma de cada vez.
+  const revalidando = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     let cancelado = false;
     (async () => {
       const valor = await tokenStorage.get();
-      const salvo = valor ? await lerUsuarioCache().catch(() => null) : null;
+      // Sessão trancada pelo "Sair" (docs/108 §9.1): o token fica guardado pro login offline, mas o
+      // app abre no Login — só entra depois de conferir a senha (online ou no aparelho).
+      const trancada = Boolean(valor) && (await sessaoTrancada.esta());
+      const salvo = valor && !trancada ? await lerUsuarioCache().catch(() => null) : null;
       // Abrir o app com sessão ativa pede a biometria, se o usuário ligou a opção e o aparelho tem.
       // O login confere que a preferência salva é de quem está logado (ver login abaixo).
-      const exigeBiometria = Boolean(valor) && (await biometriaLigadaNoAparelho());
+      const exigeBiometria = Boolean(valor) && !trancada && (await biometriaLigadaNoAparelho());
+      const acesso = await lerAcessoOffline();
       if (!cancelado) {
         setBloqueadoPorBiometria(exigeBiometria);
         setUsuarioSalvo(salvo);
-        setToken(valor);
+        setToken(trancada ? null : valor);
+        setAcessoOffline(acesso);
         setTokenCarregado(true);
       }
     })();
@@ -162,6 +201,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setToken(null);
       setUsuarioDoLogin(null);
       setUsuarioSalvo(null);
+      setModoOffline(false);
+      // Sessão derrubada pelo servidor: o acesso offline cai junto (docs/108 — nunca entra sem
+      // internet depois de um 401 de verdade).
+      setAcessoOffline(null);
+      void apagarAcessoOffline().catch(() => {});
+      void sessaoTrancada.destrancar().catch(() => {});
       queryClient.clear();
       // Sessão pode ter sido revogada por outro promotor logando no mesmo dispositivo (trava
       // de 1 sessão, ver docs/02-API-BACKEND.md) — limpa o cache pra não vazar a carteira de
@@ -198,18 +243,116 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return ativa;
   }
 
-  async function login(email: string, senha: string) {
-    setAvisoSessao(null);
-    const response = await authApi.login(email, senha);
+  async function entrarOnline(email: string, senha: string, response: authApi.LoginResponse) {
     // Sessão anterior caiu (sem logout) e agora entrou outra conta: a escolha de biometria era da
-    // outra pessoa — descarta, a nova é perguntada de novo.
+    // outra pessoa — descarta, a nova é perguntada de novo. O cache local e o acesso offline também
+    // são de quem usou o aparelho antes (celular compartilhado): não podem vazar pro próximo.
     const preferencia = await preferenciaBiometria.get();
     if (preferencia && preferencia.usuarioId !== response.usuario.id) await preferenciaBiometria.clear();
+    const acessoAnterior = await lerAcessoOffline();
+    if (acessoAnterior && acessoAnterior.usuarioId !== response.usuario.id) {
+      await apagarAcessoOffline();
+      await limparCacheLocal().catch(() => {});
+    }
     await tokenStorage.set(response.token);
+    await sessaoTrancada.destrancar();
     setToken(response.token);
     setUsuarioDoLogin(response.usuario);
+    setModoOffline(false);
     await salvarUsuarioCache(response.usuario).catch(() => {});
+
+    // Acesso offline (docs/108 §5.1): gravado só depois do 2xx, com o limite de horas da empresa.
+    // Já com o token no storage — o /parametros é autenticado. Falha aqui não derruba o login.
+    try {
+      const horasPermitidas = await buscarLoginOfflineHoras().catch(() => HORAS_OFFLINE_PADRAO);
+      await gravarAcessoOffline({ usuarioId: response.usuario.id, email, senha, horasPermitidas });
+      setAcessoOffline(await lerAcessoOffline());
+    } catch (err) {
+      if (__DEV__) console.log('[auth] acesso offline não gravado', err);
+    }
   }
+
+  async function entrarOffline(acesso: AcessoOffline) {
+    const tokenSalvo = await tokenStorage.get();
+    const usuarioCache = await lerUsuarioCache().catch(() => null);
+    if (!tokenSalvo || !usuarioCache || usuarioCache.id !== acesso.usuarioId) {
+      // Acesso guardado sem sessão por trás (não deveria acontecer: os dois são apagados juntos).
+      await apagarAcessoOffline();
+      setAcessoOffline(null);
+      throw new Error('Sessão deste aparelho não encontrada. Conecte-se para entrar.');
+    }
+    await sessaoTrancada.destrancar();
+    setModoOffline(true);
+    setUsuarioDoLogin(usuarioCache);
+    setToken(tokenSalvo);
+  }
+
+  async function login(email: string, senha: string) {
+    setAvisoSessao(null);
+    const resultado = await loginComPrazo({
+      email,
+      senha,
+      loginOnline: () => authApi.login(email, senha),
+      temConexao: await estaOnline().catch(() => true),
+    });
+
+    if (resultado.modo === 'online') {
+      await entrarOnline(email, senha, resultado.resposta);
+      return;
+    }
+
+    await entrarOffline(resultado.acesso);
+
+    // A chamada online segue rodando. Se o servidor responder depois: 2xx troca pro token novo sem
+    // interromper a tela; recusa das credenciais/conta derruba a sessão offline (a senha conferiu
+    // aqui, mas o servidor é quem manda); erro de rede deixa como está — a revalidação cuida.
+    void resultado.respostaTardia.then(
+      (resposta) => entrarOnline(email, senha, resposta).catch(() => {}),
+      (err) => {
+        if (!axios.isAxiosError(err) || !err.response) return;
+        const status = err.response.status;
+        if (status === 401 || status === 403 || status === 422) {
+          const dados = err.response.data as { message?: string; errors?: Record<string, string[]> } | undefined;
+          const mensagem = dados?.errors ? Object.values(dados.errors)[0]?.[0] : dados?.message;
+          authEvents.dispatchEvent(new SessaoEncerradaEvent(mensagem ?? 'O servidor recusou a sessão. Entre de novo.'));
+        }
+      },
+    );
+  }
+
+  // Modo offline: ao reconectar e ao voltar do segundo plano, confirma a sessão com o servidor. 2xx
+  // sai do modo offline e renova o prazo do acesso; 401 já é tratado pelo interceptor (derruba).
+  useEffect(() => {
+    if (!modoOffline || !token) return;
+
+    function revalidar() {
+      revalidando.current ??= (async () => {
+        try {
+          const { usuario: atual } = await authApi.me();
+          setUsuarioDoLogin(atual);
+          void salvarUsuarioCache(atual).catch(() => {});
+          const horas = await buscarLoginOfflineHoras().catch(() => undefined);
+          await renovarContatoOnline(horas).catch(() => {});
+          setAcessoOffline(await lerAcessoOffline());
+          setModoOffline(false);
+        } catch {
+          // Sem rede ainda: tenta na próxima reconexão / volta ao app.
+        } finally {
+          revalidando.current = null;
+        }
+      })();
+    }
+
+    revalidar();
+    const pararReconexao = aoReconectar(revalidar);
+    const assinatura = AppState.addEventListener('change', (estado) => {
+      if (estado === 'active') revalidar();
+    });
+    return () => {
+      pararReconexao();
+      assinatura.remove();
+    };
+  }, [modoOffline, token]);
 
   function atualizarUsuario(usuarioAtualizado: Usuario) {
     setUsuarioDoLogin(usuarioAtualizado);
@@ -217,6 +360,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function logout() {
+    // Tranca (docs/108 §9.1): a sessão continua válida no servidor e guardada no aparelho — como já
+    // acontecia ao fechar o app com a biometria ligada — só que o app volta pro Login e exige a
+    // senha pra entrar, com ou sem internet. Token, cache local, e-mail lembrado e acesso offline
+    // ficam. O que precisa parar de verdade: o rastreamento em segundo plano.
+    await sessaoTrancada.trancar();
+    setToken(null);
+    setUsuarioDoLogin(null);
+    setUsuarioSalvo(null);
+    setModoOffline(false);
+    setBloqueadoPorBiometria(false);
+    queryClient.clear();
+    await encerrarRastreamentoNoLogout().catch(() => {});
+  }
+
+  async function sairELimpar() {
     // Antes do logout da API: o DELETE do token de push ainda precisa da sessão (docs/77 §3.1).
     await apagarPushNoLogout();
     try {
@@ -225,18 +383,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Best-effort: mesmo se a chamada falhar (rede, token já expirado), limpa a sessão local.
     }
     await tokenStorage.clear();
-    // Logout explícito (diferente do handleUnauthorized acima, que é a sessão caindo sozinha) —
-    // é o sinal de "terminei"/"próxima pessoa usa o aparelho", então esquece o e-mail lembrado
-    // também. Ver credentialsStorage.ts.
+    await sessaoTrancada.destrancar();
+    // "Terminei"/"próxima pessoa usa o aparelho": esquece o e-mail lembrado, a biometria e o acesso
+    // offline também. Ver credentialsStorage.ts.
     await credenciaisStorage.clear();
     await preferenciaBiometria.clear();
+    await apagarAcessoOffline();
     setToken(null);
     setUsuarioDoLogin(null);
     setUsuarioSalvo(null);
+    setModoOffline(false);
+    setAcessoOffline(null);
     setBloqueadoPorBiometria(false);
     queryClient.clear();
-    // Mesmo motivo do handleUnauthorized acima: aparelho pode ser compartilhado entre
-    // promotores (ex.: celular da loja), o próximo login não pode herdar cache de outro.
+    // Aparelho pode ser compartilhado entre promotores (ex.: celular da loja): o próximo login não
+    // pode herdar cache de outro. A fila de envio NÃO é apagada (database.ts).
     await limparCacheLocal();
     // Sem isso a tarefa em segundo plano continuaria mandando posição depois do logout.
     await encerrarRastreamentoNoLogout().catch(() => {});
@@ -253,6 +414,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: Boolean(token) && Boolean(usuario),
         login,
         logout,
+        sairELimpar,
+        modoOffline,
+        acessoOffline,
         atualizarUsuario,
         avisoSessao,
         limparAvisoSessao: () => setAvisoSessao(null),
