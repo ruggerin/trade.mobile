@@ -33,7 +33,11 @@ if (ambiente === 'production' && !semRollout) args.push('--rollout-percentage=10
 
 function rodar(comando, parametros) {
   console.log(`\n> ${comando} ${parametros.join(' ')}\n`);
-  const r = spawnSync(comando, parametros, { stdio: 'inherit', shell: process.platform === 'win32' });
+  // No Windows o npx precisa de shell, e o shell quebra argumento com espaço (a --message) em vários:
+  // aspas em volta de quem tem espaço.
+  const windows = process.platform === 'win32';
+  const args = windows ? parametros.map((a) => (/\s/.test(a) ? `"${a.replace(/"/g, '\\"')}"` : a)) : parametros;
+  const r = spawnSync(comando, args, { stdio: 'inherit', shell: windows });
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 
