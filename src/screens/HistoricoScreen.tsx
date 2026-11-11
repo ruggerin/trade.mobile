@@ -9,6 +9,7 @@ import { listarMinhasVisitas } from '../lib/api/visitas';
 import { useAuth } from '../lib/auth/AuthContext';
 import { useAoAtualizarFilaEnvio } from '../lib/useFilaEnvioAtualizada';
 import { useDescarteVisita } from '../lib/useDescarteVisita';
+import { useReenvioAutorizado } from '../lib/useReenvioAutorizado';
 import { useRecarregarAoFocar } from '../lib/useRecarregarAoFocar';
 import {
   listarVisitasLocaisPendentesOuRejeitadas,
@@ -64,6 +65,8 @@ export function HistoricoScreen({ navigation }: Props) {
 
   // Descarte seguro (cancela no servidor / pede autorização do gestor) — ver lib/useDescarteVisita.tsx.
   const descarteSeguro = useDescarteVisita();
+  // Check-in recusado reenviado com a autorização do gestor (docs/114) — ver lib/useReenvioAutorizado.tsx.
+  const reenvio = useReenvioAutorizado(usuario?.id);
 
   const tentarMutation = useMutation({
     mutationFn: () => tentarEnviarAgora(usuario!.id),
@@ -168,6 +171,7 @@ export function HistoricoScreen({ navigation }: Props) {
                   descartando={descarteSeguro.ocupado}
                   tentando={tentarMutation.isPending}
                   onDescartar={() => descarteSeguro.descartar(visita)}
+                  onReenviar={() => reenvio.reenviar(visita)}
                   onTentar={() => tentarMutation.mutate()}
                 />
               ))}
@@ -179,6 +183,7 @@ export function HistoricoScreen({ navigation }: Props) {
         )}
       />
       {descarteSeguro.elemento}
+      {reenvio.elemento}
     </View>
   );
 }
@@ -198,12 +203,14 @@ function VisitaLocalCard({
   tentando,
   onDescartar,
   onTentar,
+  onReenviar,
 }: {
   visita: VisitaLocal;
   descartando: boolean;
   tentando: boolean;
   onDescartar: () => void;
   onTentar: () => void;
+  onReenviar: () => void;
 }) {
   const rejeitada = visita.status === 'REJEITADA';
 
@@ -241,6 +248,15 @@ function VisitaLocalCard({
               disabled={tentando || descartando}
             >
               <Text style={styles.botaoDescartarTexto}>{tentando ? 'Enviando...' : 'Tentar enviar agora'}</Text>
+            </Pressable>
+          )}
+          {rejeitada && (
+            <Pressable
+              style={[styles.botaoReenviar, descartando && styles.botaoDesabilitado]}
+              onPress={onReenviar}
+              disabled={descartando}
+            >
+              <Text style={styles.botaoDescartarTexto}>Reenviar com autorização</Text>
             </Pressable>
           )}
           <Pressable
@@ -442,6 +458,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderRadius: raio.sm,
     backgroundColor: cores.erro,
+  },
+  botaoReenviar: {
+    marginTop: espaco.sm,
+    alignSelf: 'flex-start',
+    minHeight: 36,
+    paddingHorizontal: espaco.md,
+    justifyContent: 'center',
+    borderRadius: raio.sm,
+    backgroundColor: cores.primaria,
   },
   botaoDesabilitado: {
     opacity: 0.6,

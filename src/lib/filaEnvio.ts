@@ -1,6 +1,6 @@
 import { chaveDaFoto } from './fotosNomeadas';
 import axios from 'axios';
-import { criarRegistro, enviarImagemRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
+import { type CheckinPayload, criarRegistro, enviarImagemRegistro, finalizarVisita, iniciarVisita, responderAcompanhamento } from './api/visitas';
 import { listarRespostasDaVisita, marcarRespostaComErro, marcarRespostaEnviada } from './db/filaAcompanhamentos';
 import { ehErroDeRede, ehErroTransitorio } from './db/database';
 import {
@@ -303,6 +303,20 @@ async function enviarRespostasAcompanhamento(visita: VisitaLocal): Promise<boole
     }
   }
   return true;
+}
+
+/** O check-in desta visita como a fila manda — reaproveitado pelo reenvio autorizado (docs/114). */
+export function montarCheckinPayload(visita: VisitaLocal): CheckinPayload {
+  return {
+    ponto_venda_uuid: visita.pontoVenda.id,
+    latitude: visita.latitudeInicio,
+    longitude: visita.longitudeInicio,
+    ordem_servico_uuid: visita.ordemServicoId ?? undefined,
+    ordem_servico_escolhida: visita.ordemServicoEscolhida || undefined,
+    liberacao_uuid: visita.liberacaoId ?? undefined,
+    idempotency_key: visita.id,
+    inicio_em: visita.inicioEm,
+  };
 }
 
 async function enviarCheckin(visita: VisitaLocal, resultado: ResultadoFilaEnvio): Promise<boolean> {

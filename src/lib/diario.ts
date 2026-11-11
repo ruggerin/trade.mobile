@@ -22,7 +22,8 @@ export type TipoEvento =
   | 'registro_criado'
   | 'registro_enviado'
   | 'visita_finalizada'
-  | 'visita_removida';
+  | 'visita_removida'
+  | 'visita_reenviada';
 
 /** Por que uma foto local foi apagada — obrigatório em `apagarImagemPersistente`. */
 export type MotivoApagarFoto =

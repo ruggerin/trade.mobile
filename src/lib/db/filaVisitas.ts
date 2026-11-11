@@ -346,3 +346,18 @@ export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclu
   const db = await getDatabase();
   await escrever('DELETE FROM fila_visitas WHERE id = ?', [id]);
 }
+
+/**
+ * Reenvio autorizado de check-in recusado (docs/114): o servidor aceitou a visita, então ela volta
+ * pra fila no passo em que estava — FINALIZADA_LOCAL se o promotor já tinha finalizado (manda
+ * registros e checkout), senão CHECKIN_ENVIADO (visita em andamento).
+ */
+export async function restaurarVisitaRejeitada(id: string, servidorId: string): Promise<void> {
+  await escrever(
+    `UPDATE fila_visitas
+     SET status = CASE WHEN fim_em IS NOT NULL THEN 'FINALIZADA_LOCAL' ELSE 'CHECKIN_ENVIADO' END,
+         servidor_id = ?, erro = NULL, atualizado_em = ?
+     WHERE id = ? AND status = 'REJEITADA'`,
+    [servidorId, new Date().toISOString(), id],
+  );
+}
