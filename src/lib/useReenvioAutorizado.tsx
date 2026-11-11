@@ -11,7 +11,7 @@ import { montarCheckinPayload } from './filaEnvio';
 import { tentarEnviarAgora } from './visitaLocal';
 
 /**
- * Reenvio de check-in recusado com a autorização de um gestor (docs/114). O trabalho de uma visita
+ * Reenvio de check-in recusado com a autorização de um gestor (docs/116). O trabalho de uma visita
  * REJEITADA continua no aparelho (registros ficam DESCARTADO, fotos no disco até alguém descartar):
  * com o código ou a senha do gestor, o servidor aceita o check-in passando por cima de "outra visita
  * aberta", agenda e OS não-pendente (o raio continua valendo). Aceito, a visita volta pra fila no

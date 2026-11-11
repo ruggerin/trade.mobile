@@ -315,7 +315,7 @@ export async function apagarImagemPersistente(caminho: string, motivo: MotivoApa
   await FileSystem.deleteAsync(caminho, { idempotent: true }).catch(() => {});
 }
 
-/** Desfaz descartarRegistrosDaVisita quando o check-in recusado é reenviado com autorização (docs/114). */
+/** Desfaz descartarRegistrosDaVisita quando o check-in recusado é reenviado com autorização (docs/116). */
 export async function restaurarRegistrosDescartados(visitaLocalId: string): Promise<void> {
   await escrever(
     `UPDATE fila_registros SET status = 'PENDENTE', atualizado_em = ? WHERE visita_local_id = ? AND status = 'DESCARTADO'`,

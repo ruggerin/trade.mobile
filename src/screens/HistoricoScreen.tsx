@@ -65,7 +65,7 @@ export function HistoricoScreen({ navigation }: Props) {
 
   // Descarte seguro (cancela no servidor / pede autorização do gestor) — ver lib/useDescarteVisita.tsx.
   const descarteSeguro = useDescarteVisita();
-  // Check-in recusado reenviado com a autorização do gestor (docs/114) — ver lib/useReenvioAutorizado.tsx.
+  // Check-in recusado reenviado com a autorização do gestor (docs/116) — ver lib/useReenvioAutorizado.tsx.
   const reenvio = useReenvioAutorizado(usuario?.id);
 
   const tentarMutation = useMutation({

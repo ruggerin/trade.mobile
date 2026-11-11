@@ -348,7 +348,7 @@ export async function excluirVisitaLocalCompleta(id: string, motivo: MotivoExclu
 }
 
 /**
- * Reenvio autorizado de check-in recusado (docs/114): o servidor aceitou a visita, então ela volta
+ * Reenvio autorizado de check-in recusado (docs/116): o servidor aceitou a visita, então ela volta
  * pra fila no passo em que estava — FINALIZADA_LOCAL se o promotor já tinha finalizado (manda
  * registros e checkout), senão CHECKIN_ENVIADO (visita em andamento).
  */

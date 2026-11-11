@@ -25,7 +25,7 @@ export interface CheckinPayload {
   // Hora do check-in no campo (ISO) — o servidor grava esta em vez da hora da chegada; sem ela
   // (ou com relógio absurdo) usa a da chegada. docs/51-ENVIO-DA-FILA-EM-TEMPO-REAL.md Fase 2.
   inicio_em?: string;
-  // Reenvio de check-in recusado com a autorização de um gestor (docs/114) — ver
+  // Reenvio de check-in recusado com a autorização de um gestor (docs/116) — ver
   // lib/useReenvioAutorizado.tsx. `motivo` = a recusa original, vai pra auditoria.
   reenvio_autorizado?: boolean;
   codigo?: string;

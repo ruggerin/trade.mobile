@@ -305,7 +305,7 @@ async function enviarRespostasAcompanhamento(visita: VisitaLocal): Promise<boole
   return true;
 }
 
-/** O check-in desta visita como a fila manda — reaproveitado pelo reenvio autorizado (docs/114). */
+/** O check-in desta visita como a fila manda — reaproveitado pelo reenvio autorizado (docs/116). */
 export function montarCheckinPayload(visita: VisitaLocal): CheckinPayload {
   return {
     ponto_venda_uuid: visita.pontoVenda.id,
