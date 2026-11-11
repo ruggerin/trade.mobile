@@ -124,8 +124,15 @@ export async function processarFilaEnvio(usuarioId: string): Promise<ResultadoFi
     const visitas = await listarVisitasLocaisPendentesOuRejeitadas(usuarioId);
     const ordenadas = [...visitas].sort((a, b) => a.criadoEm.localeCompare(b.criadoEm));
 
+    // Check-in só sobe depois que a visita anterior fechou no servidor. Antes, uma foto da loja
+    // anterior falhando (rede fraca) fazia a fila pular pro check-in da próxima com a anterior
+    // ainda ABERTA lá — e o servidor recusava: "Você já está em uma visita em ...".
+    let anteriorEmAberto = false;
     for (const visita of ordenadas) {
-      await processarVisita(visita, resultado);
+      await processarVisita(visita, resultado, anteriorEmAberto);
+      if (visita.status === 'REJEITADA') continue;
+      const depois = await lerVisitaLocal(visita.id);
+      if (depois && depois.status !== 'REJEITADA') anteriorEmAberto = true;
     }
   } catch (err) {
     // Rede/API já são tratadas passo a passo dentro de processarVisita (enviarCheckin/
@@ -234,7 +241,11 @@ export async function contarPendenciasEnvio(usuarioId: string): Promise<number> 
   return total;
 }
 
-async function processarVisita(visitaInicial: VisitaLocal, resultado: ResultadoFilaEnvio): Promise<void> {
+async function processarVisita(
+  visitaInicial: VisitaLocal,
+  resultado: ResultadoFilaEnvio,
+  anteriorEmAberto = false,
+): Promise<void> {
   if (visitaInicial.status === 'REJEITADA') {
     return; // aguarda o promotor descartar manualmente (ver descartarVisitaRejeitada em visitaLocal.ts)
   }
@@ -242,6 +253,7 @@ async function processarVisita(visitaInicial: VisitaLocal, resultado: ResultadoF
   let visita = visitaInicial;
 
   if (!visita.servidorId) {
+    if (anteriorEmAberto) return; // espera o check-out da anterior confirmar (ver processarFilaEnvio)
     const enviou = await enviarCheckin(visita, resultado);
     if (!enviou) return;
 
