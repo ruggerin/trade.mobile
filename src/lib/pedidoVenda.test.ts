@@ -1,5 +1,5 @@
 import type { Usuario } from '../types/api';
-import { numeroDigitado, paraCampo, podeTirarPedido, precoMinimo } from './pedidoVenda';
+import { numeroDigitado, paraCampo, podeTirarPedido, precoMinimo, seloErp } from './pedidoVenda';
 
 describe('pedidoVenda', () => {
   it('preço mínimo = tabela × (1 − desconto máximo), desconto nulo = 0', () => {
@@ -34,5 +34,15 @@ describe('pedidoVenda', () => {
     expect(podeTirarPedido(base)).toBe(false);
     expect(podeTirarPedido({ ...base, perfil: { id: 'p', nome: 'Vendedor', permissoes: ['pedidos_venda.criar'] } })).toBe(true);
     expect(podeTirarPedido({ ...base, perfil: { id: 'p', nome: 'Visual', permissoes: ['pedidos_venda.visualizar'] } })).toBe(false);
+  });
+
+  it('selo do ERP: nada fora da fila, número e posição depois de importado (docs/118)', () => {
+    const erp = { situacao: null, numero_pedido: null, mensagem: null, posicao: null, pedido: null };
+    expect(seloErp(undefined)).toBeNull();
+    expect(seloErp(erp)).toBeNull();
+    expect(seloErp({ ...erp, situacao: 'ERRO', mensagem: 'Cliente bloqueado' })?.label).toBe('Erro no ERP');
+    expect(seloErp({ ...erp, situacao: 'IMPORTADO', numero_pedido: '554120', posicao: 'Bloqueado' })?.label).toBe(
+      'No ERP nº 554120 · Bloqueado',
+    );
   });
 });

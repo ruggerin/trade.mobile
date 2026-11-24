@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { StatusPedidoVenda, Usuario } from '../types/api';
+import type { PedidoVendaErp, SituacaoErpPedidoVenda, StatusPedidoVenda, Usuario } from '../types/api';
 import { cores } from '../theme';
 
 // Utilitários do Pedido de Venda no app — ver docs/38-PEDIDO-VENDEDOR.md.
@@ -43,6 +43,24 @@ export const STATUS_PEDIDO_VENDA: Record<StatusPedidoVenda, { label: string; cor
   CONCLUIDO: { label: 'Concluído', cor: cores.sucesso, fundo: cores.sucessoFundo },
   CANCELADO: { label: 'Cancelado', cor: cores.textoTerciario, fundo: cores.divisor },
 };
+
+// docs/118 — situação na fila do ERP. "Importado nº 554120 · Bloqueado" quando houver número e posição.
+export const SITUACAO_ERP: Record<SituacaoErpPedidoVenda, { label: string; cor: string; fundo: string }> = {
+  AGUARDANDO: { label: 'Aguardando o ERP', cor: cores.primaria, fundo: cores.primariaClara },
+  RECEBIDO: { label: 'Recebido pelo ERP', cor: cores.primaria, fundo: cores.primariaClara },
+  IMPORTADO: { label: 'No ERP', cor: cores.sucesso, fundo: cores.sucessoFundo },
+  ERRO: { label: 'Erro no ERP', cor: cores.erroTexto, fundo: cores.erroFundo },
+  CANCELADO_NO_ERP: { label: 'Cancelado no ERP', cor: cores.textoTerciario, fundo: cores.divisor },
+};
+
+export function seloErp(erp: PedidoVendaErp | undefined): { label: string; cor: string; fundo: string } | null {
+  if (!erp?.situacao) return null;
+  const base = SITUACAO_ERP[erp.situacao];
+  if (erp.situacao !== 'IMPORTADO') return base;
+  const partes = [erp.numero_pedido ? `${base.label} nº ${erp.numero_pedido}` : base.label];
+  if (erp.posicao) partes.push(erp.posicao);
+  return { ...base, label: partes.join(' · ') };
+}
 
 // Primeira mensagem de validação (422) ou `message` do servidor.
 export function mensagemErroPedido(err: unknown, padrao: string): string {

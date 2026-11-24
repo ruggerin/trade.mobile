@@ -24,6 +24,7 @@ export interface PermissoesPedidoVenda {
   aprovar: boolean;
   concluir: boolean;
   cancelar: boolean;
+  reenviar_erp?: boolean;
   e_autor: boolean;
 }
 

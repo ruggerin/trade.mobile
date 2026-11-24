@@ -23,7 +23,7 @@ import {
   criarPedidoVenda,
   type PedidoVendaDetailResponse,
 } from '../lib/api/pedidosVenda';
-import { buscarPedidoSemVisitaPermitido } from '../lib/api/parametros';
+import { buscarPedidoIntegracaoErp, buscarPedidoSemVisitaPermitido } from '../lib/api/parametros';
 import { listarPontosVenda } from '../lib/api/pontosVenda';
 import { listarProdutosCatalogo } from '../lib/api/produtosAuditoria';
 import {
@@ -32,6 +32,7 @@ import {
   numeroDigitado,
   paraCampo,
   precoMinimo,
+  seloErp,
   STATUS_PEDIDO_VENDA,
 } from '../lib/pedidoVenda';
 import { mascararMoeda, numeroParaMoeda } from '../lib/mascaraMoeda';
@@ -104,6 +105,9 @@ export function PedidoVendaScreen({ route, navigation }: Props) {
     queryFn: buscarPedidoSemVisitaPermitido,
     enabled: !params.pedidoId && !params.visitaServidorId,
   });
+  // Fila do ERP ligada: produto sem código do ERP fica bloqueado na busca (docs/118 §7).
+  const integracaoErpQuery = useQuery({ queryKey: ['pedido-integracao-erp'], queryFn: buscarPedidoIntegracaoErp });
+  const exigeCodigoErp = integracaoErpQuery.data ?? false;
   const permissoes = query.data?.permissoes;
   const editavel = !pedidoId || !!permissoes?.editar;
 
@@ -147,6 +151,7 @@ export function PedidoVendaScreen({ route, navigation }: Props) {
   function adicionarProduto(produto: ProdutoCatalogo) {
     setEscolhendoProduto(false);
     if (produto.preco_tabela === null || produto.preco_tabela === undefined) return;
+    if (exigeCodigoErp && !produto.codigo_externo) return;
     const existente = linhas.findIndex((l) => l.produtoId === produto.id);
     if (existente >= 0) {
       // Produto repetido = soma 1 na linha existente (o backend recusa linha duplicada).
@@ -328,6 +333,9 @@ export function PedidoVendaScreen({ route, navigation }: Props) {
   }
 
   const status = pedido ? STATUS_PEDIDO_VENDA[pedido.status] : null;
+  const erp = seloErp(pedido?.erp);
+  const noErp = pedido?.erp?.situacao === 'RECEBIDO' || pedido?.erp?.situacao === 'IMPORTADO';
+  const pedidoErp = pedido?.erp?.pedido;
   const mostrarEnviar = !pedidoId || !!permissoes?.enviar || (pedido?.status === 'APROVADO' && alterado);
 
   return (
@@ -342,19 +350,54 @@ export function PedidoVendaScreen({ route, navigation }: Props) {
               {params.visitaServidorId || pedido?.visita_id ? 'Pedido da visita' : 'Pedido fora de visita'}
             </Text>
           </View>
-          {status && (
-            <View style={[styles.chip, { backgroundColor: status.fundo }]}>
-              <Text style={[styles.chipTexto, { color: status.cor }]}>{status.label}</Text>
-            </View>
-          )}
+          <View style={{ alignItems: 'flex-end', gap: 4 }}>
+            {status && (
+              <View style={[styles.chip, { backgroundColor: status.fundo }]}>
+                <Text style={[styles.chipTexto, { color: status.cor }]}>{status.label}</Text>
+              </View>
+            )}
+            {erp && (
+              <View style={[styles.chip, { backgroundColor: erp.fundo }]}>
+                <Text style={[styles.chipTexto, { color: erp.cor }]}>{erp.label}</Text>
+              </View>
+            )}
+          </View>
         </View>
+
+        {pedido?.erp?.situacao === 'ERRO' && (
+          <Aviso icone="alert-circle-outline" cor={cores.erroTexto} fundo={cores.erroFundo}>
+            {`O ERP recusou o pedido${pedido.erp.mensagem ? `: ${pedido.erp.mensagem}` : '.'} Corrija e envie de novo, ou fale com o escritório.`}
+          </Aviso>
+        )}
+        {pedido?.erp?.situacao === 'AGUARDANDO' && (
+          <Aviso icone="clock-outline" cor={cores.primaria} fundo={cores.primariaClara}>
+            Pedido aprovado e na fila do ERP. Se precisar mudar algo, faça agora: depois que o ERP receber, a correção é feita lá.
+          </Aviso>
+        )}
+        {noErp && pedido?.status !== 'CANCELADO' && (
+          <Aviso icone="check-circle-outline" cor={cores.sucesso} fundo={cores.sucessoFundo}>
+            {[
+              pedido?.erp?.numero_pedido ? `Pedido nº ${pedido.erp.numero_pedido} no ERP.` : 'O ERP já recebeu o pedido.',
+              pedido?.erp?.posicao ? `Situação: ${pedido.erp.posicao}.` : null,
+              pedidoErp?.faturado_em ? `Faturado em ${new Date(`${pedidoErp.faturado_em}T12:00:00`).toLocaleDateString('pt-BR')}.` : null,
+              pedidoErp?.entregue_em
+                ? `Entregue em ${new Date(pedidoErp.entregue_em).toLocaleDateString('pt-BR')}.`
+                : pedidoErp?.data_previsao_entrega
+                  ? `Previsão de entrega: ${new Date(`${pedidoErp.data_previsao_entrega}T12:00:00`).toLocaleDateString('pt-BR')}.`
+                  : null,
+              'Correções e cancelamento são feitos no ERP.',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+          </Aviso>
+        )}
 
         {pedido?.status === 'PENDENTE_AUTORIZACAO' && (
           <Aviso icone="clock-outline" cor={cores.acentoTexto} fundo={cores.acentoClaro}>
             Aguardando autorização de preço. O pedido não pode ser editado até alguém aprovar ou rejeitar.
           </Aviso>
         )}
-        {pedido?.status === 'APROVADO' && editavel && (
+        {pedido?.status === 'APROVADO' && editavel && !pedido.erp?.situacao && (
           <Aviso icone="information-outline" cor={cores.primaria} fundo={cores.primariaClara}>
             Pedido aprovado. Se você mudar algo, ele volta para rascunho e precisa ser enviado de novo.
           </Aviso>
@@ -407,9 +450,9 @@ export function PedidoVendaScreen({ route, navigation }: Props) {
                 <Text style={styles.textoCorpo}>{h.descricao}</Text>
                 <Text style={styles.textoSecundario}>
                   {new Date(h.created_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}
-                  {h.usuario ? ` · ${h.usuario.nome}` : ''}
+                  {h.usuario ? ` · ${h.usuario.nome}` : h.acao.includes('_ERP') ? ' · ERP' : ''}
                 </Text>
-                {h.motivo && <Text style={styles.historicoMotivo}>Motivo: {h.motivo}</Text>}
+                {h.motivo && h.acao !== 'MENSAGEM_ERP' && <Text style={styles.historicoMotivo}>Motivo: {h.motivo}</Text>}
               </View>
             ))}
           </>
@@ -462,6 +505,7 @@ export function PedidoVendaScreen({ route, navigation }: Props) {
       </View>
 
       <EscolherProdutoModal
+        exigeCodigoErp={exigeCodigoErp}
         visivel={escolhendoProduto}
         onFechar={() => setEscolhendoProduto(false)}
         onEscolher={adicionarProduto}
@@ -606,10 +650,12 @@ function EscolherProdutoModal({
   visivel,
   onFechar,
   onEscolher,
+  exigeCodigoErp,
 }: {
   visivel: boolean;
   onFechar: () => void;
   onEscolher: (produto: ProdutoCatalogo) => void;
+  exigeCodigoErp: boolean;
 }) {
   const insets = useSafeAreaInsets();
   const [busca, setBusca] = useState('');
@@ -648,19 +694,21 @@ function EscolherProdutoModal({
             {query.isError && <Text style={styles.textoSecundario}>{mensagemErroPedido(query.error, 'Erro ao buscar.')}</Text>}
             {(query.data?.produtos ?? []).map((p) => {
               const semPreco = p.preco_tabela === null || p.preco_tabela === undefined;
+              const semCodigo = exigeCodigoErp && !p.codigo_externo;
+              const bloqueado = semPreco || semCodigo;
               return (
                 <Pressable
                   key={p.id}
-                  style={[styles.opcao, semPreco && styles.opcaoBloqueada]}
-                  onPress={() => !semPreco && onEscolher(p)}
-                  disabled={semPreco}
+                  style={[styles.opcao, bloqueado && styles.opcaoBloqueada]}
+                  onPress={() => !bloqueado && onEscolher(p)}
+                  disabled={bloqueado}
                 >
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.itemDescricao, semPreco && { color: cores.textoTerciario }]}>{p.descricao}</Text>
+                    <Text style={[styles.itemDescricao, bloqueado && { color: cores.textoTerciario }]}>{p.descricao}</Text>
                     <Text style={styles.textoSecundario}>{p.codigo_externo ?? p.codigo_barras ?? ''}</Text>
                   </View>
-                  <Text style={semPreco ? styles.semPreco : styles.precoOpcao}>
-                    {semPreco ? 'Sem preço configurado' : formatarMoeda(p.preco_tabela)}
+                  <Text style={bloqueado ? styles.semPreco : styles.precoOpcao}>
+                    {semPreco ? 'Sem preço configurado' : semCodigo ? 'Sem código do ERP' : formatarMoeda(p.preco_tabela)}
                   </Text>
                 </Pressable>
               );

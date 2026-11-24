@@ -6,7 +6,7 @@ import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Tex
 import { buscarPedidoSemVisitaPermitido } from '../lib/api/parametros';
 import { listarMeusPedidosVenda } from '../lib/api/pedidosVenda';
 import { useRecarregarAoFocar } from '../lib/useRecarregarAoFocar';
-import { formatarMoeda, mensagemErroPedido, STATUS_PEDIDO_VENDA } from '../lib/pedidoVenda';
+import { formatarMoeda, mensagemErroPedido, seloErp, STATUS_PEDIDO_VENDA } from '../lib/pedidoVenda';
 import type { PedidosStackParamList } from '../navigation/PedidosStack';
 import type { PedidoVenda, StatusPedidoVenda } from '../types/api';
 import { cores, espaco, raio, sombraCard, sombraFlutuante, tipografia } from '../theme';
@@ -94,6 +94,7 @@ export function PedidosVendaListScreen({ navigation }: Props) {
 
 function PedidoCard({ pedido, onPress }: { pedido: PedidoVenda; onPress: () => void }) {
   const status = STATUS_PEDIDO_VENDA[pedido.status];
+  const erp = seloErp(pedido.erp);
 
   return (
     <Pressable style={({ pressed }) => [styles.card, pressed && styles.cardPressionado]} onPress={onPress}>
@@ -105,8 +106,15 @@ function PedidoCard({ pedido, onPress }: { pedido: PedidoVenda; onPress: () => v
           {new Date(pedido.created_at).toLocaleDateString('pt-BR')} · {pedido.total_itens}{' '}
           {pedido.total_itens === 1 ? 'item' : 'itens'}
         </Text>
-        <View style={[styles.chip, { backgroundColor: status.fundo }]}>
-          <Text style={[styles.chipTexto, { color: status.cor }]}>{status.label}</Text>
+        <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+          <View style={[styles.chip, { backgroundColor: status.fundo }]}>
+            <Text style={[styles.chipTexto, { color: status.cor }]}>{status.label}</Text>
+          </View>
+          {erp && (
+            <View style={[styles.chip, { backgroundColor: erp.fundo }]}>
+              <Text style={[styles.chipTexto, { color: erp.cor }]}>{erp.label}</Text>
+            </View>
+          )}
         </View>
       </View>
       <Text style={styles.cardTotal}>{formatarMoeda(pedido.total)}</Text>

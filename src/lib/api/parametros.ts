@@ -90,6 +90,16 @@ export async function buscarPedidoSemVisitaPermitido(): Promise<boolean> {
   return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
 }
 
+// Se o pedido aprovado vai pra fila do ERP (App\Support\PedidoVendaIntegracaoErp, docs/118). Com
+// ela ligada, produto sem código do ERP não entra no pedido — o app bloqueia na busca, como faz com
+// produto sem preço; o backend recusa no envio de qualquer jeito.
+export async function buscarPedidoIntegracaoErp(): Promise<boolean> {
+  const parametros = await buscarParametros();
+  const parametro = parametros.find((p) => p.chave === 'PEDIDO_VENDA_INTEGRACAO_ERP');
+  if (!parametro || !parametro.ativo) return false;
+  return VALORES_VERDADEIROS.includes(parametro.valor.toLowerCase());
+}
+
 // Se o checkout é recusado com formulário obrigatório de Direcionamento pendente — mesma regra de
 // App\Support\DirecionamentoParametros (ausente/inativo = só avisa). O app trava o botão antes,
 // pro promotor responder ainda na loja em vez de descobrir a recusa depois; vem do cache local

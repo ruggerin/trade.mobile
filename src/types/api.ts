@@ -477,9 +477,23 @@ export interface PedidoVendaHistorico {
   created_at: string;
 }
 
+// docs/118 — situação do pedido na fila do ERP (null = fora da fila).
+export type SituacaoErpPedidoVenda = 'AGUARDANDO' | 'RECEBIDO' | 'IMPORTADO' | 'ERRO' | 'CANCELADO_NO_ERP';
+
+export interface PedidoVendaErp {
+  situacao: SituacaoErpPedidoVenda | null;
+  numero_pedido: string | null;
+  mensagem: string | null;
+  posicao: string | null;
+  // Pedido do ERP que nasceu deste: previsão e entrega (NF/faturamento só pra quem tem permissão).
+  pedido: { faturado_em?: string; data_previsao_entrega?: string; entregue_em?: string } | null;
+}
+
 export interface PedidoVenda {
   id: string;
   status: StatusPedidoVenda;
+  // Opcional: API anterior ao docs/118 não manda.
+  erp?: PedidoVendaErp;
   ponto_venda?: { id: string; fantasia: string; razao_social: string | null; cnpj: string | null } | null;
   vendedor?: { id: string; nome: string } | null;
   visita_id?: string | null;
