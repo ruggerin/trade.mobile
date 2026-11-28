@@ -28,6 +28,7 @@ import { listarVisitasLocaisPendentesOuRejeitadas } from '../lib/visitaLocal';
 import { buscarVersaoApi } from '../lib/api/versao';
 import { obterUltimaVersaoApi, textoVersaoApp } from '../lib/versao';
 import { cores, espaco, raio, sombraCard, tipografia } from '../theme';
+import { useEstaOnline } from '../lib/network';
 
 // docs/05-APP-MOBILE-UX.md §3.8 — nome/e-mail do usuário, empresa (tenant), botão Sair com
 // confirmação, espaço pra versão do app.
@@ -51,6 +52,7 @@ export function PerfilScreen() {
   }
 
   const { usuario, logout, sairELimpar, modoOffline, acessoOffline, atualizarUsuario, biometria, definirBiometria } = useAuth();
+  const online = useEstaOnline();
   const [alterandoBiometria, setAlterandoBiometria] = useState(false);
   async function alternarBiometria(ativa: boolean) {
     setAlterandoBiometria(true);
@@ -156,15 +158,20 @@ export function PerfilScreen() {
     onSuccess: (resultado) => {
       setUltimaSincronizacao(new Date().toISOString());
       // Sem isso o SQLite ficava atualizado mas as telas (ex.: lista de Lojas) seguiam com o que
-      // já tinham em memória até reabrir o app.
+      // já tinham em memória até reabrir o app. Seguro sem rede: com `networkMode: 'offlineFirst'`
+      // (App.tsx) a tela mantém o que mostra enquanto recarrega, e cai no cache se a rede sumir.
       void queryClient.invalidateQueries();
       // Parâmetro de rastreamento mudou no admin (ligar/desligar, intervalo, exigência)? Aplica já
       // na tarefa em segundo plano, sem esperar o app ir e voltar do background.
       void reavaliarRastreamento();
-      Alert.alert(
-        'Sincronizado',
-        `${resultado.pontosVenda} ponto(s) de venda, ${resultado.tiposRegistro} tipo(s) de registro e ${resultado.parametros} parâmetro(s) atualizados.`,
-      );
+      if (resultado.falhas.length > 0) {
+        Alert.alert(
+          'Sincronizado em parte',
+          `Não deu para atualizar: ${resultado.falhas.join(', ')}. O app segue com a versão salva dessas partes e tenta de novo depois.`,
+        );
+        return;
+      }
+      Alert.alert('Sincronizado', 'Tudo atualizado. Pode trabalhar mesmo sem internet.');
     },
     onError: () => {
       Alert.alert(
@@ -238,19 +245,19 @@ export function PerfilScreen() {
     try {
       const baixou = await baixarAtualizacaoSeHouver();
       if (!baixou && !isUpdatePending) {
-        Alert.alert('Horus atualizado', `Você já está na versão mais recente (${textoVersaoApp()}).`);
+        Alert.alert('Tudo em dia', `Você já está na versão mais nova do Horus (${textoVersaoApp()}).`);
         return;
       }
       if (usuario && (await buscarVisitaEmAndamento(usuario.id))) {
-        Alert.alert('Atualização pronta', 'Ela entra quando você finalizar a visita em andamento.');
+        Alert.alert('Tem novidade!', 'A atualização entra assim que você terminar a visita.');
         return;
       }
-      Alert.alert('Atualização pronta', 'O Horus vai reiniciar para aplicar. Nada do que você fez se perde.', [
+      Alert.alert('Tem novidade!', 'Leva só alguns segundos e nada do que você fez se perde.', [
         { text: 'Depois', style: 'cancel' },
-        { text: 'Atualizar agora', onPress: () => void Updates.reloadAsync().catch(() => {}) },
+        { text: 'Atualizar', onPress: () => void Updates.reloadAsync().catch(() => {}) },
       ]);
     } catch {
-      Alert.alert('Sem conexão', 'Não deu para procurar atualização agora. Tente de novo com internet.');
+      Alert.alert('Sem internet', 'Tente de novo quando a conexão voltar.');
     } finally {
       setProcurando(false);
     }
@@ -357,6 +364,13 @@ export function PerfilScreen() {
             ? `Última sincronização: ${new Date(ultimaSincronizacao).toLocaleString('pt-BR')}`
             : 'Ainda não sincronizado neste aparelho'}
         </Text>
+        {/* O único aviso de "sem internet" do app: fica aqui, não em faixa por cima das telas. */}
+        {(!online || modoOffline) && (
+          <View style={styles.offlineLinha}>
+            <MaterialCommunityIcons name="cloud-off-outline" size={16} color={cores.acentoTexto} />
+            <Text style={styles.offlineTexto}>Sem internet agora. Pode seguir usando: tudo é enviado quando a conexão voltar.</Text>
+          </View>
+        )}
       </View>
 
       {(pendentes.length > 0 || rejeitadas.length > 0) && (
@@ -633,6 +647,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
+  offlineLinha: { flexDirection: 'row', alignItems: 'center', gap: espaco.sm, marginTop: espaco.sm },
+  offlineTexto: { flex: 1, fontSize: 13, color: cores.acentoTexto },
   syncTexto: {
     marginTop: espaco.sm,
     fontSize: 12,

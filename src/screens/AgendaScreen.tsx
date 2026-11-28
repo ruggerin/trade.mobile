@@ -9,6 +9,7 @@ import { BotaoNotificacoes } from '../components/BotaoNotificacoes';
 import { FaixaSaidaDetectada } from '../components/FaixaSaidaDetectada';
 import { obterUltimaSincronizacao } from '../lib/db/database';
 import { listarOrdensServicoAgenda } from '../lib/api/ordensServico';
+import { janelaAgenda } from '../lib/prazoAgenda';
 import { buscarPontuacaoHoje } from '../lib/api/xp';
 import { formatarXp, xpVisivel } from '../lib/xp';
 import { buscarPontoVenda, listarPontosVenda } from '../lib/api/pontosVenda';
@@ -27,15 +28,6 @@ import { antesDaVez, exigeSequencia, filaDoDia, mensagemAntesDaVez } from '../li
 type Props = NativeStackScreenProps<AgendaStackParamList, 'AgendaLista'>;
 type Aba = 'hoje' | 'semana';
 
-function paraDataISO(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-function maisDias(baseISO: string, dias: number): string {
-  const d = new Date(`${baseISO}T00:00:00`);
-  d.setDate(d.getDate() + dias);
-  return paraDataISO(d);
-}
 
 interface Grupo {
   titulo: string;
@@ -143,11 +135,8 @@ export function AgendaScreen({ navigation }: Props) {
   const [aba, setAba] = useState<Aba>('hoje');
   const [ultimaSincronizacao, setUltimaSincronizacao] = useState<string | null>(null);
 
-  const hoje = useMemo(() => paraDataISO(new Date()), []);
-  const janela = useMemo(
-    () => (aba === 'hoje' ? { prazoDe: hoje, prazoAte: hoje } : { prazoDe: hoje, prazoAte: maisDias(hoje, 6) }),
-    [aba, hoje],
-  );
+  const janela = useMemo(() => janelaAgenda(aba), [aba]);
+  const hoje = janela.prazoDe;
 
   const agendaQuery = useQuery({
     queryKey: ['ordens-servico-agenda', janela],
@@ -305,15 +294,7 @@ export function AgendaScreen({ navigation }: Props) {
                         : 'Sincronizado'}
                     </Text>
                   </View>
-                ) : (
-                  <View style={styles.offlineBox}>
-                    <MaterialCommunityIcons name="wifi-off" size={16} color={amber[700]} />
-                    <Text style={styles.offlineTexto}>
-                      Você está offline. O que for coletado fica salvo no aparelho e envia sozinho.
-                      {envio.pendentes > 0 ? ` ${envio.pendentes} aguardando envio.` : ''}
-                    </Text>
-                  </View>
-                )}
+                ) : null /* Sem internet: o aviso fica só na sincronização (Perfil), sem faixa aqui. */}
               </View>
 
               <FaixaSaidaDetectada
@@ -397,7 +378,11 @@ export function AgendaScreen({ navigation }: Props) {
 
               {agendaQuery.isError && (
                 <View style={styles.centroInline}>
-                  <Text style={styles.erroTexto}>Não foi possível carregar sua agenda.</Text>
+                  <Text style={styles.erroTexto}>
+                    {online
+                      ? 'Não foi possível carregar sua agenda.'
+                      : 'Sem internet. Sua agenda aparece aqui depois da primeira sincronização com internet e fica salva no celular.'}
+                  </Text>
                   <Pressable style={styles.botaoRetry} onPress={() => void agendaQuery.refetch()}>
                     <Text style={styles.botaoRetryTexto}>Tentar novamente</Text>
                   </Pressable>
@@ -657,22 +642,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: amber[800],
-  },
-  offlineBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: espaco.sm,
-    padding: espaco.sm + 2,
-    borderRadius: raio.md,
-    backgroundColor: cores.acentoClaro,
-    borderWidth: 1,
-    borderColor: cores.acentoBorda,
-  },
-  offlineTexto: {
-    flex: 1,
-    fontSize: 12,
-    color: amber[800],
-    fontWeight: '600',
   },
   semCompromissoBox: {
     marginHorizontal: espaco.lg,

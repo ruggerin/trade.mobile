@@ -305,6 +305,13 @@ async function abrirEMigrar(): Promise<SQLite.SQLiteDatabase> {
       ocorrido_em TEXT NOT NULL
     );
 
+    -- Última resposta de cada consulta, pela chave (docs/122 §2.3). Ver db/consultasCache.ts.
+    CREATE TABLE IF NOT EXISTS consultas_cache (
+      chave TEXT PRIMARY KEY NOT NULL,
+      dados TEXT NOT NULL,
+      atualizado_em TEXT NOT NULL
+    );
+
     -- Diário de eventos (docs/112): o que aconteceu com fotos, rascunhos, registros e o ciclo do
     -- app, pra provar (ou descartar) "sumiu minha foto". 7 dias. Ver lib/diario.ts.
     CREATE TABLE IF NOT EXISTS diario_eventos (
@@ -429,6 +436,7 @@ export async function limparCacheLocal(): Promise<void> {
     DELETE FROM ordem_servico_detalhe;
     DELETE FROM visitas_historico;
     DELETE FROM catalogo_auditoria;
+    DELETE FROM consultas_cache;
   `);
 }
 

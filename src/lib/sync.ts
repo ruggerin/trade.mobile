@@ -3,7 +3,15 @@ import { parametrosParaCache, type RespostaParametros } from './api/parametros';
 import { apiClient } from './api/client';
 import { obterUltimaSincronizacao } from './db/database';
 import { salvarOrdensServicoCache } from './db/ordensServicoCache';
-import { salvarParametrosCache } from './db/parametrosCache';
+import { lerParametrosCache, salvarParametrosCache } from './db/parametrosCache';
+import { salvarConsultaCache } from './db/consultasCache';
+import {
+  buscarAgendaNaRede,
+  buscarMotivosNaoExecucaoNaRede,
+  chaveCacheAgenda,
+  CHAVE_CACHE_MOTIVOS_NAO_EXECUCAO,
+} from './api/ordensServico';
+import { janelaAgenda } from './prazoAgenda';
 import { salvarPontosVendaCache } from './db/pontosVendaCache';
 import { salvarTiposRegistroCache } from './db/tiposRegistroCache';
 
@@ -12,6 +20,8 @@ export interface ResultadoSincronizacao {
   parametros: number;
   tiposRegistro: number;
   ordensServico: number;
+  /** Partes que não vieram (ficam com a versão anterior no aparelho). Vazio = tudo atualizado. */
+  falhas: string[];
 }
 
 /**
@@ -20,7 +30,8 @@ export interface ResultadoSincronizacao {
  * tela), esta aqui fala com a API direto e **deixa o erro propagar** se não conseguir: o ponto
  * de um botão de sincronizar é justamente confirmar que a rede está ok, então "falhar em
  * silêncio caindo pro cache" seria esconder exatamente a informação que o promotor quer ver.
- * Só atualiza parâmetros e pontos de venda — produtos por PDV são cacheados sob demanda (ver
+ * Erra só quando NADA veio; parte que falhou fica com a versão anterior e sai em `falhas`.
+ * Produtos por PDV não entram — são cacheados sob demanda (ver
  * lib/api/campanhas.ts) quando o promotor abre aquele PDV, não teria como pré-carregar todos de
  * uma vez sem saber quais campanhas cada loja tem.
  *
@@ -49,34 +60,82 @@ export function sincronizarAgora(): Promise<ResultadoSincronizacao> {
   return sincronizacaoEmAndamento;
 }
 
+/**
+ * Uma parte do pacote do dia: busca na rede e grava no aparelho. Cada parte é independente
+ * (docs/122 §2.4): antes era tudo ou nada — uma chamada lenta derrubava as outras e nada era gravado.
+ */
+interface Parte {
+  nome: string;
+  buscar: () => Promise<unknown>;
+  gravar: (dados: never) => Promise<void>;
+}
+
+function parte<T>(nome: string, buscar: () => Promise<T>, gravar: (dados: T) => Promise<void>): Parte {
+  return { nome, buscar, gravar: gravar as (dados: never) => Promise<void> };
+}
+
 async function executarSincronizacao(): Promise<ResultadoSincronizacao> {
-  const [parametrosRes, pontosVendaRes, tiposRegistroRes, ordensServicoRes] = await Promise.all([
-    apiClient.get<RespostaParametros>('/parametros'),
-    apiClient.get<{ pontos_venda: PontoVenda[] }>('/pontos-venda', { params: { ativo: 1 } }),
-    apiClient.get<{ tipos_registro: TipoRegistro[] }>('/tipos-registro', { params: { ativo: 1 } }),
-    apiClient.get<{ ordens_servico: OrdemServico[] }>('/ordens-servico', { params: { status: 'PENDENTE' } }),
-  ]);
+  const contagem = { parametros: 0, pontosVenda: 0, tiposRegistro: 0, ordensServico: 0 };
+  const partes: Parte[] = [
+    parte('parâmetros', async () => (await apiClient.get<RespostaParametros>('/parametros')).data, async (dados) => {
+      await salvarParametrosCache(parametrosParaCache(dados));
+      contagem.parametros = dados.parametros.length;
+    }),
+    parte(
+      'lojas',
+      async () => (await apiClient.get<{ pontos_venda: PontoVenda[] }>('/pontos-venda', { params: { ativo: 1 } })).data.pontos_venda,
+      async (lojas) => {
+        await salvarPontosVendaCache(lojas);
+        contagem.pontosVenda = lojas.length;
+      },
+    ),
+    parte(
+      'formulários',
+      async () => (await apiClient.get<{ tipos_registro: TipoRegistro[] }>('/tipos-registro', { params: { ativo: 1 } })).data.tipos_registro,
+      async (tipos) => {
+        await salvarTiposRegistroCache(tipos);
+        contagem.tiposRegistro = tipos.length;
+      },
+    ),
+    parte(
+      'pendências',
+      async () =>
+        (await apiClient.get<{ ordens_servico: OrdemServico[] }>('/ordens-servico', { params: { status: 'PENDENTE', por_pagina: 200 } }))
+          .data.ordens_servico,
+      async (ordens) => {
+        await salvarOrdensServicoCache(ordens);
+        contagem.ordensServico = ordens.length;
+      },
+    ),
+    // A Agenda (tela inicial do promotor) abre pelo cache destas janelas quando não há sinal.
+    ...(['hoje', 'semana'] as const).map((aba) => {
+      const janela = janelaAgenda(aba);
+      return parte(`agenda (${aba})`, () => buscarAgendaNaRede(janela), (ordens) => salvarConsultaCache(chaveCacheAgenda(janela), ordens));
+    }),
+    parte('motivos', buscarMotivosNaoExecucaoNaRede, (motivos) => salvarConsultaCache(CHAVE_CACHE_MOTIVOS_NAO_EXECUCAO, motivos)),
+  ];
 
-  // Uma de cada vez, de propósito — diferente das 4 chamadas de rede acima (essas sim seguras em
-  // paralelo, sem recurso compartilhado), as 4 funções abaixo escrevem na MESMA conexão SQLite
-  // (getDatabase() é um singleton, ver lib/db/database.ts), cada uma dentro do seu próprio
-  // `withTransactionAsync` (BEGIN/COMMIT). expo-sqlite não enfileira transações concorrentes na
-  // mesma conexão — chamar isso em paralelo (Promise.all) faz o BEGIN de uma pisar no BEGIN de
-  // outra ainda aberta ("cannot start a transaction within a transaction"), estourando um erro
-  // aqui mesmo quando os dados acabam gravados certinho (sintoma exato de "dá erro, mas
-  // atualiza tudo" — e, na pior interleaving, uma transação sendo revertida de verdade).
-  // Com a jornada da semana do promotor junto (docs/102), pra cobrança do rastreamento offline.
-  await salvarParametrosCache(parametrosParaCache(parametrosRes.data));
-  await salvarPontosVendaCache(pontosVendaRes.data.pontos_venda);
-  await salvarTiposRegistroCache(tiposRegistroRes.data.tipos_registro);
-  await salvarOrdensServicoCache(ordensServicoRes.data.ordens_servico);
+  // Rede em paralelo (sem recurso compartilhado); gravação uma de cada vez, de propósito: as
+  // funções de cache escrevem na MESMA conexão SQLite (getDatabase() é singleton), cada uma no seu
+  // `withTransactionAsync`, e expo-sqlite não enfileira transações concorrentes na mesma conexão —
+  // em paralelo o BEGIN de uma pisa no de outra ("cannot start a transaction within a transaction").
+  const respostas = await Promise.allSettled(partes.map((p) => p.buscar()));
+  const falhas: string[] = [];
+  let primeiroErro: unknown = null;
+  for (const [i, resposta] of respostas.entries()) {
+    try {
+      if (resposta.status === 'rejected') throw resposta.reason;
+      await partes[i].gravar(resposta.value as never);
+    } catch (err) {
+      falhas.push(partes[i].nome);
+      primeiroErro ??= err;
+    }
+  }
 
-  return {
-    parametros: parametrosRes.data.parametros.length,
-    pontosVenda: pontosVendaRes.data.pontos_venda.length,
-    tiposRegistro: tiposRegistroRes.data.tipos_registro.length,
-    ordensServico: ordensServicoRes.data.ordens_servico.length,
-  };
+  // Nada veio: é falta de rede (ou servidor fora) — o botão mostra "Sem conexão".
+  if (falhas.length === partes.length) throw primeiroErro;
+
+  return { ...contagem, falhas };
 }
 
 /**
@@ -111,9 +170,9 @@ export async function sincronizarSeNecessario(): Promise<boolean> {
   }
 }
 
+// Lido do aparelho: ir à rede só para saber se precisa ir à rede travava a abertura sem sinal.
 async function buscarIntervaloSincronizacaoHoras(): Promise<number> {
-  const { data } = await apiClient.get<RespostaParametros>('/parametros');
-  const parametro = data.parametros.find((p) => p.chave === 'SYNC_INTERVALO_HORAS');
+  const parametro = (await lerParametrosCache()).find((p) => p.chave === 'SYNC_INTERVALO_HORAS');
 
   return parametro?.ativo && !Number.isNaN(Number(parametro.valor))
     ? Number(parametro.valor)

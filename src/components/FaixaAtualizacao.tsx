@@ -47,10 +47,10 @@ export function FaixaAtualizacao() {
       onPress={() => void reiniciar()}
       disabled={reiniciando}
       accessibilityRole="button"
-      accessibilityLabel="Nova versão pronta. Toque para atualizar."
+      accessibilityLabel="Tem novidade no Horus. Toque para atualizar."
     >
       <MaterialCommunityIcons name="update" size={18} color={cores.onPrimaria} />
-      <Text style={styles.texto}>Nova versão do Horus pronta.</Text>
+      <Text style={styles.texto}>Tem novidade no Horus!</Text>
       {reiniciando ? (
         <ActivityIndicator size="small" color={cores.onPrimaria} />
       ) : (

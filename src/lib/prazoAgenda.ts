@@ -26,3 +26,20 @@ export function prazoDoDia(offset: number): { prazo_inicio: string; prazo_fim: s
     prazo_fim: `${diaISO}T23:59:59.000Z`,
   };
 }
+
+/** Dia calendário LOCAL do aparelho (YYYY-MM-DD), o mesmo formato do filtro da Agenda. */
+export function diaLocalISO(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Janela da aba Agenda: "Hoje" ou a semana (hoje + 6 dias). A sincronização baixa as duas com a
+ * mesma janela, para a Agenda abrir sem sinal pelo cache dessa chave (docs/122).
+ */
+export function janelaAgenda(aba: 'hoje' | 'semana', agora: Date = new Date()): { prazoDe: string; prazoAte: string } {
+  const hoje = diaLocalISO(agora);
+  if (aba === 'hoje') return { prazoDe: hoje, prazoAte: hoje };
+  const fim = new Date(agora);
+  fim.setDate(fim.getDate() + 6);
+  return { prazoDe: hoje, prazoAte: diaLocalISO(fim) };
+}

@@ -10,6 +10,7 @@ import { TelaErro } from './src/components/TelaErro';
 import { useBaixarAtualizacao } from './src/lib/atualizacao';
 import { instalarTratadorGlobalDeErros } from './src/lib/crashHandler';
 import { registrarEvento } from './src/lib/diario';
+import { redeEstaRuim } from './src/lib/qualidadeRede';
 import { reportarErro } from './src/lib/sentry';
 // Efeito colateral proposital: registra a tarefa de rastreamento em segundo plano (defineTask) já
 // na inicialização do módulo, antes de qualquer tela — o SO pode acordar o app só pra rodá-la.
@@ -41,10 +42,19 @@ onlineManager.setEventListener((definirOnline) =>
   }),
 );
 
+// Sem internet nada pode ficar girando (docs/122 §1.1). No modo padrão ('online') a consulta sem
+// dado na memória ficava PAUSADA enquanto o aparelho estivesse offline: nem erro, nem cache — a
+// função de lib/api, que sabe responder pelo SQLite, nem era chamada. 'offlineFirst' sempre roda a
+// função uma vez (ela lê o cache ou dá erro de rede); só a nova tentativa espera a rede voltar.
+// Nova tentativa só com rede boa: com a rede ruim ou ausente, mais 8 s de espera não ajudam.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      retry: 1,
+      networkMode: 'offlineFirst',
+      retry: (falhas) => falhas < 1 && onlineManager.isOnline() && !redeEstaRuim(),
+    },
+    mutations: {
+      networkMode: 'offlineFirst',
     },
   },
 });

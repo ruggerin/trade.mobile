@@ -7,6 +7,7 @@ import {
 } from '../db/ordensServicoCache';
 import { apiClient } from './client';
 import { redeComPrazo } from '../redeComPrazo';
+import { consultaComCache } from '../db/consultasCache';
 
 // Cache local (SQLite): o promotor precisa ver as próprias pendências (+ fila aberta) mesmo sem
 // sinal — mesmo padrão de lib/api/pontosVenda.ts. Só busca PENDENTE: EM_ANDAMENTO já vira uma
@@ -74,14 +75,27 @@ const STATUS_AGENDA: StatusOrdemServico[] = [
 ];
 
 // Aba Agenda (docs/13-AGENDA-MOBILE-E-AUTONOMIA.md §5/§6.1) — janela de data (Hoje ou Semana),
-// vários status de uma vez (inclusive Realizada e os três de solicitação). Sem cache offline
-// (diferente de listarOrdensServicoPendentes): é uma visão de navegação, não o fluxo crítico de
-// check-in — sem sinal, mostra erro com "tentar novamente", mesmo padrão de Pontos de Venda.
-export async function listarOrdensServicoAgenda(params: { prazoDe: string; prazoAte: string }): Promise<OrdemServico[]> {
+// vários status de uma vez (inclusive Realizada e os três de solicitação). É a tela inicial do
+// promotor: guarda a última resposta de cada janela no aparelho (docs/122) para abrir sem sinal.
+export async function listarOrdensServicoAgenda(params: JanelaAgenda): Promise<OrdemServico[]> {
+  return consultaComCache(chaveCacheAgenda(params), () => buscarAgendaNaRede(params));
+}
+
+export interface JanelaAgenda {
+  prazoDe: string;
+  prazoAte: string;
+}
+
+/** Chave da janela no cache de consultas — a sincronização grava na mesma. */
+export function chaveCacheAgenda(janela: JanelaAgenda): string {
+  return `agenda:${janela.prazoDe}:${janela.prazoAte}`;
+}
+
+export async function buscarAgendaNaRede(janela: JanelaAgenda): Promise<OrdemServico[]> {
   const { data } = await apiClient.get<{ ordens_servico: OrdemServico[] }>('/ordens-servico', {
     // Serialização padrão do axios já manda como status[]=A&status[]=B, formato que o Laravel
     // espera pra montar um array a partir da query string — confirmado, não mexer.
-    params: { status: STATUS_AGENDA, prazo_de: params.prazoDe, prazo_ate: params.prazoAte },
+    params: { status: STATUS_AGENDA, prazo_de: janela.prazoDe, prazo_ate: janela.prazoAte },
   });
   return data.ordens_servico;
 }
@@ -127,7 +141,13 @@ export interface MotivoNaoExecucao {
   descricao: string;
 }
 
+export const CHAVE_CACHE_MOTIVOS_NAO_EXECUCAO = 'motivos_nao_execucao';
+
 export async function listarMotivosNaoExecucao(): Promise<MotivoNaoExecucao[]> {
+  return consultaComCache(CHAVE_CACHE_MOTIVOS_NAO_EXECUCAO, buscarMotivosNaoExecucaoNaRede);
+}
+
+export async function buscarMotivosNaoExecucaoNaRede(): Promise<MotivoNaoExecucao[]> {
   const { data } = await apiClient.get<{ motivos_nao_execucao: MotivoNaoExecucao[] }>('/motivos-nao-execucao', {
     params: { ativo: 1 },
   });
